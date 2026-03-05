@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+models/weights/
+data/conversations/
+.DS_Store
+.venv/
+venv/
