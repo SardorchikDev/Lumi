@@ -3,12 +3,14 @@
 A conversational AI assistant with a terminal CLI and web interface, built by **Sardor Sodiqov** (SardorchikDev).
 
 ```
- ██╗     ██╗   ██╗███╗   ███╗██╗
- ██║     ██║   ██║████╗ ████║██║
- ██║     ██║   ██║██╔████╔██║██║
- ██║     ██║   ██║██║╚██╔╝██║██║
- ███████╗╚██████╔╝██║ ╚═╝ ██║██║
- ╚══════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝
+  ██╗     ██╗   ██╗███╗   ███╗██╗
+  ██║     ██║   ██║████╗ ████║██║
+  ██║     ██║   ██║██╔████╔██║██║
+  ██║     ██║   ██║██║╚██╔╝██║██║
+  ███████╗╚██████╔╝██║ ╚═╝ ██║██║
+  ╚══════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝
+
+  A R T I F I C I A L   I N T E L L I G E N C E
 ```
 
 ---
@@ -137,32 +139,6 @@ Lumi tries models in this order, automatically falling back if one is rate-limit
 3. `microsoft/Phi-3.5-mini-instruct`
 
 Switch model at any time with `/model` inside the chat.
-
----
-
-## Web Interface
-
-The web UI lives in `Lumi-website/` and is deployed on Vercel.
-
-**Local setup:**
-
-```bash
-cd ~/Lumi-website
-
-# Create config.js with your token
-echo 'const LUMI_CONFIG = { hf_token: "hf_xxxx" };' > config.js
-
-# Open index.html in browser
-```
-
-**Deploying to Vercel:**
-
-1. Push `Lumi-website/` to GitHub
-2. Import the repo on [vercel.com](https://vercel.com)
-3. Add environment variable: `HF_TOKEN = hf_xxxxxxxxxxxxxxxx`
-4. Deploy — the `api/chat.js` serverless function proxies requests securely
-
-> The token is never exposed to the browser. All requests go through the `/api/chat` proxy.
 
 ---
 
