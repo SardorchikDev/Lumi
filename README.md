@@ -155,7 +155,7 @@ huggingface_hub # HF utilities
 ## Notes
 
 - **Rate limits** — the free HF Inference API has a queue. Lumi auto-retries with a countdown. If it keeps failing, try `/model` to switch to a less busy model.
-- **venv** — always activate the venv before running: `source ~/Lumi/venv/bin/activate.fish`
+- **venv** — always activate the venv before running: `source ~/Lumi/venv/bin/activate` add `.fish` for fish shell
 - **conversations are gitignored** — `data/conversations/` is excluded from git by default
 
 ---
