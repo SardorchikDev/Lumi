@@ -1,4 +1,4 @@
-"""Lumi CLI — polished."""
+"""Lumi CLI — smarter chatbot."""
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -10,71 +10,80 @@ import textwrap
 import threading
 import time
 import itertools
+import webbrowser
+import urllib.parse
 from datetime import datetime
 
-from src.chat.hf_client import get_client, chat_stream, MODELS
+from src.chat.hf_client import get_client, MODELS
 from src.memory.short_term import ShortTermMemory
+from src.memory.longterm import (
+    get_facts, add_fact, remove_fact, clear_facts, build_memory_block,
+    get_persona_override, set_persona_override, clear_persona_override,
+)
 from src.memory.conversation_store import save, load_latest, list_sessions
 from src.prompts.builder import load_persona, build_system_prompt, build_messages
-from src.tools.search import search, should_search
+from src.tools.search import search, search_display
 from src.utils.markdown import render as md_render
 from src.utils.export import export_md
+from src.utils.themes import get_theme, list_themes, save_theme_name, load_theme_name
+from src.utils.history import setup as history_setup, save as history_save
+from src.utils.intelligence import detect_emotion, emotion_hint, detect_topic, should_search
+from src.utils.autoremember import auto_extract_facts
 
-# ── Palette ───────────────────────────────────────────────────
-def fg(n): return f"\033[38;5;{n}m"
+# ── ANSI base ─────────────────────────────────────────────────
 R  = "\033[0m"
 B  = "\033[1m"
 D  = "\033[2m"
-IT = "\033[3m"
 
-C1 = fg(117)  # bright cyan      — logo row 1-2
-C2 = fg(111)  # blue-cyan        — logo row 3-4
-C3 = fg(105)  # muted purple     — logo row 5-6
-PU = fg(141)  # purple           — lumi label
-BL = fg(75)   # blue             — prompt arrow
-CY = fg(117)  # cyan             — info/search
-GR = fg(245)  # gray             — secondary text
-DG = fg(238)  # dark gray        — dividers
-MU = fg(60)   # very muted       — timestamps
-GN = fg(114)  # green            — success
-RE = fg(203)  # red              — errors
-YE = fg(179)  # yellow           — warnings
-WH = fg(255)  # white            — main text
+# ── Theme globals ─────────────────────────────────────────────
+C1 = C2 = C3 = PU = BL = CY = GR = DG = MU = GN = RE = YE = WH = R
 
+def reload_theme(name: str = None):
+    global C1, C2, C3, PU, BL, CY, GR, DG, MU, GN, RE, YE, WH
+    t  = get_theme(name)
+    C1 = t["C1"]; C2 = t["C2"]; C3 = t["C3"]
+    PU = t["PU"]; BL = t["BL"]; CY = t["CY"]
+    GR = t["GR"]; DG = t["DG"]; MU = t["MU"]
+    GN = t["GN"]; RE = t["RE"]; YE = t["YE"]; WH = t["WH"]
+
+reload_theme()
+
+# ── Helpers ───────────────────────────────────────────────────
 def W():     return shutil.get_terminal_size().columns
 def clear(): os.system("clear")
 def ts():    return datetime.now().strftime("%H:%M")
-def div(c=DG, ch="─"): print(f"{c}{ch * W()}{R}")
+def div():   print(f"{DG}{'─' * W()}{R}")
+def wc(s):   return len(s.split())
 
+def ok(msg, icon="✓", c=None):  print(f"\n  {c or GN}{icon}{R}  {GR}{msg}{R}\n")
+def fail(msg):                    print(f"\n  {RE}✗{R}  {GR}{textwrap.fill(str(msg), W()-10)}{R}\n")
+def info(msg):                    print(f"\n  {CY}◆{R}  {GR}{msg}{R}\n")
+def warn(msg):                    print(f"\n  {YE}!{R}  {GR}{msg}{R}\n")
 
-# ── ASCII logo ────────────────────────────────────────────────
-LOGO = [
-    (" ██╗     ██╗   ██╗███╗   ███╗██╗", C1),
-    (" ██║     ██║   ██║████╗ ████║██║", C1),
-    (" ██║     ██║   ██║██╔████╔██║██║", C2),
-    (" ██║     ██║   ██║██║╚██╔╝██║██║", C2),
-    (" ███████╗╚██████╔╝██║ ╚═╝ ██║██║", C3),
-    (" ╚══════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝", C3),
+# ── ASCII logo ─────────────────────────────────────────────────
+LOGO_ROWS = [
+    " ██╗     ██╗   ██╗███╗   ███╗██╗",
+    " ██║     ██║   ██║████╗ ████║██║",
+    " ██║     ██║   ██║██╔████╔██║██║",
+    " ██║     ██║   ██║██║╚██╔╝██║██║",
+    " ███████╗╚██████╔╝██║ ╚═╝ ██║██║",
+    " ╚══════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝",
 ]
-
 
 def draw_header(model: str, turns: int = 0):
     clear()
     pad = " " * max((W() - 34) // 2, 0)
     print()
-    for row, color in LOGO:
+    for row, color in zip(LOGO_ROWS, [C1, C1, C2, C2, C3, C3]):
         print(f"{pad}{color}{B}{row}{R}")
     print()
-
     sub = "A R T I F I C I A L   I N T E L L I G E N C E"
     print(f"{' ' * max((W()-len(sub))//2, 0)}{DG}{sub}{R}")
     print()
-
     m       = model.split("/")[-1]
     count   = f"  {DG}·{R}  {DG}{turns} turns{R}" if turns else ""
     raw_len = len(f"model › {m}") + (len(f"  ·  {turns} turns") if turns else 0)
-    line    = f"{DG}model › {GR}{m}{R}{count}"
-    print(f"{' ' * max((W()-raw_len)//2, 0)}{line}")
+    print(f"{' ' * max((W()-raw_len)//2, 0)}{DG}model › {GR}{m}{R}{count}")
     print()
     div()
     print()
@@ -85,13 +94,13 @@ class Spinner:
     FRAMES = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
 
     def __init__(self, label="thinking"):
-        self._label   = label
+        self._label = label
         self._running = False
-        self._thread  = None
+        self._thread = None
 
     def start(self):
         self._running = True
-        self._thread  = threading.Thread(target=self._spin, daemon=True)
+        self._thread = threading.Thread(target=self._spin, daemon=True)
         self._thread.start()
 
     def _spin(self):
@@ -110,64 +119,78 @@ class Spinner:
 
 # ── Print helpers ─────────────────────────────────────────────
 def print_you(text: str):
-    # Wrap long messages
-    w        = W() - 12
-    wrapped  = textwrap.wrap(text, width=w) if len(text) > w else [text]
-    stamp    = f"{MU}{ts()}{R}"
+    w       = W() - 12
+    wrapped = textwrap.wrap(text, width=w) if len(text) > w else [text]
     print()
-    print(f"  {GR}{D}you{R}  {WH}{wrapped[0]}{R}  {stamp}")
+    print(f"  {GR}{D}you{R}  {WH}{wrapped[0]}{R}  {MU}{ts()}{R}")
     for line in wrapped[1:]:
         print(f"        {WH}{line}{R}")
 
+def print_lumi_label(name="Lumi"):
+    print(f"\n  {PU}{B}✦ {name}{R}  {MU}{ts()}{R}\n")
 
-def print_lumi_label():
-    print(f"\n  {PU}{B}✦ Lumi{R}  {MU}{ts()}{R}\n")
-
-
-def ok(msg, icon="✓", c=GN):
-    print(f"\n  {c}{icon}{R}  {GR}{msg}{R}\n")
-
-def fail(msg):
-    wrapped = textwrap.fill(str(msg), width=W() - 10)
-    print(f"\n  {RE}✗{R}  {GR}{wrapped}{R}\n")
-
-def info(msg):
-    print(f"\n  {CY}◆{R}  {GR}{msg}{R}\n")
-
-def warn(msg):
-    print(f"\n  {YE}!{R}  {GR}{msg}{R}\n")
-
-
-# ── Welcome ───────────────────────────────────────────────────
 def print_welcome(name: str):
-    msg = f"Hi! I'm {name}. Type {WH}/help{GR} for commands or just start chatting."
-    print(f"  {PU}✦{R}  {GR}{msg}{R}\n")
+    print(f"  {PU}✦{R}  {GR}Hi! I'm {name}. Type {WH}/help{GR} for commands.{R}\n")
 
 
 # ── Help ──────────────────────────────────────────────────────
 def print_help():
-    print()
-    div()
+    print(); div()
     print(f"\n  {B}{WH}Commands{R}\n")
-    cmds = [
-        ("/help",        "show this"),
-        ("/clear",       "reset conversation"),
-        ("/save",        "save conversation to disk"),
-        ("/load",        "load last saved conversation"),
-        ("/sessions",    "list all saved sessions"),
-        ("/export",      "export chat as .md file"),
-        ("/retry",       "resend last message"),
-        ("/model",       "switch model interactively"),
-        ("/model <n>",   "set model by name directly"),
-        ("/multi",       "toggle multi-line paste mode"),
-        ("/quit",        "save and exit"),
+    sections = [
+        ("Chat", [
+            ("/help",             "show this"),
+            ("/clear",            "reset conversation memory"),
+            ("/undo",             "remove last exchange"),
+            ("/retry",            "resend last message"),
+            ("/more",             "expand on the last reply"),
+            ("/tl;dr",            "one-line summary of last reply"),
+            ("/rewrite",          "rewrite last reply differently"),
+            ("/summarize",        "summarize the whole chat"),
+            ("/save",             "save conversation"),
+            ("/load",             "load last saved conversation"),
+            ("/sessions",         "list saved sessions"),
+            ("/export",           "export chat as .md file"),
+            ("/find <keyword>",   "search through saved sessions"),
+        ]),
+        ("Response style (one-shot)", [
+            ("/short",            "next reply: concise"),
+            ("/detailed",         "next reply: detailed"),
+            ("/bullets",          "next reply: bullet points"),
+        ]),
+        ("Web & tools", [
+            ("/search <query>",   "search the web"),
+            ("/imagine <prompt>", "generate an image (opens browser)"),
+            ("/translate <lang>", "translate last reply"),
+        ]),
+        ("Memory & persona", [
+            ("/remember <fact>",  "save a fact to long-term memory"),
+            ("/memory",           "view long-term memory"),
+            ("/forget",           "manage long-term memory"),
+            ("/persona",          "change Lumi's name/tone/traits"),
+        ]),
+        ("Settings", [
+            ("/theme",            "switch color theme"),
+            ("/model",            "switch model"),
+            ("/multi",            "toggle multi-line input"),
+            ("/quit",             "save and exit"),
+        ]),
     ]
-    for cmd, desc in cmds:
-        print(f"  {CY}{cmd:<16}{R}  {GR}{desc}{R}")
-    print(f"\n  {DG}tip{R}  {GR}run with {WH}--debug{GR} to see raw API logs{R}")
-    print()
-    div()
-    print()
+    for section, cmds in sections:
+        print(f"  {DG}{section}{R}")
+        for cmd, desc in cmds:
+            print(f"  {CY}{cmd:<22}{R}  {GR}{desc}{R}")
+        print()
+    print(f"  {DG}tip{R}  {GR}run with {WH}--debug{GR} for raw API logs{R}")
+    print(); div(); print()
+
+
+# ── System prompt builder ─────────────────────────────────────
+def make_system_prompt(persona: dict, override: dict = None) -> str:
+    merged = {**persona, **(override or {})}
+    base   = build_system_prompt(merged)
+    mem    = build_memory_block()
+    return f"{base}\n\n{mem}" if mem else base
 
 
 # ── Model picker ──────────────────────────────────────────────
@@ -179,8 +202,7 @@ def pick_model(cur: str) -> str:
         print(f"  {dot}  {GR}{i+1}.{R}  {WH}{m.split('/')[-1]}{R}{active}")
     print()
     try:
-        raw = input(f"  {BL}{B}›{R}  ").strip()
-        idx = int(raw) - 1
+        idx = int(input(f"  {BL}{B}›{R}  ").strip()) - 1
         if 0 <= idx < len(MODELS): return MODELS[idx]
     except (ValueError, KeyboardInterrupt): pass
     warn("Keeping current model.")
@@ -201,69 +223,176 @@ def read_multiline() -> str:
     return "\n".join(lines)
 
 
-# ── Stream into buffer, rerender as markdown ──────────────────
-def stream_and_render(client, messages: list, model: str) -> str:
-    """Stream tokens live, then clear and reprint as styled markdown."""
-    spinner    = Spinner("thinking")
+# ── Stream + render ───────────────────────────────────────────
+def stream_and_render(client, messages: list, model: str, name: str = "Lumi") -> str:
+    spinner   = Spinner("thinking")
     spinner.start()
-
-    raw_reply  = ""
-    first      = True
+    raw_reply = ""
+    first     = True
 
     try:
         stream = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            max_tokens=1024,
-            temperature=0.7,
-            stream=True,
+            model=model, messages=messages,
+            max_tokens=1024, temperature=0.7, stream=True,
         )
         for chunk in stream:
             delta = chunk.choices[0].delta.content
             if delta:
                 if first:
                     spinner.stop()
-                    print_lumi_label()
+                    print_lumi_label(name)
                     first = False
                 print(delta, end="", flush=True)
                 raw_reply += delta
-
-        if first:
-            spinner.stop()
-
+        if first: spinner.stop()
         print()
-
     except Exception as e:
-        spinner.stop()
-        raise e
+        spinner.stop(); raise e
 
-    # Clear what was streamed, reprint as styled markdown
     if raw_reply:
-        # Count lines we printed: lumi label (3 lines) + streamed lines
-        streamed_lines = raw_reply.count("\n") + 4
-        for _ in range(streamed_lines):
+        for _ in range(raw_reply.count("\n") + 4):
             sys.stdout.write("\033[A\033[2K")
         sys.stdout.flush()
-
-        print_lumi_label()
-        rendered = md_render(raw_reply)
-        indented = "\n".join("  " + l for l in rendered.split("\n"))
+        print_lumi_label(name)
+        indented = "\n".join("  " + l for l in md_render(raw_reply).split("\n"))
         print(indented)
+        print(f"\n  {MU}{wc(raw_reply)} words{R}")
 
     return raw_reply
 
 
-# ── Main ─────────────────────────────────────────────────────
+# ── Single-turn AI call (no stream, no display) ──────────────
+def silent_call(client, prompt: str, model: str, max_tokens: int = 300) -> str:
+    try:
+        r = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=0.3,
+            stream=False,
+        )
+        return r.choices[0].message.content.strip()
+    except Exception:
+        return ""
+
+
+# ── /find ─────────────────────────────────────────────────────
+def cmd_find(keyword: str):
+    import json, pathlib
+    d = pathlib.Path("data/conversations")
+    if not d.exists(): warn("No saved sessions."); return
+    hits = []
+    for f in sorted(d.glob("*.json")):
+        try:
+            for m in json.loads(f.read_text(encoding="utf-8")):
+                if keyword.lower() in m.get("content", "").lower():
+                    hits.append((f.name, m["role"], m["content"][:200]))
+        except Exception: continue
+    if not hits: warn(f"No matches for: {keyword}"); return
+    print(f"\n  {B}{WH}Results for:{R}  {GR}{keyword}{R}  {MU}({len(hits)} found){R}\n")
+    for fname, role, snippet in hits[:20]:
+        label = f"{PU}Lumi{R}" if role == "assistant" else f"{BL}you{R}"
+        print(f"  {DG}{fname}{R}  {label}")
+        print(f"{GR}{textwrap.fill(snippet, W()-6, initial_indent='    ', subsequent_indent='    ')}{R}\n")
+
+
+# ── /persona ──────────────────────────────────────────────────
+def cmd_persona():
+    override = get_persona_override()
+    print(f"\n  {B}{WH}Persona editor{R}  {DG}(leave blank to keep){R}\n")
+    new = {}
+    for key, label in [("name","Name"),("tone","Tone"),("traits","Traits")]:
+        cur = override.get(key, "")
+        cur_display = f"  {MU}[{cur}]{R}" if cur else ""
+        try:
+            val = input(f"  {GR}{label}:{cur_display}  {BL}›{R}  ").strip()
+        except (KeyboardInterrupt, EOFError):
+            warn("Cancelled."); return
+        if val: new[key] = val
+        elif cur: new[key] = cur
+    if new: set_persona_override(new); ok("Persona updated.")
+    else:   clear_persona_override();  ok("Persona reset to default.")
+
+
+# ── /memory ───────────────────────────────────────────────────
+def cmd_memory():
+    facts = get_facts()
+    if not facts: warn("No facts in long-term memory."); return
+    print(f"\n  {B}{WH}Long-term memory{R}  {MU}({len(facts)} facts){R}\n")
+    for i, f in enumerate(facts):
+        print(f"  {CY}{i+1}.{R}  {GR}{f}{R}")
+    print()
+
+
+# ── /forget ───────────────────────────────────────────────────
+def cmd_forget():
+    facts = get_facts()
+    if not facts: warn("No facts in long-term memory."); return
+    cmd_memory()
+    print(f"  {DG}Enter a number to delete, {GR}all{DG} to clear, or Enter to cancel.{R}\n")
+    try:
+        val = input(f"  {BL}{B}›{R}  ").strip()
+    except (KeyboardInterrupt, EOFError): return
+    if val.lower() == "all":
+        clear_facts(); ok("All long-term memory cleared.")
+    else:
+        try:
+            idx = int(val) - 1
+            if remove_fact(idx): ok(f"Removed fact #{idx+1}.")
+            else: warn("Invalid number.")
+        except ValueError: info("Cancelled.")
+
+
+# ── /theme ────────────────────────────────────────────────────
+def cmd_theme(current: str) -> str:
+    themes = list_themes()
+    print(f"\n  {B}{WH}Themes{R}\n")
+    for i, t in enumerate(themes):
+        dot    = f"{GN}●{R}" if t == current else f"{DG}○{R}"
+        tname  = get_theme(t)["name"]
+        active = f"  {MU}active{R}" if t == current else ""
+        print(f"  {dot}  {GR}{i+1}.{R}  {WH}{tname}{R}{active}")
+    print()
+    try:
+        idx = int(input(f"  {BL}{B}›{R}  ").strip()) - 1
+        if 0 <= idx < len(themes):
+            chosen = themes[idx]
+            save_theme_name(chosen)
+            reload_theme(chosen)
+            return chosen
+    except (ValueError, KeyboardInterrupt): pass
+    warn("Keeping current theme.")
+    return current
+
+
+# ── /imagine ──────────────────────────────────────────────────
+def cmd_imagine(prompt: str):
+    url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width=1024&height=1024&nologo=true"
+    info("Generating image — opening in browser...")
+    webbrowser.open(url)
+    ok(f"Opened: {url}")
+
+
+# ── Main ──────────────────────────────────────────────────────
 def main():
-    persona       = load_persona()
-    system_prompt = build_system_prompt(persona)
-    memory        = ShortTermMemory(max_turns=20)
-    client        = get_client()
-    name          = persona.get("name", "Lumi")
-    current_model = MODELS[0]
-    multiline     = False
-    last_msg      = None
-    turns         = 0
+    history_setup()
+
+    persona          = load_persona()
+    persona_override = get_persona_override()
+    system_prompt    = make_system_prompt(persona, persona_override)
+    memory           = ShortTermMemory(max_turns=20)
+    client           = get_client()
+    name             = persona_override.get("name") or persona.get("name", "Lumi")
+    current_model    = MODELS[0]
+    current_theme    = load_theme_name()
+    multiline        = False
+    last_msg         = None
+    last_reply       = None
+    turns            = 0
+    response_mode    = None
+    current_topic    = None
+    AUTOSAVE_EVERY   = 5
+    AUTOREMEMBER_EVERY = 8  # extract facts every N turns
 
     draw_header(current_model)
     print_welcome(name)
@@ -273,14 +402,11 @@ def main():
         # ── Input ─────────────────────────────────────────────
         try:
             div()
-            if multiline:
-                user_input = read_multiline().strip()
-            else:
-                user_input = input(f"  {BL}{B}›{R}  ").strip()
+            user_input = read_multiline().strip() if multiline else input(f"  {BL}{B}›{R}  ").strip()
         except (KeyboardInterrupt, EOFError):
+            history_save()
             ok(f"Saved → {save(memory.get())}")
             ok("Goodbye!", "◆", BL)
-            print()
             sys.exit(0)
 
         if not user_input: continue
@@ -289,28 +415,25 @@ def main():
 
         # ── Commands ──────────────────────────────────────────
         if cmd in ("/quit", "/exit"):
+            history_save()
             ok(f"Saved → {save(memory.get())}")
             ok("Goodbye!", "◆", BL)
             break
 
         if cmd == "/help":    print_help(); continue
+
         if cmd == "/clear":
-            memory.clear(); last_msg = None; turns = 0
-            draw_header(current_model)
-            print_welcome(name)
-            continue
+            memory.clear(); last_msg = None; last_reply = None; turns = 0; current_topic = None
+            draw_header(current_model); print_welcome(name); continue
 
         if cmd == "/save":    ok(f"Saved → {save(memory.get())}"); continue
 
         if cmd == "/load":
             h = load_latest()
             if h:
-                memory._history = h
-                turns = len(h) // 2
-                draw_header(current_model, turns)
-                ok(f"Loaded {len(h)} messages.")
-            else:
-                warn("No saved conversations found.")
+                memory._history = h; turns = len(h) // 2
+                draw_header(current_model, turns); ok(f"Loaded {len(h)} messages.")
+            else: warn("No saved conversations found.")
             continue
 
         if cmd == "/sessions":
@@ -319,8 +442,7 @@ def main():
                 print(f"\n  {B}{WH}Saved sessions{R}\n")
                 for x in s: print(f"  {DG}·{R}  {GR}{x}{R}")
                 print()
-            else:
-                warn("No saved sessions.")
+            else: warn("No saved sessions.")
             continue
 
         if cmd == "/export":
@@ -328,65 +450,262 @@ def main():
             else: ok(f"Exported → {export_md(memory.get(), name)}")
             continue
 
+        if cmd == "/undo":
+            if len(memory._history) >= 2:
+                memory._history = memory._history[:-2]
+                turns = max(0, turns - 1)
+                ok("Last exchange removed from memory.")
+            else: warn("Nothing to undo.")
+            continue
+
         if cmd == "/retry":
             if last_msg:
+                # Ask what was wrong
+                try:
+                    print(f"\n  {GR}What was wrong with the last reply? (Enter to just resend){R}")
+                    feedback = input(f"  {BL}{B}›{R}  ").strip()
+                except (KeyboardInterrupt, EOFError):
+                    feedback = ""
                 user_input = last_msg
-                info(f"Retrying: {user_input}")
+                if feedback:
+                    user_input = f"{last_msg}\n\n[My previous response wasn't quite right because: {feedback}. Please try again with that in mind.]"
+                info(f"Retrying...")
                 memory._history = memory._history[:-2] if len(memory._history) >= 2 else []
                 turns = max(0, turns - 1)
+            else: warn("Nothing to retry."); continue
+
+        if cmd == "/summarize":
+            if not memory.get(): warn("Nothing to summarize yet."); continue
+            q = "Summarize our conversation so far in a few bullet points."
+            memory.add("user", q)
+            messages = build_messages(system_prompt, memory.get())
+            print_you(q)
+            try:
+                raw_reply = stream_and_render(client, messages, current_model, name)
+            except Exception as e:
+                fail(str(e)); memory._history.pop(); continue
+            memory._history[-1] = {"role": "user", "content": q}
+            memory.add("assistant", raw_reply)
+            last_reply = raw_reply; turns += 1; print(); continue
+
+        if cmd == "/tl;dr":
+            if not last_reply: warn("No reply to summarize yet."); continue
+            sp = Spinner("summarizing"); sp.start()
+            summary = silent_call(client,
+                f"Summarize this in ONE sentence (max 20 words):\n\n{last_reply}",
+                current_model, max_tokens=60)
+            sp.stop()
+            if summary:
+                print(f"\n  {PU}✦{R}  {WH}{summary}{R}\n")
             else:
-                warn("Nothing to retry.")
-                continue
+                warn("Couldn't summarize.")
+            continue
+
+        if cmd == "/more":
+            if not last_reply: warn("Nothing to expand on yet."); continue
+            q = f"Expand on your last response with more detail and examples. Last response was:\n\n{last_reply}"
+            memory.add("user", "[User wants more detail on the last response.]")
+            messages = build_messages(system_prompt, memory.get())
+            print_you("Tell me more...")
+            try:
+                raw_reply = stream_and_render(client, messages, current_model, name)
+            except Exception as e:
+                fail(str(e)); memory._history.pop(); continue
+            memory._history[-1] = {"role": "user", "content": "Tell me more."}
+            memory.add("assistant", raw_reply)
+            last_reply = raw_reply; turns += 1; print(); continue
+
+        if cmd == "/rewrite":
+            if not last_reply: warn("Nothing to rewrite yet."); continue
+            q = f"Rewrite your last response in a completely different way — different structure, different wording, same meaning. Last response:\n\n{last_reply}"
+            memory.add("user", "[User wants the last response rewritten differently.]")
+            messages = build_messages(system_prompt, memory.get())
+            print_you("Rewrite that differently...")
+            try:
+                raw_reply = stream_and_render(client, messages, current_model, name)
+            except Exception as e:
+                fail(str(e)); memory._history.pop(); continue
+            memory._history[-1] = {"role": "user", "content": "Rewrite that differently."}
+            memory.add("assistant", raw_reply)
+            last_reply = raw_reply; turns += 1; print(); continue
+
+        if cmd == "/find":
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2: warn("Usage: /find <keyword>")
+            else: cmd_find(parts[1].strip())
+            continue
+
+        if cmd == "/remember":
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2: warn("Usage: /remember <fact>")
+            else:
+                n = add_fact(parts[1].strip())
+                system_prompt = make_system_prompt(persona, get_persona_override())
+                ok(f"Remembered — {n} fact{'s' if n != 1 else ''} stored.")
+            continue
+
+        if cmd == "/memory":   cmd_memory(); continue
+        if cmd == "/forget":
+            cmd_forget()
+            system_prompt = make_system_prompt(persona, get_persona_override())
+            continue
+
+        if cmd == "/persona":
+            cmd_persona()
+            persona_override = get_persona_override()
+            name             = persona_override.get("name") or persona.get("name", "Lumi")
+            system_prompt    = make_system_prompt(persona, persona_override)
+            draw_header(current_model, turns); continue
+
+        if cmd in ("/short", "/detailed", "/bullets"):
+            response_mode = cmd[1:]
+            labels = {"short":"concise","detailed":"in-depth","bullets":"as bullet points"}
+            info(f"Next reply will be {labels[response_mode]}."); continue
+
+        if cmd == "/translate":
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2: warn("Usage: /translate <language>")
+            elif not last_reply: warn("No reply to translate yet.")
+            else:
+                lang = parts[1].strip()
+                q = f"Translate your last response into {lang}. Output only the translation."
+                memory.add("user", q)
+                messages = build_messages(system_prompt, memory.get())
+                print_you(f"Translate to {lang}")
+                try:
+                    raw_reply = stream_and_render(client, messages, current_model, name)
+                except Exception as e:
+                    fail(str(e)); memory._history.pop(); continue
+                memory._history[-1] = {"role": "user", "content": f"Translate to {lang}"}
+                memory.add("assistant", raw_reply)
+                last_reply = raw_reply; turns += 1; print()
+            continue
+
+        if cmd == "/imagine":
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2: warn("Usage: /imagine <prompt>")
+            else: cmd_imagine(parts[1].strip())
+            continue
+
+        if cmd == "/theme":
+            current_theme = cmd_theme(current_theme)
+            draw_header(current_model, turns); continue
 
         if cmd == "/model":
             parts = user_input.split(maxsplit=1)
             current_model = parts[1].strip() if len(parts) > 1 else pick_model(current_model)
             draw_header(current_model, turns)
-            ok(f"Model → {current_model.split('/')[-1]}")
-            continue
+            ok(f"Model → {current_model.split('/')[-1]}"); continue
 
         if cmd == "/multi":
             multiline = not multiline
-            info(f"Multi-line input {'on' if multiline else 'off'}")
-            continue
+            info(f"Multi-line input {'on' if multiline else 'off'}"); continue
+
+        if cmd == "/search":
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2: warn("Usage: /search <query>"); continue
+            query = parts[1].strip()
+            sp = Spinner("searching"); sp.start()
+            try:
+                results, _ = search_display(query)
+            except Exception as e:
+                sp.stop(); fail(str(e)); continue
+            sp.stop()
+            if not results: warn("No results found."); continue
+            print(f"\n  {B}{WH}Results for:{R}  {GR}{query}{R}\n")
+            for i, r in enumerate(results, 1):
+                print(f"  {CY}{i}.{R}  {WH}{r['title']}{R}")
+                print(f"      {MU}{r['url']}{R}")
+                if r.get("snippet"):
+                    print(f"{GR}{textwrap.fill(r['snippet'], W()-8, initial_indent='      ', subsequent_indent='      ')}{R}")
+                print()
+            ctx = search(query, fetch_top=True)
+            memory.add("user", f"I searched for: {query}\n\n{ctx}\n\nSummarize the key findings briefly.")
+            messages = build_messages(system_prompt, memory.get())
+            try:
+                raw_reply = stream_and_render(client, messages, current_model, name)
+            except Exception as e:
+                fail(str(e)); memory._history.pop(); continue
+            memory._history[-1] = {"role": "user", "content": f"Search: {query}"}
+            memory.add("assistant", raw_reply)
+            last_reply = raw_reply; turns += 1; print(); continue
 
         if cmd and cmd.startswith("/"):
-            fail(f"Unknown command: {cmd}  —  type /help")
-            continue
+            fail(f"Unknown command: {cmd}  —  type /help"); continue
 
-        # ── Web search ────────────────────────────────────────
+        # ── Emotion detection ─────────────────────────────────
+        emotion = detect_emotion(user_input)
+        hint    = emotion_hint(emotion) if emotion else ""
+
+        # ── Topic tracking ────────────────────────────────────
+        topic = detect_topic(user_input)
+        if topic and topic != current_topic:
+            current_topic = topic
+
+        # ── Auto web search ───────────────────────────────────
         augmented = user_input
         if should_search(user_input):
-            print(f"\n  {CY}◆{R}  {DG}Searching the web...{R}", end="", flush=True)
-            results = search(user_input)
-            if not results.startswith("[No results") and not results.startswith("[Search failed"):
+            sp = Spinner("searching"); sp.start()
+            try:
+                results_text = search(user_input, fetch_top=True)
+            except Exception:
+                results_text = ""
+            sp.stop()
+            if results_text and not results_text.startswith("[No"):
                 augmented = (
-                    f"{user_input}\n\n[Search results:]\n{results}\n"
-                    "[Use the above to inform your answer if relevant.]"
+                    f"{user_input}\n\n[Web search results:]\n{results_text}\n"
+                    "[Use the above to inform your answer. Cite sources where relevant.]"
                 )
-                print(f"  {GN}done{R}")
-            else:
-                print(f"  {YE}no results{R}")
+                print(f"\n  {CY}◆{R}  {GR}Found web results{R}")
+
+        # ── Response mode prefix ──────────────────────────────
+        if response_mode == "short":
+            augmented += "\n\n[Reply concisely — 2-3 sentences max.]"
+        elif response_mode == "detailed":
+            augmented += "\n\n[Reply in detail — be thorough and comprehensive.]"
+        elif response_mode == "bullets":
+            augmented += "\n\n[Reply using bullet points only.]"
+        response_mode = None
+
+        # ── Inject emotion hint ───────────────────────────────
+        if hint:
+            augmented = hint + augmented
 
         # ── Chat ──────────────────────────────────────────────
         last_msg = user_input
         memory.add("user", augmented)
         messages = build_messages(system_prompt, memory.get())
-
         print_you(user_input)
 
         try:
-            raw_reply = stream_and_render(client, messages, current_model)
+            raw_reply = stream_and_render(client, messages, current_model, name)
         except Exception as e:
-            fail(str(e))
-            memory._history.pop()
-            continue
+            fail(str(e)); memory._history.pop(); continue
 
         memory._history[-1] = {"role": "user", "content": user_input}
         memory.add("assistant", raw_reply)
+        last_reply = raw_reply
         turns += 1
         print()
 
+        # ── Auto-save ─────────────────────────────────────────
+        if turns % AUTOSAVE_EVERY == 0:
+            try: save(memory.get())
+            except Exception: pass
+
+        # ── Auto-remember (background) ────────────────────────
+        if turns % AUTOREMEMBER_EVERY == 0:
+            def _bg_remember():
+                try:
+                    new_facts = auto_extract_facts(client, current_model, memory.get())
+                    if new_facts:
+                        # Rebuild system prompt with new facts
+                        nonlocal system_prompt
+                        system_prompt = make_system_prompt(persona, get_persona_override())
+                except Exception:
+                    pass
+            threading.Thread(target=_bg_remember, daemon=True).start()
+
 
 if __name__ == "__main__":
-    main()
+    main() 
