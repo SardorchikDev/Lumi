@@ -14,7 +14,7 @@ import webbrowser
 import urllib.parse
 from datetime import datetime
 
-from src.chat.hf_client import get_client, MODELS
+from src.chat.hf_client import get_client, get_models, get_provider
 from src.memory.short_term import ShortTermMemory
 from src.memory.longterm import (
     get_facts, add_fact, remove_fact, clear_facts, build_memory_block,
@@ -195,16 +195,36 @@ def make_system_prompt(persona: dict, override: dict = None) -> str:
 
 # ── Model picker ──────────────────────────────────────────────
 def pick_model(cur: str) -> str:
-    print(f"\n  {B}{WH}Available models{R}\n")
-    for i, m in enumerate(MODELS):
+    models = get_models()
+    provider = get_provider()
+    print(f"\n  {B}{WH}Available models{R}  {DG}({provider}){R}\n")
+    for i, m in enumerate(models):
         dot    = f"{GN}●{R}" if m == cur else f"{DG}○{R}"
         active = f"  {MU}active{R}" if m == cur else ""
         print(f"  {dot}  {GR}{i+1}.{R}  {WH}{m.split('/')[-1]}{R}{active}")
     print()
     try:
-        idx = int(input(f"  {BL}{B}›{R}  ").strip()) - 1
-        if 0 <= idx < len(MODELS): return MODELS[idx]
-    except (ValueError, KeyboardInterrupt): pass
+        raw = input(f"  {BL}{B}›{R}  ").strip()
+        if not raw: raise ValueError
+        # Try number first
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(models): return models[idx]
+        except ValueError:
+            pass
+        # Try name fragment match (case-insensitive)
+        frag = raw.lower()
+        matches = [m for m in models if frag in m.lower()]
+        if len(matches) == 1:
+            return matches[0]
+        elif len(matches) > 1:
+            warn(f"Ambiguous — matched {len(matches)} models. Be more specific.")
+            return cur
+        else:
+            warn(f"No model matching '{raw}'.")
+            return cur
+    except (KeyboardInterrupt, EOFError):
+        pass
     warn("Keeping current model.")
     return cur
 
@@ -301,7 +321,7 @@ def cmd_persona():
     override = get_persona_override()
     print(f"\n  {B}{WH}Persona editor{R}  {DG}(leave blank to keep){R}\n")
     new = {}
-    for key, label in [("name","Name"),("tone","Tone"),("traits","Traits")]:
+    for key, label in [("name","Name"),("creator","Creator"),("tone","Tone"),("traits","Traits")]:
         cur = override.get(key, "")
         cur_display = f"  {MU}[{cur}]{R}" if cur else ""
         try:
@@ -383,7 +403,7 @@ def main():
     memory           = ShortTermMemory(max_turns=20)
     client           = get_client()
     name             = persona_override.get("name") or persona.get("name", "Lumi")
-    current_model    = MODELS[0]
+    current_model    = get_models()[0]
     current_theme    = load_theme_name()
     multiline        = False
     last_msg         = None
@@ -708,4 +728,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()
