@@ -8,6 +8,10 @@ import sys
 import shutil
 import textwrap
 import threading
+import subprocess
+import difflib
+import shlex
+import select
 import time
 import itertools
 import webbrowser
@@ -154,10 +158,14 @@ def print_help():
             ("/find <keyword>",   "search through saved sessions"),
         ]),
         ("Coding", [
-            ("/fix <error>",      "diagnose and fix an error message"),
-            ("/explain [file]",   "explain last reply or a file"),
-            ("/review [file]",    "code review with suggestions"),
-            ("/file <path>",      "load a file into the conversation"),
+            ("/fix <e>",          "diagnose and fix an error"),
+            ("/explain [file]",       "explain last reply or a file"),
+            ("/review [file]",        "full code review"),
+            ("/file <path>",          "load a file into conversation"),
+            ("/edit <path>",          "edit a file — Lumi writes changes back"),
+            ("/run",                  "execute code from last reply"),
+            ("/diff",                 "diff previous vs latest reply"),
+            ("/git [status|commit|log]", "git helper"),
         ]),
         ("Response style (one-shot)", [
             ("/short",            "next reply: concise"),
@@ -177,8 +185,9 @@ def print_help():
         ]),
         ("Settings", [
             ("/theme",            "switch color theme"),
-            ("/model",            "switch model"),
+            ("/model",            "switch provider + model"),
             ("/multi",            "toggle multi-line input"),
+            ("/cost",             "session token usage"),
             ("/quit",             "save and exit"),
         ]),
     ]
@@ -292,6 +301,46 @@ def read_multiline() -> str:
 
 
 # ── Stream + render ───────────────────────────────────────────
+# ── Token / cost tracker ─────────────────────────────────────
+_session_tokens = {"input": 0, "output": 0}
+
+def _track(prompt_tokens: int = 0, completion_tokens: int = 0):
+    _session_tokens["input"]  += prompt_tokens
+    _session_tokens["output"] += completion_tokens
+
+def cmd_cost():
+    i, o = _session_tokens["input"], _session_tokens["output"]
+    total = i + o
+    print(f"\n  {B}{WH}Session token usage{R}\n")
+    print(f"  {CY}Input tokens {R}  {GR}{i:,}{R}")
+    print(f"  {CY}Output tokens{R}  {GR}{o:,}{R}")
+    print(f"  {CY}Total        {R}  {WH}{total:,}{R}")
+    print(f"\n  {DG}(approx — not all providers report token counts){R}\n")
+
+
+# ── Provider health check ─────────────────────────────────────
+def health_check(providers: list):
+    """Ping each provider silently at startup and warn if any are down."""
+    import urllib.request
+    checks = {
+        "gemini":     ("https://generativelanguage.googleapis.com", os.getenv("GEMINI_API_KEY")),
+        "groq":       ("https://api.groq.com",                      os.getenv("GROQ_API_KEY")),
+        "openrouter": ("https://openrouter.ai",                     os.getenv("OPENROUTER_API_KEY")),
+        "mistral":    ("https://api.mistral.ai",                    os.getenv("MISTRAL_API_KEY")),
+        "huggingface":("https://huggingface.co",                    os.getenv("HF_TOKEN")),
+    }
+    dead = []
+    for p in providers:
+        url, key = checks.get(p, (None, None))
+        if not url or not key: continue
+        try:
+            urllib.request.urlopen(url, timeout=3)
+        except Exception:
+            dead.append(p)
+    if dead:
+        warn(f"Can't reach: {', '.join(dead)} — check your connection or key")
+
+
 def stream_and_render(client, messages: list, model: str, name: str = "Lumi") -> str:
     spinner   = Spinner("thinking")
     spinner.start()
@@ -582,7 +631,245 @@ def cmd_imagine(prompt: str):
 
 
 # ── Main ──────────────────────────────────────────────────────
+# ── /run — execute code from last reply ──────────────────────
+def cmd_run(last_reply: str):
+    """Extract code block from last reply and run it."""
+    import re
+    # Find first fenced code block
+    m = re.search(r"```(?:python|bash|sh|javascript|js|node)?\n(.*?)```", last_reply, re.DOTALL)
+    if not m:
+        warn("No code block found in last reply."); return
+    code = m.group(1).strip()
+    lang = re.search(r"```(\w+)", last_reply)
+    lang = lang.group(1).lower() if lang else "python"
+
+    print(f"\n{B}{WH}Running code{R}  {DG}({lang}){R}\n")
+    print(f"  {DG}{'─'*40}{R}")
+
+    try:
+        if lang in ("python", "py"):
+            result = subprocess.run(
+                ["python3", "-c", code],
+                capture_output=True, text=True, timeout=15
+            )
+        elif lang in ("bash", "sh"):
+            result = subprocess.run(
+                ["bash", "-c", code],
+                capture_output=True, text=True, timeout=15
+            )
+        elif lang in ("javascript", "js", "node"):
+            result = subprocess.run(
+                ["node", "-e", code],
+                capture_output=True, text=True, timeout=15
+            )
+        else:
+            warn(f"Can't run {lang} yet. Supported: python, bash, javascript"); return
+
+        if result.stdout:
+            for line in result.stdout.splitlines():
+                print(f"  {GR}{line}{R}")
+        if result.stderr:
+            print(f"\n{YE}stderr:{R}")
+            for line in result.stderr.splitlines():
+                print(f"  {RE}{line}{R}")
+        if result.returncode == 0:
+            print(f"\n{GN}✓{R}  {GR}Exit 0{R}\n")
+        else:
+            print(f"\n{RE}✗{R}  {GR}Exit {result.returncode}{R}\n")
+
+        return result.stdout + result.stderr
+
+    except subprocess.TimeoutExpired:
+        fail("Timed out after 15s")
+    except FileNotFoundError as e:
+        fail(f"Runtime not found: {e}")
+
+
+# ── /edit — edit a file using Lumi's last reply ───────────────
+def cmd_edit(path: str, client, model: str, memory, system_prompt: str, name: str, last_reply: str = ""):
+    """Load a file, send it to Lumi for editing, write result back."""
+    path = path.strip().strip("'\"")
+    if not os.path.isabs(path):
+        path = os.path.join(os.getcwd(), path)
+    if not os.path.exists(path):
+        fail(f"File not found: {path}"); return last_reply
+    ext  = os.path.splitext(path)[1].lstrip(".")
+    size = os.path.getsize(path)
+    if size > 300_000:
+        fail(f"File too large ({size//1024}KB). Max 300KB."); return last_reply
+    original = open(path, encoding="utf-8", errors="replace").read()
+    fname    = os.path.basename(path)
+    print(f"\n  {B}{WH}File loaded:{R}  {GR}{path}{R}  {DG}({len(original.splitlines())} lines){R}")
+    print(f"\n  {DG}What should Lumi do to this file?{R}")
+    try:
+        instruction = input(f"  {BL}{B}›{R}  ").strip()
+        if not instruction: warn("No instruction given."); return last_reply
+    except (KeyboardInterrupt, EOFError):
+        warn("Cancelled."); return last_reply
+    prompt = (
+        f"You are editing the file `{fname}`.\n"
+        f"INSTRUCTION: {instruction}\n\n"
+        f"FILE CONTENT:\n```{ext}\n{original}\n```\n\n"
+        f"Return ONLY the complete updated file content. No explanation, no markdown fences, no preamble. Just raw file content."
+    )
+    memory.add("user", prompt)
+    messages = build_messages(system_prompt, memory.get())
+    print_you(f"Edit {fname}: {instruction}")
+    try:
+        reply = stream_and_render(client, messages, model, name)
+    except Exception as e:
+        fail(str(e)); memory._history.pop(); return last_reply
+    # Strip accidental markdown fences
+    import re as _re
+    clean = _re.sub(r"^```[^\n]*\n", "", reply.strip())
+    clean = _re.sub(r"\n```$", "", clean).strip()
+    # Show diff
+    diff = list(difflib.unified_diff(
+        original.splitlines(), clean.splitlines(),
+        fromfile=f"{fname} (before)", tofile=f"{fname} (after)", lineterm=""
+    ))
+    if diff:
+        print(f"\n  {B}{WH}Diff{R}\n")
+        for line in diff[:60]:
+            if line.startswith("+") and not line.startswith("+++"):
+                print(f"  {GN}{line}{R}")
+            elif line.startswith("-") and not line.startswith("---"):
+                print(f"  {RE}{line}{R}")
+            else:
+                print(f"  {DG}{line}{R}")
+        if len(diff) > 60:
+            print(f"  {DG}... {len(diff)-60} more lines{R}")
+    else:
+        info("No changes made."); return reply
+    # Confirm write
+    print(f"\n  {YE}!{R}  {GR}Write changes to {WH}{path}{GR}? {DG}[y/N]{R}  ", end="")
+    try:
+        confirm = input().strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        confirm = "n"
+    if confirm == "y":
+        backup = path + ".lumi.bak"
+        open(backup, "w", encoding="utf-8").write(original)
+        open(path, "w", encoding="utf-8").write(clean)
+        ok(f"Written → {path}  {DG}(backup: {os.path.basename(backup)})")
+    else:
+        info("Changes discarded.")
+    memory._history[-1] = {"role": "user", "content": f"[Edited file: {fname}]"}
+    memory.add("assistant", reply)
+    return reply
+
+
+# ── /diff — show diff of last two replies ────────────────────
+def cmd_diff(last_reply: str, prev_reply: str):
+    if not prev_reply:
+        warn("No previous reply to diff against."); return
+    diff = list(difflib.unified_diff(
+        prev_reply.splitlines(), last_reply.splitlines(),
+        fromfile="previous", tofile="latest", lineterm=""
+    ))
+    if not diff:
+        info("Replies are identical."); return
+    print(f"\n{B}{WH}Diff — previous vs latest{R}\n")
+    for line in diff:
+        if line.startswith("+") and not line.startswith("+++"):
+            print(f"  {GN}{line}{R}")
+        elif line.startswith("-") and not line.startswith("---"):
+            print(f"  {RE}{line}{R}")
+        else:
+            print(f"  {DG}{line}{R}")
+    print()
+
+
+# ── /git — git helper ─────────────────────────────────────────
+def cmd_git(subcmd: str, client, model: str, memory, system_prompt: str, name: str, last_reply: str):
+    sub = subcmd.strip().lower() if subcmd else "status"
+    if sub == "status":
+        r1 = subprocess.run(["git", "status", "--short"], capture_output=True, text=True)
+        r2 = subprocess.run(["git", "log", "--oneline", "-5"], capture_output=True, text=True)
+        out = (r1.stdout + "\n" + r2.stdout).strip()
+        if not out: info("Nothing to show (not a git repo or no changes)"); return
+        print(f"\n  {B}{WH}Git status{R}\n")
+        for line in out.splitlines():
+            print(f"  {GR}{line}{R}")
+        print()
+    elif sub == "commit":
+        r1 = subprocess.run(["git", "diff", "--cached"], capture_output=True, text=True)
+        if not r1.stdout.strip():
+            r1 = subprocess.run(["git", "diff"], capture_output=True, text=True)
+        if not r1.stdout.strip():
+            warn("No changes to commit."); return
+        diff_text = r1.stdout[:3000]
+        prompt = (
+            "Write a concise git commit message for these changes.\n"
+            "Format: short subject line (50 chars max), then optionally a blank line and body.\n"
+            "Just return the commit message, nothing else.\n\n"
+            f"Diff:\n{diff_text}"
+        )
+        memory.add("user", prompt)
+        messages = build_messages(system_prompt, memory.get())
+        print(f"\n  {B}{WH}Generating commit message...{R}\n")
+        try:
+            reply = stream_and_render(client, messages, model, name)
+        except Exception as e:
+            fail(str(e)); memory._history.pop(); return
+        memory._history[-1] = {"role": "user", "content": "[git commit message]"}
+        memory.add("assistant", reply)
+        print(f"\n  {YE}!{R}  {GR}Stage all and commit?  {DG}[y/N]{R}  ", end="")
+        try:
+            confirm = input().strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            confirm = "n"
+        if confirm == "y":
+            msg = reply.strip().splitlines()[0][:72]
+            subprocess.run(["git", "add", "-A"])
+            subprocess.run(["git", "commit", "-m", msg])
+    elif sub == "log":
+        r1 = subprocess.run(["git", "log", "--oneline", "-15"], capture_output=True, text=True)
+        print(f"\n  {B}{WH}Recent commits{R}\n")
+        for line in r1.stdout.splitlines():
+            parts = line.split(" ", 1)
+            if len(parts) == 2:
+                print(f"  {CY}{parts[0]}{R}  {GR}{parts[1]}{R}")
+        print()
+    else:
+        warn(f"Unknown git subcommand: {sub}  —  try: /git status | /git commit | /git log")
+
+
+# ── Auto-fallback across providers ───────────────────────────
+def stream_with_fallback(client, messages: list, model: str, name: str,
+                          providers: list, current_provider: str) -> tuple:
+    """Try current provider, if quota/rate fails try next provider automatically."""
+    try:
+        reply = stream_and_render(client, messages, model, name)
+        return reply, client, model, current_provider
+    except Exception as e:
+        msg = str(e)
+        # Only auto-fallback on quota/rate errors
+        if not any(x in msg for x in ("429", "limit: 0", "RESOURCE_EXHAUSTED", "quota")):
+            raise
+
+        # Find next available provider
+        remaining = [p for p in providers if p != current_provider]
+        if not remaining:
+            raise
+
+        next_p = remaining[0]
+        info(f"Quota hit on {current_provider} — switching to {next_p} automatically")
+        set_provider(next_p)
+        new_client = get_client()
+        new_model  = get_models(next_p)[0]
+        reply = stream_and_render(new_client, messages, new_model, name)
+        return reply, new_client, new_model, next_p
+
+
 def main():
+    # Pipe mode: python main.py < file.txt or echo "msg" | python main.py
+    if not sys.stdin.isatty():
+        piped = sys.stdin.read().strip()
+        if piped:
+            import os as _os
+            _os.environ.setdefault("LUMI_PIPE_INPUT", piped)
+
     history_setup()
 
     persona          = load_persona()
@@ -596,6 +883,7 @@ def main():
     multiline        = False
     last_msg         = None
     last_reply       = None
+    prev_reply       = None
     turns            = 0
     response_mode    = None
     current_topic    = None
@@ -604,6 +892,8 @@ def main():
 
     draw_header(current_model)
     print_welcome(name)
+    # Background health check
+    threading.Thread(target=health_check, args=(get_available_providers(),), daemon=True).start()
 
     while True:
 
@@ -869,6 +1159,36 @@ def main():
             memory.add("assistant", raw_reply)
             last_reply = raw_reply; turns += 1; print(); continue
 
+        if cmd == "/run":
+            if not last_reply: warn("No reply yet to run code from."); continue
+            output = cmd_run(last_reply)
+            if output:
+                # Feed output back so Lumi can explain errors
+                memory.add("user", f"[Code output]: {output[:500]}")
+                memory.add("assistant", "[Output received]")
+            continue
+
+        if cmd == "/edit":
+            parts = user_input.split(maxsplit=1)
+            path  = parts[1].strip() if len(parts) > 1 else ""
+            if not path:
+                print(f"\n  {DG}Path to file:{R}  ", end="")
+                try: path = input().strip()
+                except (KeyboardInterrupt, EOFError): continue
+            last_reply = cmd_edit(path, client, current_model, memory, system_prompt, name, last_reply or "")
+            turns += 1; continue
+
+        if cmd == "/diff":
+            cmd_diff(last_reply or "", prev_reply or ""); continue
+
+        if cmd == "/git":
+            parts  = user_input.split(maxsplit=1)
+            subcmd = parts[1].strip() if len(parts) > 1 else "status"
+            cmd_git(subcmd, client, current_model, memory, system_prompt, name, last_reply or ""); continue
+
+        if cmd == "/cost":
+            cmd_cost(); continue
+
         if cmd and cmd.startswith("/"):
             fail(f"Unknown command: {cmd}  —  type /help"); continue
 
@@ -917,12 +1237,17 @@ def main():
         print_you(user_input)
 
         try:
-            raw_reply = stream_and_render(client, messages, current_model, name)
+            raw_reply, client, current_model, new_prov = stream_with_fallback(
+                client, messages, current_model, name, get_available_providers(), get_provider()
+            )
+            if new_prov != get_provider():
+                draw_header(current_model, turns)
         except Exception as e:
             fail(str(e)); memory._history.pop(); continue
 
         memory._history[-1] = {"role": "user", "content": user_input}
         memory.add("assistant", raw_reply)
+        prev_reply = last_reply
         last_reply = raw_reply
         turns += 1
         print()
