@@ -4,7 +4,8 @@
     "The USER is familiar with the concept of truthy and falsy values in JavaScript.",
     "The USER is able to write JavaScript code, as shown by the examples provided.",
     "The USER is able to read and understand JavaScript code, as shown by their ability to ask questions about it.",
-    "The USER is able to write in Uzbek, as evidenced by the use of the phrase \"Natijani taxmin qiling\"."
+    "The USER is able to write in Uzbek, as evidenced by the use of the phrase \"Natijani taxmin qiling\".",
+    "The user wants the assistant to respond with \"Nah, I'd win\" when asked if it will lose."
   ],
   "persona_override": {}
 }

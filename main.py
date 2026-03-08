@@ -14,7 +14,7 @@ import webbrowser
 import urllib.parse
 from datetime import datetime
 
-from src.chat.hf_client import get_client, get_models, get_provider
+from src.chat.hf_client import get_client, get_models, get_provider, set_provider, get_available_providers
 from src.memory.short_term import ShortTermMemory
 from src.memory.longterm import (
     get_facts, add_fact, remove_fact, clear_facts, build_memory_block,
@@ -200,39 +200,81 @@ def make_system_prompt(persona: dict, override: dict = None) -> str:
 
 
 # ── Model picker ──────────────────────────────────────────────
-def pick_model(cur: str) -> str:
-    models = get_models()
-    provider = get_provider()
-    print(f"\n  {B}{WH}Available models{R}  {DG}({provider}){R}\n")
-    for i, m in enumerate(models):
-        dot    = f"{GN}●{R}" if m == cur else f"{DG}○{R}"
-        active = f"  {MU}active{R}" if m == cur else ""
-        print(f"  {dot}  {GR}{i+1}.{R}  {WH}{m.split('/')[-1]}{R}{active}")
+PROVIDER_LABELS = {
+    "gemini":      ("Gemini",      "Google Gemini — smart, 1M context"),
+    "groq":        ("Groq",        "Groq — fastest, Llama/Qwen/GPT-OSS"),
+    "openrouter":  ("OpenRouter",  "30+ free models — DeepSeek R1, Llama 4, Qwen3"),
+    "mistral":     ("Mistral",     "Mistral free tier — great for coding"),
+    "huggingface": ("HuggingFace", "HuggingFace — free tier, rate limited"),
+}
+
+def pick_model(cur_model: str) -> tuple:
+    """Returns (new_model, new_provider). Shows provider picker first, then models."""
+    available = get_available_providers()
+    if not available:
+        warn("No API keys found in .env"); return cur_model, get_provider()
+
+    cur_provider = get_provider()
+
+    # ── Step 1: pick provider ─────────────────────────────────
+    print(f"\n  {B}{WH}Choose provider{R}\n")
+    for i, p in enumerate(available):
+        label, desc = PROVIDER_LABELS.get(p, (p, ""))
+        dot    = f"{GN}●{R}" if p == cur_provider else f"{DG}○{R}"
+        active = f"  {MU}active{R}" if p == cur_provider else ""
+        print(f"  {dot}  {GR}{i+1}.{R}  {WH}{label}{R}  {DG}{desc}{R}{active}")
     print()
+
     try:
         raw = input(f"  {BL}{B}›{R}  ").strip()
         if not raw: raise ValueError
-        # Try number first
         try:
             idx = int(raw) - 1
-            if 0 <= idx < len(models): return models[idx]
+            if 0 <= idx < len(available):
+                chosen_provider = available[idx]
+            else:
+                warn("Invalid choice."); return cur_model, cur_provider
+        except ValueError:
+            frag = raw.lower()
+            matches = [p for p in available if frag in p.lower()]
+            if len(matches) == 1: chosen_provider = matches[0]
+            else: warn("No match."); return cur_model, cur_provider
+    except (KeyboardInterrupt, EOFError):
+        warn("Keeping current provider."); return cur_model, cur_provider
+
+    # Switch provider
+    if chosen_provider != cur_provider:
+        set_provider(chosen_provider)
+
+    # ── Step 2: pick model ────────────────────────────────────
+    sp = Spinner("loading models"); sp.start()
+    models = get_models(chosen_provider)
+    sp.stop()
+
+    print(f"\n  {B}{WH}Available models{R}  {DG}({PROVIDER_LABELS[chosen_provider][0]}){R}\n")
+    default_model = models[0] if models else cur_model
+    for i, m in enumerate(models):
+        dot    = f"{GN}●{R}" if m == cur_model and chosen_provider == cur_provider else f"{DG}○{R}"
+        active = f"  {MU}active{R}" if m == cur_model and chosen_provider == cur_provider else ""
+        print(f"  {dot}  {GR}{i+1}.{R}  {WH}{m.split('/')[-1]}{R}{active}")
+    print()
+
+    try:
+        raw = input(f"  {BL}{B}›{R}  ").strip()
+        if not raw: return default_model, chosen_provider
+        try:
+            idx = int(raw) - 1
+            if 0 <= idx < len(models): return models[idx], chosen_provider
         except ValueError:
             pass
-        # Try name fragment match (case-insensitive)
-        frag = raw.lower()
+        frag    = raw.lower()
         matches = [m for m in models if frag in m.lower()]
-        if len(matches) == 1:
-            return matches[0]
-        elif len(matches) > 1:
-            warn(f"Ambiguous — matched {len(matches)} models. Be more specific.")
-            return cur
-        else:
-            warn(f"No model matching '{raw}'.")
-            return cur
+        if len(matches) == 1:   return matches[0], chosen_provider
+        elif len(matches) > 1:  warn(f"Ambiguous."); return default_model, chosen_provider
+        else:                   warn(f"No model matching '{raw}'."); return default_model, chosen_provider
     except (KeyboardInterrupt, EOFError):
         pass
-    warn("Keeping current model.")
-    return cur
+    return default_model, chosen_provider
 
 
 # ── Multi-line input ──────────────────────────────────────────
@@ -549,7 +591,7 @@ def main():
     memory           = ShortTermMemory(max_turns=20)
     client           = get_client()
     name             = persona_override.get("name") or persona.get("name", "Lumi")
-    current_model    = get_models()[0]
+    current_model    = get_models(get_provider())[0]
     current_theme    = load_theme_name()
     multiline        = False
     last_msg         = None
@@ -788,10 +830,11 @@ def main():
             draw_header(current_model, turns); continue
 
         if cmd == "/model":
-            parts = user_input.split(maxsplit=1)
-            current_model = parts[1].strip() if len(parts) > 1 else pick_model(current_model)
+            new_model, new_provider = pick_model(current_model)
+            current_model = new_model
+            client = get_client()   # refresh client for new provider
             draw_header(current_model, turns)
-            ok(f"Model → {current_model.split('/')[-1]}"); continue
+            ok(f"Model → {current_model.split('/')[-1]}  ({PROVIDER_LABELS.get(new_provider, (new_provider,))[0]})"); continue
 
         if cmd == "/multi":
             multiline = not multiline
