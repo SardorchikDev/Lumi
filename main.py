@@ -153,6 +153,12 @@ def print_help():
             ("/export",           "export chat as .md file"),
             ("/find <keyword>",   "search through saved sessions"),
         ]),
+        ("Coding", [
+            ("/fix <error>",      "diagnose and fix an error message"),
+            ("/explain [file]",   "explain last reply or a file"),
+            ("/review [file]",    "code review with suggestions"),
+            ("/file <path>",      "load a file into the conversation"),
+        ]),
         ("Response style (one-shot)", [
             ("/short",            "next reply: concise"),
             ("/detailed",         "next reply: detailed"),
@@ -294,6 +300,146 @@ def silent_call(client, prompt: str, model: str, max_tokens: int = 300) -> str:
         return r.choices[0].message.content.strip()
     except Exception:
         return ""
+
+
+# ── Coding commands ───────────────────────────────────────────
+
+def _read_file(path: str) -> str:
+    """Read a file and return its contents, with size guard."""
+    import pathlib
+    p = pathlib.Path(path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"File not found: {path}")
+    size = p.stat().st_size
+    if size > 200_000:
+        raise ValueError(f"File too large ({size//1024}KB). Paste a smaller excerpt.")
+    return p.read_text(encoding="utf-8", errors="replace")
+
+
+def cmd_file(path: str, client, model: str, memory, system_prompt: str, name: str):
+    """Load a file into the conversation."""
+    try:
+        code = _read_file(path)
+    except Exception as e:
+        fail(str(e)); return None
+
+    import pathlib
+    fname = pathlib.Path(path).name
+    lines = code.count("\n") + 1
+    size  = len(code)
+
+    info(f"Loaded {fname}  {DG}({lines} lines, {size} chars){R}")
+    msg = (
+        f"I've loaded the file `{fname}` for you to look at:\n\n"
+        f"```\n{code}\n```\n\n"
+        f"Let me know what you'd like to do with it — review it, explain it, fix something, etc."
+    )
+    memory.add("user", msg)
+    messages = build_messages(system_prompt, memory.get())
+    print_you(f"[loaded file: {fname}]")
+    try:
+        raw = stream_and_render(client, messages, model, name)
+    except Exception as e:
+        fail(str(e)); memory._history.pop(); return None
+    memory._history[-1] = {"role": "user", "content": f"[loaded file: {fname}]"}
+    memory.add("assistant", raw)
+    return raw
+
+
+def cmd_fix(error: str, client, model: str, memory, system_prompt: str, name: str, last_reply: str):
+    """Diagnose and fix an error."""
+    context = f"\n\nContext from our last exchange:\n{last_reply}" if last_reply else ""
+    msg = (
+        f"I'm getting this error:\n\n```\n{error}\n```"
+        f"{context}\n\n"
+        f"Please:\n"
+        f"1. Explain what's causing it in plain English\n"
+        f"2. Show me the fix with corrected code\n"
+        f"3. If relevant, explain how to avoid it next time"
+    )
+    memory.add("user", msg)
+    messages = build_messages(system_prompt, memory.get())
+    print_you(f"fix: {error[:80]}{'...' if len(error)>80 else ''}")
+    try:
+        raw = stream_and_render(client, messages, model, name)
+    except Exception as e:
+        fail(str(e)); memory._history.pop(); return None
+    memory._history[-1] = {"role": "user", "content": f"/fix: {error[:200]}"}
+    memory.add("assistant", raw)
+    return raw
+
+
+def cmd_explain(target: str, client, model: str, memory, system_prompt: str, name: str, last_reply: str):
+    """Explain code — either a file or the last reply."""
+    if target:
+        try:
+            code = _read_file(target)
+            import pathlib
+            fname = pathlib.Path(target).name
+            subject = f"the file `{fname}`"
+            content = f"```\n{code}\n```"
+        except Exception as e:
+            fail(str(e)); return None
+    elif last_reply:
+        subject = "your last response"
+        content = last_reply
+    else:
+        warn("Nothing to explain yet. Either pass a file path or ask something first."); return None
+
+    msg = (
+        f"Please explain {subject} in detail:\n\n{content}\n\n"
+        f"Walk through it step by step. Explain what each part does, "
+        f"why it's written that way, and anything a developer should know."
+    )
+    memory.add("user", msg)
+    messages = build_messages(system_prompt, memory.get())
+    print_you(f"explain: {target or 'last reply'}")
+    try:
+        raw = stream_and_render(client, messages, model, name)
+    except Exception as e:
+        fail(str(e)); memory._history.pop(); return None
+    memory._history[-1] = {"role": "user", "content": f"/explain: {target or 'last reply'}"}
+    memory.add("assistant", raw)
+    return raw
+
+
+def cmd_review(target: str, client, model: str, memory, system_prompt: str, name: str, last_reply: str):
+    """Code review — either a file or the last reply."""
+    if target:
+        try:
+            code = _read_file(target)
+            import pathlib
+            fname = pathlib.Path(target).name
+            subject = f"the file `{fname}`"
+            content = f"```\n{code}\n```"
+        except Exception as e:
+            fail(str(e)); return None
+    elif last_reply:
+        subject = "your last code response"
+        content = last_reply
+    else:
+        warn("Nothing to review. Either pass a file path or ask for code first."); return None
+
+    msg = (
+        f"Please do a thorough code review of {subject}:\n\n{content}\n\n"
+        f"Cover:\n"
+        f"- Bugs or potential bugs\n"
+        f"- Performance issues\n"
+        f"- Security concerns\n"
+        f"- Code style and readability\n"
+        f"- What's done well\n"
+        f"- Concrete suggestions for improvement with code examples"
+    )
+    memory.add("user", msg)
+    messages = build_messages(system_prompt, memory.get())
+    print_you(f"review: {target or 'last reply'}")
+    try:
+        raw = stream_and_render(client, messages, model, name)
+    except Exception as e:
+        fail(str(e)); memory._history.pop(); return None
+    memory._history[-1] = {"role": "user", "content": f"/review: {target or 'last reply'}"}
+    memory.add("assistant", raw)
+    return raw
 
 
 # ── /find ─────────────────────────────────────────────────────
@@ -548,6 +694,36 @@ def main():
             memory._history[-1] = {"role": "user", "content": "Rewrite that differently."}
             memory.add("assistant", raw_reply)
             last_reply = raw_reply; turns += 1; print(); continue
+
+        if cmd == "/fix":
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2: warn("Usage: /fix <error message>")
+            else:
+                r = cmd_fix(parts[1].strip(), client, current_model, memory, system_prompt, name, last_reply)
+                if r: last_reply = r; turns += 1; print()
+            continue
+
+        if cmd == "/explain":
+            parts = user_input.split(maxsplit=1)
+            target = parts[1].strip() if len(parts) > 1 else ""
+            r = cmd_explain(target, client, current_model, memory, system_prompt, name, last_reply)
+            if r: last_reply = r; turns += 1; print()
+            continue
+
+        if cmd == "/review":
+            parts = user_input.split(maxsplit=1)
+            target = parts[1].strip() if len(parts) > 1 else ""
+            r = cmd_review(target, client, current_model, memory, system_prompt, name, last_reply)
+            if r: last_reply = r; turns += 1; print()
+            continue
+
+        if cmd == "/file":
+            parts = user_input.split(maxsplit=1)
+            if len(parts) < 2: warn("Usage: /file <path>")
+            else:
+                r = cmd_file(parts[1].strip(), client, current_model, memory, system_prompt, name)
+                if r: last_reply = r; turns += 1; print()
+            continue
 
         if cmd == "/find":
             parts = user_input.split(maxsplit=1)
