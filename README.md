@@ -102,7 +102,36 @@ Lumi is a terminal-based AI assistant built for developers who want maximum inte
 
 ---
 
-## Quick Start
+## Install (One Line)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SardorchikDev/lumi/main/install.sh | bash
+```
+
+That's it. The script will:
+- Clone the repo to `~/Lumi`
+- Create a Python virtual environment
+- Install all dependencies
+- Add `lumi` to your PATH
+- Create a `.env` template for your API keys
+
+After it finishes:
+```bash
+# 1. Add at least one free API key
+nano ~/Lumi/.env
+
+# 2. Reload your shell
+source ~/.bashrc   # or ~/.zshrc or ~/.config/fish/config.fish
+
+# 3. Run from anywhere
+lumi
+```
+
+> Already installed? Running the same curl again pulls the latest version automatically.
+
+---
+
+## Manual Install
 
 ```bash
 # 1. Clone
