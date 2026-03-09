@@ -5,6 +5,7 @@ load_dotenv()
 
 import os
 import sys
+import json
 import shutil
 import textwrap
 import threading
@@ -19,19 +20,26 @@ import urllib.parse
 from datetime import datetime
 
 from src.chat.hf_client import get_client, get_models, get_provider, set_provider, get_available_providers
+from src.utils.todo  import todo_add, todo_list, todo_done, todo_remove, todo_clear_done
+from src.utils.notes import note_add, note_list, note_search, note_remove, notes_to_markdown
+from src.utils.tools import (get_weather, clipboard_get, clipboard_set, read_pdf,
+                              take_screenshot, encode_image_base64, load_project, analyze_data_file)
+from src.utils.voice import record_audio, transcribe_groq, speak
+from src.utils.filesystem import is_create_request, generate_file_plan, write_file_plan, format_creation_summary
+
 from src.memory.short_term import ShortTermMemory
 from src.memory.longterm import (
     get_facts, add_fact, remove_fact, clear_facts, build_memory_block,
     get_persona_override, set_persona_override, clear_persona_override,
 )
 from src.memory.conversation_store import save, load_latest, list_sessions
-from src.prompts.builder import load_persona, build_system_prompt, build_messages
+from src.prompts.builder import load_persona, build_system_prompt, build_messages, is_coding_task, is_file_generation_task, make_system_prompt
 from src.tools.search import search, search_display
 from src.utils.markdown import render as md_render
 from src.utils.export import export_md
 from src.utils.themes import get_theme, list_themes, save_theme_name, load_theme_name
 from src.utils.history import setup as history_setup, save as history_save
-from src.utils.intelligence import detect_emotion, emotion_hint, detect_topic, should_search
+from src.utils.intelligence import detect_emotion, emotion_hint, detect_topic, should_search, is_complex_coding_task, needs_plan_first
 from src.utils.autoremember import auto_extract_facts
 
 # ── ANSI base ─────────────────────────────────────────────────
@@ -64,47 +72,88 @@ def fail(msg):                    print(f"\n  {RE}✗{R}  {GR}{textwrap.fill(str
 def info(msg):                    print(f"\n  {CY}◆{R}  {GR}{msg}{R}\n")
 def warn(msg):                    print(f"\n  {YE}!{R}  {GR}{msg}{R}\n")
 
-# ── ASCII logo ─────────────────────────────────────────────────
-LOGO_ROWS = [
-    " ██╗     ██╗   ██╗███╗   ███╗██╗",
-    " ██║     ██║   ██║████╗ ████║██║",
-    " ██║     ██║   ██║██╔████╔██║██║",
-    " ██║     ██║   ██║██║╚██╔╝██║██║",
-    " ███████╗╚██████╔╝██║ ╚═╝ ██║██║",
-    " ╚══════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝",
+# ── Visual constants ──────────────────────────────────────────
+LOGO = [
+    "    ██╗      ██╗   ██╗  ███╗   ███╗  ██╗   ",
+    "    ██║      ██║   ██║  ████╗ ████║  ██║   ",
+    "    ██║      ██║   ██║  ██╔████╔██║  ██║   ",
+    "    ██║      ██║   ██║  ██║╚██╔╝██║  ██║   ",
+    "    ███████╗ ╚██████╔╝  ██║ ╚═╝ ██║  ██║   ",
+    "    ╚══════╝  ╚═════╝   ╚═╝     ╚═╝  ╚═╝   ",
 ]
+LOGO_W = 46
 
-def draw_header(model: str, turns: int = 0):
+PROV_COL = {
+    "gemini":      "\033[38;5;75m",
+    "groq":        "\033[38;5;215m",
+    "openrouter":  "\033[38;5;141m",
+    "mistral":     "\033[38;5;210m",
+    "huggingface": "\033[38;5;179m",
+    "ollama":      "\033[38;5;114m",
+}
+
+def _pcolor(p: str) -> str:
+    return PROV_COL.get(p.lower(), DG)
+
+def _vlen(s: str) -> int:
+    """Visible length — strips ANSI escape codes."""
+    import re
+    return len(re.sub(r"\033\[[0-9;]*m", "", s))
+
+def _center(s: str, width: int, fill: str = " ") -> str:
+    """Center string accounting for invisible ANSI codes."""
+    vis = _vlen(s)
+    pad = max(width - vis, 0)
+    return fill * (pad // 2) + s + fill * (pad - pad // 2)
+
+def _rpad(s: str, width: int) -> str:
+    """Right-pad accounting for ANSI codes."""
+    return s + " " * max(width - _vlen(s), 0)
+
+
+# ── Header ─────────────────────────────────────────────────────
+def draw_header(model: str, turns: int = 0, provider: str = ""):
     clear()
-    pad = " " * max((W() - 34) // 2, 0)
+    w    = W()
+    pad  = " " * max((w - LOGO_W) // 2, 2)
+    grad = [C1, C1, C2, C2, C3, C3]
+
     print()
-    for row, color in zip(LOGO_ROWS, [C1, C1, C2, C2, C3, C3]):
-        print(f"{pad}{color}{B}{row}{R}")
-    print()
-    sub = "A R T I F I C I A L   I N T E L L I G E N C E"
-    print(f"{' ' * max((W()-len(sub))//2, 0)}{DG}{sub}{R}")
-    print()
-    m       = model.split("/")[-1]
-    count   = f"  {DG}·{R}  {DG}{turns} turns{R}" if turns else ""
-    raw_len = len(f"model › {m}") + (len(f"  ·  {turns} turns") if turns else 0)
-    print(f"{' ' * max((W()-raw_len)//2, 0)}{DG}model › {GR}{m}{R}{count}")
-    print()
-    div()
+    for row, col in zip(LOGO, grad):
+        print(f"{pad}{col}{B}{row}{R}")
     print()
 
+    # Subtle tagline — spaced letters, centered
+    tag = "A I   A S S I S T A N T"
+    print(_center(f"{DG}{tag}{R}", w))
+    print()
 
-# ── Spinner ───────────────────────────────────────────────────
+    # Status line — clean, no boxes, just text
+    m     = model.split("/")[-1]
+    pcol  = _pcolor(provider)
+    pname = provider.capitalize() if provider else "—"
+
+    left  = f"  {pcol}◆ {pname}{R}  {DG}│{R}  {WH}{m}{R}"
+    right = f"{DG}{turns} turns  {R}" if turns else ""
+    gap   = max(w - _vlen(left) - _vlen(right) - 2, 1)
+    print(f"{left}{' ' * gap}{right}")
+
+    # Single clean separator
+    print(f"\n  {DG}{'▁' * (w - 4)}{R}\n")
+
+
+# ── Spinner ─────────────────────────────────────────────────────
 class Spinner:
-    FRAMES = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+    FRAMES = ["⠁","⠂","⠄","⡀","⢀","⠠","⠐","⠈"]
 
-    def __init__(self, label="thinking"):
-        self._label = label
+    def __init__(self, label: str = "thinking"):
+        self._label   = label
         self._running = False
-        self._thread = None
+        self._thread  = None
 
     def start(self):
         self._running = True
-        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread  = threading.Thread(target=self._spin, daemon=True)
         self._thread.start()
 
     def _spin(self):
@@ -112,7 +161,7 @@ class Spinner:
             if not self._running: break
             sys.stdout.write(f"\r  {PU}{f}{R}  {DG}{self._label}{R}  ")
             sys.stdout.flush()
-            time.sleep(0.08)
+            time.sleep(0.09)
 
     def stop(self):
         self._running = False
@@ -121,83 +170,133 @@ class Spinner:
         sys.stdout.flush()
 
 
-# ── Print helpers ─────────────────────────────────────────────
+# ── Message display ─────────────────────────────────────────────
 def print_you(text: str):
-    w       = W() - 12
-    wrapped = textwrap.wrap(text, width=w) if len(text) > w else [text]
+    time_str = ts()
+    # Reserve space for "  you  " prefix (7) and "  HH:MM" suffix (7)
+    wrap_w  = max(W() - 16, 20)
+    wrapped = textwrap.wrap(text, width=wrap_w) or [text]
     print()
-    print(f"  {GR}{D}you{R}  {WH}{wrapped[0]}{R}  {MU}{ts()}{R}")
+    first = wrapped[0]
+    gap   = max(W() - 7 - len(first) - len(time_str) - 2, 1)
+    print(f"  {DG}you{R}  {WH}{first}{R}{' ' * gap}{DG}{time_str}{R}")
     for line in wrapped[1:]:
-        print(f"        {WH}{line}{R}")
+        print(f"       {WH}{line}{R}")
 
-def print_lumi_label(name="Lumi"):
-    print(f"\n  {PU}{B}✦ {name}{R}  {MU}{ts()}{R}\n")
+def print_lumi_label(name: str = "Lumi"):
+    time_str = ts()
+    gap      = max(W() - len(name) - len(time_str) - 7, 1)
+    print(f"\n  {PU}{B}✦{R}  {C1}{B}{name}{R}{' ' * gap}{DG}{time_str}{R}\n")
 
 def print_welcome(name: str):
-    print(f"  {PU}✦{R}  {GR}Hi! I'm {name}. Type {WH}/help{GR} for commands.{R}\n")
+    print(f"\n  {PU}✦  {WH}{B}{name}{R}  {DG}is online  —  {R}{DG}/help{R}{DG} for commands{R}\n")
+
+def div(label: str = ""):
+    w = W()
+    if label:
+        bar   = f"  {DG}── {WH}{label}{R}{DG} ──{R}"
+        trail = max(w - _vlen(bar) - 2, 0)
+        print(f"\n{bar}{DG}{'─' * trail}{R}\n")
+    else:
+        print(f"\n  {DG}{'─' * (w - 4)}{R}\n")
+
+def ok(msg: str, icon: str = "✓", c=None):
+    print(f"\n  {c or GN}{icon}  {GR}{msg}{R}\n")
+
+def fail(msg: str):
+    wrapped = textwrap.fill(str(msg), W() - 8)
+    print(f"\n  {RE}✗  {GR}{wrapped}{R}\n")
+
+def info(msg: str):
+    print(f"\n  {CY}◆  {GR}{msg}{R}\n")
+
+def warn(msg: str):
+    print(f"\n  {YE}▲  {GR}{msg}{R}\n")
 
 
-# ── Help ──────────────────────────────────────────────────────
 def print_help():
-    print(); div()
-    print(f"\n  {B}{WH}Commands{R}\n")
-    sections = [
-        ("Chat", [
-            ("/help",             "show this"),
-            ("/clear",            "reset conversation memory"),
-            ("/undo",             "remove last exchange"),
-            ("/retry",            "resend last message"),
-            ("/more",             "expand on the last reply"),
-            ("/tl;dr",            "one-line summary of last reply"),
-            ("/rewrite",          "rewrite last reply differently"),
-            ("/summarize",        "summarize the whole chat"),
-            ("/save",             "save conversation"),
-            ("/load",             "load last saved conversation"),
-            ("/sessions",         "list saved sessions"),
-            ("/export",           "export chat as .md file"),
-            ("/find <keyword>",   "search through saved sessions"),
-        ]),
-        ("Coding", [
-            ("/fix <e>",          "diagnose and fix an error"),
-            ("/explain [file]",       "explain last reply or a file"),
-            ("/review [file]",        "full code review"),
-            ("/file <path>",          "load a file into conversation"),
-            ("/edit <path>",          "edit a file — Lumi writes changes back"),
-            ("/run",                  "execute code from last reply"),
-            ("/diff",                 "diff previous vs latest reply"),
-            ("/git [status|commit|log]", "git helper"),
-        ]),
-        ("Response style (one-shot)", [
-            ("/short",            "next reply: concise"),
-            ("/detailed",         "next reply: detailed"),
-            ("/bullets",          "next reply: bullet points"),
-        ]),
-        ("Web & tools", [
-            ("/search <query>",   "search the web"),
-            ("/imagine <prompt>", "generate an image (opens browser)"),
-            ("/translate <lang>", "translate last reply"),
-        ]),
-        ("Memory & persona", [
-            ("/remember <fact>",  "save a fact to long-term memory"),
-            ("/memory",           "view long-term memory"),
-            ("/forget",           "manage long-term memory"),
-            ("/persona",          "change Lumi's name/tone/traits"),
-        ]),
-        ("Settings", [
-            ("/theme",            "switch color theme"),
-            ("/model",            "switch provider + model"),
-            ("/multi",            "toggle multi-line input"),
-            ("/cost",             "session token usage"),
-            ("/quit",             "save and exit"),
-        ]),
-    ]
-    for section, cmds in sections:
-        print(f"  {DG}{section}{R}")
-        for cmd, desc in cmds:
-            print(f"  {CY}{cmd:<22}{R}  {GR}{desc}{R}")
-        print()
-    print(f"  {DG}tip{R}  {GR}run with {WH}--debug{GR} for raw API logs{R}")
-    print(); div(); print()
+    w    = W()
+    line = f"  {DG}{'─' * (w - 4)}{R}"
+
+    def section(title):
+        print(f"\n  {C2}{B}{title}{R}")
+
+    def cmd(name, desc):
+        print(f"  {CY}  {name:<28}{R}{DG}{desc}{R}")
+
+    print(f"\n{line}")
+    print(f"  {PU}{B}  ✦  LUMI COMMANDS{R}")
+    print(line)
+
+    section("CHAT")
+    cmd("/help",                    "show this")
+    cmd("/clear",                   "reset conversation")
+    cmd("/undo · /retry",           "remove last turn or resend it")
+    cmd("/more · /tl;dr",          "expand or summarize last reply")
+    cmd("/rewrite · /summarize",    "rewrite reply or summarize chat")
+    cmd("/short · /detailed · /bullets", "one-shot reply format")
+    cmd("/multi",                   "toggle multi-line input")
+
+    section("CODE")
+    cmd("/edit <path>",             "edit a file — AI writes, shows diff, confirms")
+    cmd("/file <path>",             "load file as context")
+    cmd("/project <dir>",           "load entire codebase as context")
+    cmd("/fix <error>",             "diagnose and fix an error")
+    cmd("/review [file]",           "full code review")
+    cmd("/explain [file]",          "explain code or last reply")
+    cmd("/comment [file]",          "add docstrings and inline comments")
+    cmd("/run",                     "run code block from last reply")
+    cmd("/diff",                    "diff previous reply vs latest")
+    cmd("/git status|commit|log",   "git helpers")
+    cmd("/github issues",           "pull GitHub issues (needs GITHUB_TOKEN)")
+
+    section("FILES & DATA")
+    cmd("/pdf <path>",              "read and analyze a PDF")
+    cmd("/data <path>",             "analyze CSV or JSON file")
+    cmd("/screenshot",              "capture screen → AI vision analysis")
+    cmd("/paste · /copy",           "clipboard into chat / copy last reply out")
+
+    section("VOICE")
+    cmd("/listen [seconds]",        "record mic → Groq Whisper → send to Lumi")
+    cmd("/speak",                   "read last reply aloud (espeak / say)")
+
+    section("PRODUCTIVITY")
+    cmd("/todo add|list|done|remove","persistent task tracker")
+    cmd("/note [#tag] <text>",      "timestamped notes — list · search · export")
+    cmd("/standup",                 "daily standup from git log + todos")
+    cmd("/timer <25m|5s|1h>",       "countdown timer with desktop notification")
+    cmd("/draft <description>",     "draft an email, Slack message, or text")
+    cmd("/weather [city]",          "current weather (wttr.in — no key needed)")
+
+    section("WEB & TOOLS")
+    cmd("/search <query>",          "explicit web search")
+    cmd("/translate <language>",    "translate last reply")
+    cmd("/imagine <prompt>",        "generate image (opens browser)")
+    cmd("/lang <language>",         "language learning mode — /lang off to stop")
+    cmd("/compact",                 "toggle minimal output")
+
+    section("MEMORY & PERSONA")
+    cmd("/remember <fact>",         "save fact to long-term memory")
+    cmd("/memory",                  "view all saved memories")
+    cmd("/forget",                  "delete memories interactively")
+    cmd("/persona",                 "edit Lumi's name, tone, and traits")
+
+    section("SESSIONS")
+    cmd("/save · /load",            "save or load a conversation")
+    cmd("/sessions",                "list all saved sessions")
+    cmd("/export",                  "export current session as markdown")
+    cmd("/find <keyword>",          "search through past sessions")
+
+    section("SETTINGS")
+    cmd("/model",                   "switch provider and model (2-step picker)")
+    cmd("/theme",                   "switch color theme (5 themes)")
+    cmd("/cost",                    "show token usage this session")
+    cmd("/quit",                    "save and exit")
+
+    print(f"\n{line}")
+    print(f"  {DG}  tip  →  just type naturally. Lumi auto-detects coding tasks and file creation.{R}")
+    print(f"{line}\n")
+
 
 
 # ── System prompt builder ─────────────────────────────────────
@@ -215,6 +314,7 @@ PROVIDER_LABELS = {
     "openrouter":  ("OpenRouter",  "30+ free models — DeepSeek R1, Llama 4, Qwen3"),
     "mistral":     ("Mistral",     "Mistral free tier — great for coding"),
     "huggingface": ("HuggingFace", "HuggingFace — free tier, rate limited"),
+    "ollama":      ("Ollama",      "Local Ollama — fully offline, no API limits"),
 }
 
 def pick_model(cur_model: str) -> tuple:
@@ -235,7 +335,7 @@ def pick_model(cur_model: str) -> tuple:
     print()
 
     try:
-        raw = input(f"  {BL}{B}›{R}  ").strip()
+        raw = input(f"  {PU}›{R}  ").strip()
         if not raw: raise ValueError
         try:
             idx = int(raw) - 1
@@ -269,7 +369,7 @@ def pick_model(cur_model: str) -> tuple:
     print()
 
     try:
-        raw = input(f"  {BL}{B}›{R}  ").strip()
+        raw = input(f"  {PU}›{R}  ").strip()
         if not raw: return default_model, chosen_provider
         try:
             idx = int(raw) - 1
@@ -320,25 +420,7 @@ def cmd_cost():
 
 # ── Provider health check ─────────────────────────────────────
 def health_check(providers: list):
-    """Ping each provider silently at startup and warn if any are down."""
-    import urllib.request
-    checks = {
-        "gemini":     ("https://generativelanguage.googleapis.com", os.getenv("GEMINI_API_KEY")),
-        "groq":       ("https://api.groq.com",                      os.getenv("GROQ_API_KEY")),
-        "openrouter": ("https://openrouter.ai",                     os.getenv("OPENROUTER_API_KEY")),
-        "mistral":    ("https://api.mistral.ai",                    os.getenv("MISTRAL_API_KEY")),
-        "huggingface":("https://huggingface.co",                    os.getenv("HF_TOKEN")),
-    }
-    dead = []
-    for p in providers:
-        url, key = checks.get(p, (None, None))
-        if not url or not key: continue
-        try:
-            urllib.request.urlopen(url, timeout=3)
-        except Exception:
-            dead.append(p)
-    if dead:
-        warn(f"Can't reach: {', '.join(dead)} — check your connection or key")
+    pass  # removed — was causing false positives on startup
 
 
 def stream_and_render(client, messages: list, model: str, name: str = "Lumi") -> str:
@@ -439,6 +521,10 @@ def cmd_file(path: str, client, model: str, memory, system_prompt: str, name: st
 
 def cmd_fix(error: str, client, model: str, memory, system_prompt: str, name: str, last_reply: str):
     """Diagnose and fix an error."""
+    # Inject elite coding prompt for this command
+    from src.prompts.builder import make_system_prompt as _msp
+    from src.memory.longterm import get_persona_override
+    system_prompt = _msp(load_persona(), coding_mode=True)
     context = f"\n\nContext from our last exchange:\n{last_reply}" if last_reply else ""
     msg = (
         f"I'm getting this error:\n\n```\n{error}\n```"
@@ -496,6 +582,10 @@ def cmd_explain(target: str, client, model: str, memory, system_prompt: str, nam
 
 def cmd_review(target: str, client, model: str, memory, system_prompt: str, name: str, last_reply: str):
     """Code review — either a file or the last reply."""
+    # Inject elite coding prompt for this command
+    from src.prompts.builder import make_system_prompt as _msp
+    from src.memory.longterm import get_persona_override
+    system_prompt = _msp(load_persona(), coding_mode=True)
     if target:
         try:
             code = _read_file(target)
@@ -588,7 +678,7 @@ def cmd_forget():
     cmd_memory()
     print(f"  {DG}Enter a number to delete, {GR}all{DG} to clear, or Enter to cancel.{R}\n")
     try:
-        val = input(f"  {BL}{B}›{R}  ").strip()
+        val = input(f"  {PU}›{R}  ").strip()
     except (KeyboardInterrupt, EOFError): return
     if val.lower() == "all":
         clear_facts(); ok("All long-term memory cleared.")
@@ -603,22 +693,33 @@ def cmd_forget():
 # ── /theme ────────────────────────────────────────────────────
 def cmd_theme(current: str) -> str:
     themes = list_themes()
-    print(f"\n  {B}{WH}Themes{R}\n")
+    SW = {
+        "tokyo":      ("\033[38;5;141m","\033[38;5;75m", "\033[38;5;117m","\033[38;5;114m"),
+        "dracula":    ("\033[38;5;141m","\033[38;5;212m","\033[38;5;84m", "\033[38;5;228m"),
+        "nord":       ("\033[38;5;153m","\033[38;5;110m","\033[38;5;108m","\033[38;5;159m"),
+        "gruvbox":    ("\033[38;5;214m","\033[38;5;175m","\033[38;5;142m","\033[38;5;108m"),
+        "catppuccin": ("\033[38;5;189m","\033[38;5;183m","\033[38;5;149m","\033[38;5;152m"),
+    }
+    div("THEME")
     for i, t in enumerate(themes):
-        dot    = f"{GN}●{R}" if t == current else f"{DG}○{R}"
         tname  = get_theme(t)["name"]
-        active = f"  {MU}active{R}" if t == current else ""
-        print(f"  {dot}  {GR}{i+1}.{R}  {WH}{tname}{R}{active}")
+        cols   = SW.get(t, (WH, CY, GN, BL))
+        bar    = "".join(f"{c}▐▌{R}" for c in cols)
+        marker = f"{GN}●{R}" if t == current else f"{DG}○{R}"
+        tag    = f"  {GN}← current{R}" if t == current else ""
+        print(f"  {marker}  {WH}{i+1}{R}  {DG}│{R}  {WH}{tname:<18}{R}  {bar}{tag}")
     print()
+    sys.stdout.write(f"  {PU}›{R}  ")
+    sys.stdout.flush()
     try:
-        idx = int(input(f"  {BL}{B}›{R}  ").strip()) - 1
+        idx = int(input().strip()) - 1
         if 0 <= idx < len(themes):
             chosen = themes[idx]
             save_theme_name(chosen)
             reload_theme(chosen)
+            ok(f"Theme — {get_theme(chosen)['name']}")
             return chosen
     except (ValueError, KeyboardInterrupt): pass
-    warn("Keeping current theme.")
     return current
 
 
@@ -688,6 +789,10 @@ def cmd_run(last_reply: str):
 # ── /edit — edit a file using Lumi's last reply ───────────────
 def cmd_edit(path: str, client, model: str, memory, system_prompt: str, name: str, last_reply: str = ""):
     """Load a file, send it to Lumi for editing, write result back."""
+    # Inject elite coding prompt for this command
+    from src.prompts.builder import make_system_prompt as _msp
+    from src.memory.longterm import get_persona_override
+    system_prompt = _msp(load_persona(), coding_mode=True)
     path = path.strip().strip("'\"")
     if not os.path.isabs(path):
         path = os.path.join(os.getcwd(), path)
@@ -702,7 +807,7 @@ def cmd_edit(path: str, client, model: str, memory, system_prompt: str, name: st
     print(f"\n  {B}{WH}File loaded:{R}  {GR}{path}{R}  {DG}({len(original.splitlines())} lines){R}")
     print(f"\n  {DG}What should Lumi do to this file?{R}")
     try:
-        instruction = input(f"  {BL}{B}›{R}  ").strip()
+        instruction = input(f"  {PU}›{R}  ").strip()
         if not instruction: warn("No instruction given."); return last_reply
     except (KeyboardInterrupt, EOFError):
         warn("Cancelled."); return last_reply
@@ -862,6 +967,424 @@ def stream_with_fallback(client, messages: list, model: str, name: str,
         return reply, new_client, new_model, next_p
 
 
+
+# ── /todo ─────────────────────────────────────────────────────
+def cmd_todo(args: str):
+    parts = args.strip().split(maxsplit=1) if args.strip() else []
+    sub   = parts[0].lower() if parts else "list"
+    rest  = parts[1] if len(parts) > 1 else ""
+    if sub == "list":
+        todos = todo_list()
+        if not todos: info("No todos yet. Use /todo add <task>"); return
+        print(f"\n  {B}{WH}Todos{R}\n")
+        for t in todos:
+            check = f"{GN}✓{R}" if t["done"] else f"{DG}○{R}"
+            style = DG if t["done"] else WH
+            print(f"  {check}  {GR}#{t['id']}{R}  {style}{t['text']}{R}  {DG}{t['created']}{R}")
+        print()
+    elif sub == "done":
+        try:
+            idx = int(rest)
+            if todo_done(idx): ok(f"Marked #{idx} as done")
+            else: warn(f"No todo #{idx}")
+        except ValueError:
+            warn("Usage: /todo done <id>")
+    elif sub == "remove":
+        try:
+            idx = int(rest)
+            if todo_remove(idx): ok(f"Removed #{idx}")
+            else: warn(f"No todo #{idx}")
+        except ValueError:
+            warn("Usage: /todo remove <id>")
+    elif sub == "clear":
+        todo_clear_done(); ok("Cleared all completed todos")
+    else:
+        text = rest or args.strip()
+        if text:
+            item = todo_add(text); ok(f"#{item['id']}  {item['text']}")
+        else:
+            warn("Usage: /todo [add <task>|list|done <id>|remove <id>|clear]")
+
+
+# ── /note ─────────────────────────────────────────────────────
+def cmd_note(args: str):
+    parts = args.strip().split(maxsplit=1) if args.strip() else []
+    sub   = parts[0].lower() if parts else "list"
+    rest  = parts[1] if len(parts) > 1 else ""
+    if sub == "list":
+        notes = note_list()
+        if not notes: info("No notes yet. Use /note <text>"); return
+        print(f"\n  {B}{WH}Notes{R}  {DG}({len(notes)}){R}\n")
+        for n in notes[-20:]:
+            tag = f"  {CY}#{n['tag']}{R}" if n.get("tag") else ""
+            print(f"  {GR}#{n['id']}{R}  {DG}{n['created']}{R}{tag}")
+            print(f"     {WH}{n['text'][:120]}{R}\n")
+    elif sub == "search":
+        if not rest: warn("Usage: /note search <query>"); return
+        results = note_search(rest)
+        if not results: info(f"No notes matching '{rest}'"); return
+        print(f"\n  {B}{WH}Search results{R}  {DG}({len(results)}){R}\n")
+        for n in results:
+            print(f"  {GR}#{n['id']}{R}  {DG}{n['created']}{R}  {WH}{n['text'][:100]}{R}\n")
+    elif sub == "remove":
+        try:
+            idx = int(rest)
+            if note_remove(idx): ok(f"Removed note #{idx}")
+            else: warn(f"No note #{idx}")
+        except ValueError:
+            warn("Usage: /note remove <id>")
+    elif sub == "export":
+        md   = notes_to_markdown()
+        path = os.path.expanduser("~/lumi_notes.md")
+        open(path, "w").write(md)
+        ok(f"Exported to {path}")
+    else:
+        import re as _re
+        text = args.strip()
+        tag  = ""
+        m = _re.match(r"#(\w+)\s+(.*)", text)
+        if m: tag, text = m.group(1), m.group(2)
+        if text:
+            item = note_add(text, tag)
+            ok(f"Note #{item['id']} saved{f'  #{tag}' if tag else ''}")
+        else:
+            warn("Usage: /note <text>  or  /note #tag <text>  or  /note list|search|remove|export")
+
+
+# ── /weather ──────────────────────────────────────────────────
+def cmd_weather(location: str = ""):
+    sp = Spinner("fetching weather"); sp.start()
+    try:
+        result = get_weather(location or "Tashkent")
+    finally:
+        sp.stop()
+    print(f"\n  {CY}◆{R}  {WH}{result}{R}\n")
+
+
+# ── /listen — voice input via Groq Whisper ───────────────────
+def cmd_listen(seconds: int = 5) -> str:
+    if not os.getenv("GROQ_API_KEY"):
+        warn("Voice input needs GROQ_API_KEY in .env"); return ""
+    info(f"Recording for {seconds}s... speak now")
+    path = record_audio(seconds)
+    if not path:
+        fail("No recording tool found. Install: arecord (Linux) or sox"); return ""
+    sp = Spinner("transcribing"); sp.start()
+    text = transcribe_groq(path)
+    sp.stop()
+    try: os.unlink(path)
+    except Exception: pass
+    if text: ok(f"Heard: {text}")
+    else:    warn("Could not transcribe audio")
+    return text
+
+
+# ── /speak — voice output ─────────────────────────────────────
+def cmd_speak(text: str):
+    if not text: warn("Nothing to speak."); return
+    if not speak(text):
+        warn("No TTS found. Install: espeak-ng (Linux) or pyttsx3 (pip install pyttsx3)")
+
+
+# ── /paste — clipboard input ──────────────────────────────────
+def cmd_paste() -> str:
+    text = clipboard_get()
+    if not text: warn("Clipboard is empty or not accessible"); return ""
+    ok(f"Pasted {len(text)} chars from clipboard")
+    return text
+
+
+# ── /copy — copy last reply to clipboard ─────────────────────
+def cmd_copy(text: str):
+    if not text: warn("Nothing to copy."); return
+    if clipboard_set(text): ok("Copied to clipboard")
+    else: warn("Clipboard not accessible. Install: xclip (Linux) or wl-clipboard (Wayland)")
+
+
+# ── /screenshot — capture screen + analyze ───────────────────
+def cmd_screenshot(client, model: str, memory, system_prompt: str, name: str):
+    info("Taking screenshot...")
+    path = take_screenshot()
+    if not path:
+        fail("No screenshot tool found. Install: scrot or ImageMagick (import)"); return
+    ok(f"Screenshot saved: {path}")
+    print(f"\n  {DG}What should Lumi analyze?{R}  ", end="")
+    try:
+        question = input().strip() or "Describe what you see in this screenshot."
+    except (KeyboardInterrupt, EOFError):
+        return
+    try:
+        import base64 as _b64
+        from openai import OpenAI as _OAI
+        img_b64 = encode_image_base64(path)
+        vision_client = _OAI(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            api_key=os.getenv("GEMINI_API_KEY", "")
+        )
+        resp = vision_client.chat.completions.create(
+            model="gemini-2.0-flash",
+            messages=[{"role": "user", "content": [
+                {"type": "text", "text": question},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}}
+            ]}],
+            max_tokens=1024
+        )
+        reply = resp.choices[0].message.content.strip()
+        print_lumi_label(name)
+        from src.utils.markdown import render as md_render
+        indented = "\n".join("  " + l for l in md_render(reply).split("\n"))
+        print(indented)
+        memory.add("user", f"[Screenshot]: {question}")
+        memory.add("assistant", reply)
+    except Exception as e:
+        fail(f"Vision analysis failed: {e}")
+    finally:
+        try: os.unlink(path)
+        except Exception: pass
+
+
+# ── /project — load directory as context ─────────────────────
+def cmd_project(path: str, memory):
+    if not path: warn("Usage: /project <directory>"); return
+    sp = Spinner("loading project"); sp.start()
+    context = load_project(path)
+    sp.stop()
+    if context.startswith("Not a directory"):
+        fail(context); return
+    memory.add("user", f"[Project loaded: {path}]\n\n{context}")
+    memory.add("assistant", "Got it. I have your project context. Ask me anything about the codebase.")
+    ok(f"Project loaded: {path}")
+    info("Ask me anything about your codebase")
+
+
+# ── /pdf — read PDF file ──────────────────────────────────────
+def cmd_pdf(path: str, memory):
+    path = path.strip().strip("'\"")
+    if not path: warn("Usage: /pdf <path>"); return
+    sp = Spinner("reading PDF"); sp.start()
+    text = read_pdf(path)
+    sp.stop()
+    if text.startswith("File not found") or text.startswith("Could not"):
+        fail(text); return
+    fname = os.path.basename(path)
+    memory.add("user", f"[PDF: {fname}]\n\n{text}")
+    memory.add("assistant", f"I've read {fname}. Ask me anything about it.")
+    ok(f"PDF loaded: {fname}  ({len(text.split())} words)")
+    info("Ask me anything about the document")
+
+
+# ── /standup ─────────────────────────────────────────────────
+def cmd_standup(client, model: str, memory, system_prompt: str, name: str):
+    import subprocess as _sp
+    r = _sp.run(["git", "log", "--oneline", "--since=24 hours ago"],
+                capture_output=True, text=True)
+    git_log  = r.stdout.strip() or "No commits in the last 24 hours"
+    todos    = [t for t in todo_list() if not t["done"]]
+    todo_txt = "\n".join(f"- {t['text']}" for t in todos[:10]) or "No pending todos"
+    prompt = (
+        "Generate a short daily standup. Format: Yesterday / Today / Blockers. "
+        "Keep it concise and realistic.\n\n"
+        f"Recent commits:\n{git_log}\n\nPending todos:\n{todo_txt}"
+    )
+    memory.add("user", prompt)
+    messages = build_messages(system_prompt, memory.get())
+    print(f"\n  {B}{WH}Daily Standup{R}\n")
+    try:
+        reply = stream_and_render(client, messages, model, name)
+        memory._history[-1] = {"role": "user", "content": "[standup]"}
+        memory.add("assistant", reply)
+    except Exception as e:
+        fail(str(e)); memory._history.pop()
+
+
+# ── /timer ────────────────────────────────────────────────────
+def cmd_timer(args: str):
+    import re as _re
+    m = _re.match(r"(\d+)\s*(m|min|s|sec|h|hr)?", args.strip().lower())
+    if not m: warn("Usage: /timer 25m  or  /timer 5s  or  /timer 1h"); return
+    val  = int(m.group(1))
+    unit = m.group(2) or "m"
+    if unit.startswith("s"):   secs = val
+    elif unit.startswith("h"): secs = val * 3600
+    else:                      secs = val * 60
+    label = args.strip()
+    ok(f"Timer set: {label}")
+    def _tick():
+        import time as _t
+        _t.sleep(secs)
+        print(f"\n\a  {GN}⏰{R}  {WH}Timer done: {label}{R}\n  ", end="", flush=True)
+        try:
+            if shutil.which("notify-send"):
+                subprocess.run(["notify-send", "Lumi Timer", f"{label} is up!"], capture_output=True)
+            elif shutil.which("osascript"):
+                subprocess.run(["osascript", "-e",
+                    f'display notification "{label} is up!" with title "Lumi"'], capture_output=True)
+        except Exception: pass
+    threading.Thread(target=_tick, daemon=True).start()
+
+
+# ── /draft ────────────────────────────────────────────────────
+def cmd_draft(args: str, client, model: str, memory, system_prompt: str, name: str):
+    if not args.strip(): warn("Usage: /draft email to boss about deadline"); return
+    prompt = (
+        "Draft the following message. Match tone to medium (email=formal, slack=casual, text=brief). "
+        "Return just the message, no meta-commentary.\n\n"
+        f"Request: {args}"
+    )
+    memory.add("user", prompt)
+    messages = build_messages(system_prompt, memory.get())
+    print_you(f"Draft: {args}")
+    try:
+        reply = stream_and_render(client, messages, model, name)
+        memory._history[-1] = {"role": "user", "content": f"[draft: {args}]"}
+        memory.add("assistant", reply)
+    except Exception as e:
+        fail(str(e)); memory._history.pop()
+
+
+# ── /comment — add code comments ─────────────────────────────
+def cmd_comment(target: str, client, model: str, memory, system_prompt: str, name: str, last_reply: str):
+    # Inject elite coding prompt for this command
+    from src.prompts.builder import make_system_prompt as _msp
+    from src.memory.longterm import get_persona_override
+    system_prompt = _msp(load_persona(), coding_mode=True)
+    import re as _re
+    if target and os.path.exists(os.path.expanduser(target.strip())):
+        code  = open(os.path.expanduser(target.strip()), encoding="utf-8", errors="replace").read()
+        label = os.path.basename(target.strip())
+    elif last_reply:
+        m     = _re.search(r"```[^\n]*\n(.*?)```", last_reply, _re.DOTALL)
+        code  = m.group(1) if m else last_reply
+        label = "last reply"
+    else:
+        warn("No code to comment. Use /comment <file> or after a code reply."); return
+    prompt = (
+        "Add clear helpful comments and docstrings to this code. "
+        "Explain the 'why', not just the 'what'. Keep existing code unchanged.\n\n"
+        f"```\n{code[:5000]}\n```\n\nReturn only the commented code."
+    )
+    memory.add("user", prompt)
+    messages = build_messages(system_prompt, memory.get())
+    print_you(f"Add comments to {label}")
+    try:
+        reply = stream_and_render(client, messages, model, name)
+        memory._history[-1] = {"role": "user", "content": f"[comment: {label}]"}
+        memory.add("assistant", reply)
+    except Exception as e:
+        fail(str(e)); memory._history.pop()
+
+
+# ── /lang — language learning mode ───────────────────────────
+def cmd_lang(language: str, current_prompt: str) -> str:
+    if not language or language.lower() == "off":
+        if "[LANGUAGE LEARNING" in current_prompt:
+            new = current_prompt.split("[LANGUAGE LEARNING")[0].strip()
+            ok("Language learning mode off"); return new
+        info("Usage: /lang <language>  (e.g. /lang spanish)  |  /lang off to disable")
+        return current_prompt
+    suffix = (
+        f"\n\n[LANGUAGE LEARNING MODE: {language.upper()}]\n"
+        f"Naturally mix in {language} words and phrases. "
+        f"Add translation in parentheses first time. "
+        f"Occasionally invite the user to respond in {language}."
+    )
+    ok(f"Language learning mode: {language.title()}")
+    return current_prompt.split("[LANGUAGE LEARNING")[0].strip() + suffix
+
+
+# ── /compact — toggle minimal output ─────────────────────────
+_compact_mode = [False]
+def toggle_compact() -> bool:
+    _compact_mode[0] = not _compact_mode[0]
+    return _compact_mode[0]
+def is_compact() -> bool:
+    return _compact_mode[0]
+
+
+# ── Mood tracking ─────────────────────────────────────────────
+MOOD_PATH = "data/memory/mood_log.json"
+
+def log_mood(emotion: str, turn: int):
+    if not emotion: return
+    try:
+        os.makedirs("data/memory", exist_ok=True)
+        try:   log = json.loads(open(MOOD_PATH).read())
+        except: log = []
+        from datetime import datetime as _dt
+        log.append({"ts": _dt.now().isoformat(), "emotion": emotion, "turn": turn})
+        open(MOOD_PATH, "w").write(json.dumps(log[-100:], indent=2))
+    except Exception: pass
+
+def check_mood_pattern() -> str | None:
+    try:
+        log    = json.loads(open(MOOD_PATH).read())
+        recent = log[-10:]
+        neg    = sum(1 for e in recent if e.get("emotion") in ("frustrated", "sad", "confused"))
+        if neg >= 6:
+            return "hey, you've seemed pretty stressed lately — everything good?"
+    except Exception: pass
+    return None
+
+
+# ── /github — issues ─────────────────────────────────────────
+def cmd_github(subcmd: str, client, model: str, memory, system_prompt: str, name: str):
+    import urllib.request as _ur
+    token = os.getenv("GITHUB_TOKEN", "")
+    sub   = subcmd.strip().lower() if subcmd else "issues"
+    if sub == "issues":
+        if not token:
+            warn("Add GITHUB_TOKEN=ghp_... to .env for GitHub integration"); return
+        try:
+            req = _ur.Request(
+                "https://api.github.com/issues?filter=assigned&state=open&per_page=20",
+                headers={"Authorization": f"token {token}",
+                         "Accept": "application/vnd.github.v3+json"}
+            )
+            with _ur.urlopen(req, timeout=8) as r:
+                issues = json.loads(r.read())
+            if not issues: info("No open issues assigned to you"); return
+            print(f"\n  {B}{WH}Open Issues{R}\n")
+            for iss in issues[:15]:
+                repo  = iss.get("repository", {}).get("full_name", "")
+                print(f"  {CY}#{iss['number']}{R}  {WH}{iss['title']}{R}  {DG}{repo}{R}")
+            print()
+            issues_text = "\n".join(f"#{i['number']}: {i['title']}" for i in issues[:15])
+            prompt = f"Which of these GitHub issues should I work on first and why?\n\n{issues_text}"
+            memory.add("user", prompt)
+            messages = build_messages(system_prompt, memory.get())
+            try:
+                reply = stream_and_render(client, messages, model, name)
+                memory._history[-1] = {"role": "user", "content": "[github issues]"}
+                memory.add("assistant", reply)
+            except Exception as e:
+                fail(str(e)); memory._history.pop()
+        except Exception as e:
+            fail(f"GitHub API error: {e}")
+    else:
+        warn(f"Unknown: {sub}  —  try /github issues")
+
+
+# ── /data — CSV/JSON analysis ─────────────────────────────────
+def cmd_data(path: str, client, model: str, memory, system_prompt: str, name: str):
+    path = path.strip().strip("'\"")
+    if not path: warn("Usage: /data <file.csv|file.json>"); return
+    sp = Spinner("loading data"); sp.start()
+    context = analyze_data_file(path)
+    sp.stop()
+    if context.startswith("File not found") or context.startswith("Could not"):
+        fail(context); return
+    fname = os.path.basename(path)
+    memory.add("user", f"[Data: {fname}]\n\n{context}\n\nAnalyze this. What are the key insights?")
+    messages = build_messages(system_prompt, memory.get())
+    print_you(f"Analyze {fname}")
+    try:
+        reply = stream_and_render(client, messages, model, name)
+        memory._history[-1] = {"role": "user", "content": f"[data: {fname}]"}
+        memory.add("assistant", reply)
+    except Exception as e:
+        fail(str(e)); memory._history.pop()
+
+
 def main():
     # Pipe mode: python main.py < file.txt or echo "msg" | python main.py
     if not sys.stdin.isatty():
@@ -884,13 +1407,16 @@ def main():
     last_msg         = None
     last_reply       = None
     prev_reply       = None
+    lang_mode        = False
+    system_prompt_ref = [system_prompt]
+
     turns            = 0
     response_mode    = None
     current_topic    = None
     AUTOSAVE_EVERY   = 5
     AUTOREMEMBER_EVERY = 8  # extract facts every N turns
 
-    draw_header(current_model)
+    draw_header(current_model, 0, get_provider())
     print_welcome(name)
     # Background health check
     threading.Thread(target=health_check, args=(get_available_providers(),), daemon=True).start()
@@ -900,7 +1426,7 @@ def main():
         # ── Input ─────────────────────────────────────────────
         try:
             div()
-            user_input = read_multiline().strip() if multiline else input(f"  {BL}{B}›{R}  ").strip()
+            user_input = read_multiline().strip() if multiline else input(f"  {PU}›{R}  ").strip()
         except (KeyboardInterrupt, EOFError):
             history_save()
             ok(f"Saved → {save(memory.get())}")
@@ -922,7 +1448,7 @@ def main():
 
         if cmd == "/clear":
             memory.clear(); last_msg = None; last_reply = None; turns = 0; current_topic = None
-            draw_header(current_model); print_welcome(name); continue
+            draw_header(current_model, 0, get_provider()); print_welcome(name); continue
 
         if cmd == "/save":    ok(f"Saved → {save(memory.get())}"); continue
 
@@ -930,7 +1456,7 @@ def main():
             h = load_latest()
             if h:
                 memory._history = h; turns = len(h) // 2
-                draw_header(current_model, turns); ok(f"Loaded {len(h)} messages.")
+                draw_header(current_model, turns, get_provider()); ok(f"Loaded {len(h)} messages.")
             else: warn("No saved conversations found.")
             continue
 
@@ -961,7 +1487,7 @@ def main():
                 # Ask what was wrong
                 try:
                     print(f"\n  {GR}What was wrong with the last reply? (Enter to just resend){R}")
-                    feedback = input(f"  {BL}{B}›{R}  ").strip()
+                    feedback = input(f"  {PU}›{R}  ").strip()
                 except (KeyboardInterrupt, EOFError):
                     feedback = ""
                 user_input = last_msg
@@ -1083,7 +1609,7 @@ def main():
             persona_override = get_persona_override()
             name             = persona_override.get("name") or persona.get("name", "Lumi")
             system_prompt    = make_system_prompt(persona, persona_override)
-            draw_header(current_model, turns); continue
+            draw_header(current_model, turns, get_provider()); continue
 
         if cmd in ("/short", "/detailed", "/bullets"):
             response_mode = cmd[1:]
@@ -1117,13 +1643,13 @@ def main():
 
         if cmd == "/theme":
             current_theme = cmd_theme(current_theme)
-            draw_header(current_model, turns); continue
+            draw_header(current_model, turns, get_provider()); continue
 
         if cmd == "/model":
             new_model, new_provider = pick_model(current_model)
             current_model = new_model
             client = get_client()   # refresh client for new provider
-            draw_header(current_model, turns)
+            draw_header(current_model, turns, get_provider())
             ok(f"Model → {current_model.split('/')[-1]}  ({PROVIDER_LABELS.get(new_provider, (new_provider,))[0]})"); continue
 
         if cmd == "/multi":
@@ -1189,12 +1715,206 @@ def main():
         if cmd == "/cost":
             cmd_cost(); continue
 
+        if cmd == "/todo":
+            parts = user_input.split(maxsplit=1)
+            cmd_todo(parts[1] if len(parts) > 1 else "list"); continue
+
+        if cmd == "/note":
+            parts = user_input.split(maxsplit=1)
+            cmd_note(parts[1] if len(parts) > 1 else "list"); continue
+
+        if cmd == "/weather":
+            parts = user_input.split(maxsplit=1)
+            cmd_weather(parts[1].strip() if len(parts) > 1 else ""); continue
+
+        if cmd == "/listen":
+            parts = user_input.split(maxsplit=1)
+            try: secs = int(parts[1]) if len(parts) > 1 else 5
+            except: secs = 5
+            heard = cmd_listen(secs)
+            if heard:
+                last_msg = heard
+                memory.add("user", heard)
+                messages = build_messages(system_prompt, memory.get())
+                print_you(heard)
+                try:
+                    raw_reply, client, current_model, new_prov = stream_with_fallback(
+                        client, messages, current_model, name, get_available_providers(), get_provider()
+                    )
+                    memory._history[-1] = {"role": "user", "content": heard}
+                    memory.add("assistant", raw_reply)
+                    prev_reply = last_reply; last_reply = raw_reply; turns += 1
+                except Exception as e:
+                    fail(str(e)); memory._history.pop()
+            continue
+
+        if cmd == "/speak":
+            cmd_speak(last_reply or ""); continue
+
+        if cmd == "/paste":
+            pasted = cmd_paste()
+            if pasted:
+                last_msg = pasted
+                memory.add("user", pasted)
+                messages = build_messages(system_prompt, memory.get())
+                print_you(f"[Clipboard: {pasted[:60]}...]")
+                try:
+                    raw_reply, client, current_model, new_prov = stream_with_fallback(
+                        client, messages, current_model, name, get_available_providers(), get_provider()
+                    )
+                    memory._history[-1] = {"role": "user", "content": pasted}
+                    memory.add("assistant", raw_reply)
+                    prev_reply = last_reply; last_reply = raw_reply; turns += 1
+                except Exception as e:
+                    fail(str(e)); memory._history.pop()
+            continue
+
+        if cmd == "/copy":
+            cmd_copy(last_reply or ""); continue
+
+        if cmd == "/screenshot":
+            cmd_screenshot(client, current_model, memory, system_prompt, name)
+            turns += 1; continue
+
+        if cmd == "/project":
+            parts = user_input.split(maxsplit=1)
+            path  = parts[1].strip() if len(parts) > 1 else ""
+            if not path:
+                print(f"\n  {DG}Project path:{R}  ", end="")
+                try: path = input().strip()
+                except (KeyboardInterrupt, EOFError): continue
+            cmd_project(path, memory); continue
+
+        if cmd == "/pdf":
+            parts = user_input.split(maxsplit=1)
+            cmd_pdf(parts[1].strip() if len(parts) > 1 else "", memory); continue
+
+        if cmd == "/standup":
+            cmd_standup(client, current_model, memory, system_prompt, name)
+            turns += 1; continue
+
+        if cmd == "/timer":
+            parts = user_input.split(maxsplit=1)
+            cmd_timer(parts[1].strip() if len(parts) > 1 else "25m"); continue
+
+        if cmd == "/draft":
+            parts = user_input.split(maxsplit=1)
+            cmd_draft(parts[1].strip() if len(parts) > 1 else "", client, current_model, memory, system_prompt, name)
+            turns += 1; continue
+
+        if cmd == "/comment":
+            parts = user_input.split(maxsplit=1)
+            cmd_comment(parts[1].strip() if len(parts) > 1 else "", client, current_model, memory, system_prompt, name, last_reply or "")
+            turns += 1; continue
+
+        if cmd == "/lang":
+            parts = user_input.split(maxsplit=1)
+            lang  = parts[1].strip() if len(parts) > 1 else ""
+            system_prompt_ref[0] = cmd_lang(lang, system_prompt_ref[0])
+            system_prompt = system_prompt_ref[0]; continue
+
+        if cmd == "/compact":
+            on = toggle_compact()
+            info(f"Compact mode {'on — raw text only' if on else 'off — full formatting'}"); continue
+
+        if cmd == "/github":
+            parts = user_input.split(maxsplit=1)
+            cmd_github(parts[1].strip() if len(parts) > 1 else "issues",
+                       client, current_model, memory, system_prompt, name)
+            turns += 1; continue
+
+        if cmd == "/data":
+            parts = user_input.split(maxsplit=1)
+            cmd_data(parts[1].strip() if len(parts) > 1 else "", client, current_model, memory, system_prompt, name)
+            turns += 1; continue
+
         if cmd and cmd.startswith("/"):
             fail(f"Unknown command: {cmd}  —  type /help"); continue
+
+        # Sync system_prompt from ref (for /lang updates)
+        system_prompt = system_prompt_ref[0]
+
+        # ── Dynamic coding mode injection ────────────────────
+        # Detect if this is a coding or file-generation task and
+        # inject the full elite coding system prompt automatically.
+        _is_code  = is_complex_coding_task(user_input) or is_coding_task(user_input)
+        _is_files = is_file_generation_task(user_input)
+        if _is_code or _is_files:
+            # Rebuild system prompt with coding/file modes on
+            _enhanced = make_system_prompt(persona,
+                                           coding_mode=_is_code,
+                                           file_mode=_is_files)
+            # Preserve any /lang suffix
+            if "[LANGUAGE LEARNING" in system_prompt:
+                _lang_suffix = "[LANGUAGE LEARNING" + system_prompt.split("[LANGUAGE LEARNING")[1]
+                _enhanced += "\n\n" + _lang_suffix
+            system_prompt = _enhanced
+
+        # ── Plan-first for complex multi-file tasks ───────────
+        if needs_plan_first(user_input) and _is_files:
+            _plan_hint = (
+                "\n\n[INSTRUCTION: Before writing any code, output a brief one-paragraph plan: "
+                "what files you will create, what each does, and how they connect. "
+                "Then write each file completely with no placeholders.]"
+            )
+            system_prompt += _plan_hint
+
+        # ── File system agent (intercept before anything else) ──
+        if is_create_request(user_input):
+            sp = Spinner("generating file plan"); sp.start()
+            plan = generate_file_plan(user_input, client, current_model)
+            sp.stop()
+            if plan:
+                root  = plan.get("root", ".")
+                files = plan.get("files", [])
+                # Ask where to create — default home dir
+                home = os.path.expanduser("~")
+                print(f"\n  {DG}Where should I create this?{R}  {WH}[{home}]{R}  ", end="", flush=True)
+                try:
+                    dest_input = input().strip()
+                except (KeyboardInterrupt, EOFError):
+                    dest_input = ""
+                base_dir = os.path.expanduser(dest_input) if dest_input else home
+                # Show preview with full path
+                full_root = os.path.join(base_dir, root) if root and root != "." else base_dir
+                print(f"\n  {B}{WH}File plan{R}  {DG}→ {full_root}{R}\n")
+                if root and root != ".":
+                    print(f"  {CY}📁 {root}/{R}")
+                for f in files:
+                    print(f"  {GR}   📄 {f.get('path','')}{R}")
+                print()
+                print(f"  {DG}Create these files? [Y/n]{R}  ", end="", flush=True)
+                try:
+                    confirm = input().strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    confirm = "n"
+                if confirm in ("", "y", "yes"):
+                    created  = write_file_plan(plan, base_dir=base_dir)
+                    summary  = format_creation_summary(plan, created)
+                    ok(f"Created {len(created)} items in {base_dir}")
+                    has_html = any(f.get("path","").endswith(".html") for f in files)
+                    opener   = f"Open `{full_root}/index.html` in your browser to see it live." if has_html else "Let me know if you want to edit anything."
+                    reply    = f"Done! Created in `{full_root}`:\n\n```\n{summary}\n```\n\n{opener}"
+                    print_lumi_label(name)
+                    from src.utils.markdown import render as _md
+                    print("\n".join("  " + l for l in _md(reply).split("\n")))
+                    memory.add("user", user_input)
+                    memory.add("assistant", reply)
+                    prev_reply = last_reply; last_reply = reply; turns += 1
+                else:
+                    info("Cancelled.")
+            else:
+                fail("Couldn\'t generate a file plan. Try being more specific, e.g: \'create a folder called myapp with index.html and style.css\'")
+            continue
 
         # ── Emotion detection ─────────────────────────────────
         emotion = detect_emotion(user_input)
         hint    = emotion_hint(emotion) if emotion else ""
+        log_mood(emotion, turns)
+        # Periodic mood check-in
+        if turns > 0 and turns % 20 == 0:
+            mood_msg = check_mood_pattern()
+            if mood_msg: info(mood_msg)
 
         # ── Topic tracking ────────────────────────────────────
         topic = detect_topic(user_input)
@@ -1230,6 +1950,23 @@ def main():
         if hint:
             augmented = hint + augmented
 
+        # ── Context compression (when > 15 turns) ──────────
+        if len(memory.get()) > 15 and turns % 10 == 0 and turns > 0:
+            def _compress():
+                try:
+                    old_turns = memory.get()[:-4]  # keep last 4
+                    if not old_turns: return
+                    summary = silent_call(client,
+                        'Summarize this conversation in 3-5 sentences, keeping all key technical details:\n\n' +
+                        '\n'.join(f"{m['role']}: {m['content'][:200]}" for m in old_turns),
+                        current_model, 200
+                    )
+                    if summary:
+                        memory._history = ([{'role':'system','content':f'[Conversation summary]: {summary}'}]
+                                          + memory._history[-4:])
+                except Exception: pass
+            threading.Thread(target=_compress, daemon=True).start()
+
         # ── Chat ──────────────────────────────────────────────
         last_msg = user_input
         memory.add("user", augmented)
@@ -1241,7 +1978,7 @@ def main():
                 client, messages, current_model, name, get_available_providers(), get_provider()
             )
             if new_prov != get_provider():
-                draw_header(current_model, turns)
+                draw_header(current_model, turns, get_provider())
         except Exception as e:
             fail(str(e)); memory._history.pop(); continue
 

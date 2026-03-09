@@ -71,8 +71,8 @@ GROQ_DECOMMISSIONED = {
 
 # HuggingFace — free tier (rate limited), sorted smartest first
 HF_MODELS = [
+    "meta-llama/Llama-3.3-70B-Instruct",      # 70B Llama 3.3 — DEFAULT
     "Qwen/Qwen2.5-72B-Instruct",              # 72B, very capable
-    "meta-llama/Llama-3.3-70B-Instruct",      # 70B Llama 3.3
     "meta-llama/Llama-3.1-70B-Instruct",      # 70B Llama 3.1
     "mistralai/Mistral-7B-Instruct-v0.3",     # reliable 7B
     "meta-llama/Llama-3.1-8B-Instruct",       # fast 8B fallback
@@ -132,6 +132,23 @@ MISTRAL_MODELS = [
     "open-codestral-mamba",      # fast coding model
 ]
 
+# Ollama local models (auto-detected at runtime)
+OLLAMA_BASE = os.getenv("OLLAMA_HOST", "http://localhost:11434")
+
+def _fetch_ollama_models() -> list:
+    """Fetch models from local Ollama instance."""
+    try:
+        import urllib.request, json
+        with urllib.request.urlopen(f"{OLLAMA_BASE}/api/tags", timeout=2) as r:
+            data = json.loads(r.read())
+        return [m["name"] for m in data.get("models", [])]
+    except Exception:
+        return []
+
+def _has_ollama() -> bool:
+    return bool(_fetch_ollama_models())
+
+
 # ── Provider state (set by user at runtime) ───────────────────────────────────
 
 _active_provider: str = None   # "gemini" | "groq" | "huggingface"
@@ -144,11 +161,12 @@ def get_provider() -> str:
     if _active_provider:
         return _active_provider
     # Auto-detect from available keys
+    if os.getenv("HF_TOKEN"):            return "huggingface"
     if os.getenv("GEMINI_API_KEY"):      return "gemini"
     if os.getenv("GROQ_API_KEY"):        return "groq"
     if os.getenv("OPENROUTER_API_KEY"):  return "openrouter"
     if os.getenv("MISTRAL_API_KEY"):     return "mistral"
-    if os.getenv("HF_TOKEN"):            return "huggingface"
+    if _has_ollama():                    return "ollama"
     raise EnvironmentError(
         "No API key found in .env\n"
         "  GEMINI_API_KEY=...      https://aistudio.google.com/apikey\n"
@@ -173,6 +191,7 @@ def get_available_providers() -> list:
     if os.getenv("OPENROUTER_API_KEY"):  providers.append("openrouter")
     if os.getenv("MISTRAL_API_KEY"):     providers.append("mistral")
     if os.getenv("HF_TOKEN"):            providers.append("huggingface")
+    if _has_ollama():                    providers.append("ollama")
     return providers
 
 
@@ -196,6 +215,11 @@ def _make_client(provider: str) -> OpenAI:
         return OpenAI(
             base_url="https://api.mistral.ai/v1",
             api_key=os.getenv("MISTRAL_API_KEY"),
+        )
+    if provider == "ollama":
+        return OpenAI(
+            base_url=f"{OLLAMA_BASE}/v1",
+            api_key="ollama",
         )
     return OpenAI(
         base_url="https://router.huggingface.co/v1",
@@ -225,6 +249,8 @@ def get_models(provider: str = None) -> list:
         models = _fetch_openrouter_models()
     elif p == "mistral":
         models = MISTRAL_MODELS[:]
+    elif p == "ollama":
+        models = _fetch_ollama_models()
     else:
         models = HF_MODELS
     _models_cache[p] = models

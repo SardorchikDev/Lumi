@@ -1,6 +1,13 @@
-openai
-anthropic
-pyyaml
-python-dotenv
+# Core (already have)
 huggingface_hub
 python-dotenv
+openai
+
+# PDF reading (pick one — pdfplumber is better)
+pdfplumber
+
+# Voice output fallback (only needed if espeak-ng not installed on system)
+pyttsx3
+
+# Optional: faster PDF fallback if pdfplumber fails
+pdfminer.six

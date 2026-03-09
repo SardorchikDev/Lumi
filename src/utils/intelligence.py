@@ -104,3 +104,42 @@ def should_search(text: str) -> bool:
     if any(b in t for b in SEARCH_BLOCKLIST):
         return False
     return any(trigger in t for trigger in SEARCH_TRIGGERS)
+
+
+# ── Coding task classifier ─────────────────────────────────────────────────────
+
+COMPLEX_CODE_PATTERNS = [
+    r"\bcreate\b.{0,50}\b(website|app|server|api|component|script|tool)\b",
+    r"\bbuild\b.{0,50}\b(website|app|server|api|component|script|tool)\b",
+    r"\bwrite\b.{0,50}\b(function|class|script|program|module|component)\b",
+    r"\bimplement\b",
+    r"\brefactor\b",
+    r"\boptimize\b.{0,30}\b(code|function|query|algorithm)\b",
+    r"\b(index\.html|style\.css|script\.js|main\.py|app\.py)\b",
+    r"\bwith\b.{0,30}\b(html|css|javascript|python|typescript)\b",
+    r"\bmake.*responsive\b",
+    r"\badd.*animation\b",
+    r"\bfull.{0,10}stack\b",
+]
+
+def is_complex_coding_task(text: str) -> bool:
+    """Detect tasks that need the full coding system prompt injected."""
+    import re as _re
+    t = text.lower()
+    return any(_re.search(p, t) for p in COMPLEX_CODE_PATTERNS)
+
+def needs_plan_first(text: str) -> bool:
+    """Detect tasks complex enough to warrant a planning step before coding."""
+    import re as _re
+    t = text.lower()
+    PLAN_TRIGGERS = [
+        r"\bcreate\b.{0,60}\b(folder|project|app|website|api)\b",
+        r"\bbuild\b.{0,40}\b(full|complete|entire|whole)\b",
+        r"\bfrom scratch\b",
+        r"\bwith\b.{0,20}\b(multiple|several|few)\b.{0,20}\bfiles\b",
+        r"\bwith.{0,30}(html|css|js|python).{0,10}and.{0,30}(html|css|js|python)\b",
+        r"\bscaffold\b",
+        r"\bbootstrap\b.{0,30}project\b",
+        r"\bsystem\b.{0,30}\b(design|architecture)\b",
+    ]
+    return any(_re.search(p, t) for p in PLAN_TRIGGERS)
