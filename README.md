@@ -1,193 +1,196 @@
 ```
-██╗     ██╗   ██╗███╗   ███╗██╗
-██║     ██║   ██║████╗ ████║██║
-██║     ██║   ██║██╔████╔██║██║
-██║     ██║   ██║██║╚██╔╝██║██║
-███████╗╚██████╔╝██║ ╚═╝ ██║██║
-╚══════╝ ╚═════╝ ╚═╝     ╚═╝╚═╝
-
-A R T I F I C I A L   I N T E L L I G E N C E
+    ██╗      ██╗   ██╗  ███╗   ███╗  ██╗
+    ██║      ██║   ██║  ████╗ ████║  ██║
+    ██║      ██║   ██║  ██╔████╔██║  ██║
+    ██║      ██║   ██║  ██║╚██╔╝██║  ██║
+    ███████╗ ╚██████╔╝  ██║ ╚═╝ ██║  ██║
+    ╚══════╝  ╚═════╝   ╚═╝     ╚═╝  ╚═╝
 ```
 
 <div align="center">
 
-**A chill, open-source AI coding assistant that lives in your terminal.**
+**The terminal AI that doesn't lock you in, doesn't charge you, and doesn't need permission to think.**
 
 [![Python](https://img.shields.io/badge/Python-3.9%2B-blue?style=flat-square&logo=python)](https://python.org)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 [![Free](https://img.shields.io/badge/Cost-100%25%20Free-brightgreen?style=flat-square)](#api-keys)
-[![Providers](https://img.shields.io/badge/Providers-5-purple?style=flat-square)](#providers--models)
+[![Providers](https://img.shields.io/badge/Providers-5%2B-purple?style=flat-square)](#providers--models)
+[![Council](https://img.shields.io/badge/Council-5%20Agents-orange?style=flat-square)](#council-mode)
 
-[Quick Start](#quick-start) · [Features](#features) · [Commands](#commands) · [Models](#providers--models) · [Config](#configuration)
+[Quick Start](#quick-start) · [Why Lumi](#why-lumi-beats-the-alternatives) · [Council Mode](#council-mode) · [Commands](#commands) · [Models](#providers--models)
 
 </div>
 
 ---
 
+## Why Lumi Beats the Alternatives
+
+Everyone's shipping AI CLIs now. Here's why Lumi is different.
+
+| Feature | **Lumi** | Claude Code | Gemini CLI | Aider | GitHub Copilot CLI |
+|---|:---:|:---:|:---:|:---:|:---:|
+| **100% free** | ✅ | ❌ $20/mo | ❌ limited | ❌ needs paid key | ❌ $10/mo |
+| **5+ providers** | ✅ | ❌ Claude only | ❌ Gemini only | ⚠️ needs your key | ❌ OpenAI only |
+| **5-agent council** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Auto-fallback** | ✅ | ❌ just fails | ❌ just fails | ❌ | ❌ |
+| **Long-term memory** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Voice input** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Todo + Notes** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Custom persona** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **5 color themes** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Offline (Ollama)** | ✅ | ❌ | ❌ | ⚠️ limited | ❌ |
+| **Open source** | ✅ | ❌ | ❌ | ✅ | ❌ |
+
+### The real difference
+
+**Claude Code** is brilliant but costs money and only runs Claude. Hit your quota — you're done. No memory across sessions, no voice, no productivity tools, no personality.
+
+**Gemini CLI** just dropped. It's Google's official CLI. One model, one provider, no fallback, no memory, no council.
+
+**Aider** is great for git-integrated coding but requires a paid API key. No council mode, no memory, no productivity layer.
+
+**Lumi** runs on 5 providers and 40+ free models simultaneously. When one hits rate limits it switches automatically. When you need maximum intelligence, Council mode puts 5 models to work at the same time. Built by one developer — no pricing sheet.
+
+---
+
+## Council Mode
+
+This is Lumi's killer feature. No other terminal AI has it.
+
+```
+  /model → ⚡ Council
+
+  ◆ Council  │  5 agents
+```
+
+Switch to Council mode and every message goes to **all 5 agents simultaneously** — Gemini, Kimi K2, GPT-OSS, Codestral, and Llama 3.3. They all answer in parallel. Then the best judge model reads all 5 responses and synthesizes one definitive answer.
+
+```
+  ›  explain how database indexing works
+
+  council  5 agents  →  asking in parallel...
+
+  ✓Gemini  ✓Kimi K2  ✓GPT-OSS  ✓Codestral  ✓Llama 3.3
+
+  synthesizing 5 responses...
+
+  ✦ Lumi  [council]
+  Database indexing is a data structure technique...
+```
+
+Different models excel at different things. Gemini reasons deeply. Kimi K2 excels at analysis. Codestral knows code. By running all of them and synthesizing you get an answer that's better than any single model could produce. Switch back to a single model anytime with `/model`.
+
+---
+
 ## What is Lumi?
 
-Lumi is a terminal-based AI assistant built for developers. It's not just a chatbot — it can **read and edit your files**, **run code**, **write commit messages**, **search the web**, and **remember things about you** across sessions.
-
-It's free. It works with 5 different AI providers and 40+ models. You don't need to pay for anything.
+Lumi is a terminal-based AI assistant built for developers who want maximum intelligence at zero cost. It reads and edits your files, runs code, writes commit messages, tracks todos, remembers you across sessions, and can put 5 AI models to work simultaneously.
 
 ```
   ›  /edit src/api/routes.py
   ✦  File loaded: routes.py (203 lines)
-     What should Lumi do to this file?
   ›  add rate limiting to all POST endpoints
 
-  ✦ Lumi  streaming...
-
-  Diff ─────────────────────────────────────────────
   + from flask_limiter import Limiter
   + limiter = Limiter(app, default_limits=["100/hour"])
   + @limiter.limit("10/minute")
     @app.route('/api/submit', methods=['POST'])
 
-  ! Write changes to routes.py? [y/N]  y
-  ✓  Written → routes.py  (backup: routes.py.lumi.bak)
+  Write changes to routes.py? [y/N]  y
+  ✓  Written → routes.py (backup: routes.py.lumi.bak)
 ```
-
----
-
-## Features
-
-### 🤖 5 Providers, 40+ Free Models
-Connect Gemini, Groq, OpenRouter, Mistral, and HuggingFace all at once. Switch providers and models mid-session with `/model`. Lumi fetches live model lists and filters out broken ones automatically.
-
-### 📝 File Editing
-Give Lumi any file path. Tell it what to change. It shows a colored diff and writes the file back — always with a `.lumi.bak` backup. Works on HTML, Python, JS, CSS, JSON, config files, markdown — any text file.
-
-### ⚡ Auto-Fallback
-Hit Gemini's free quota? Lumi automatically switches to your next available provider and keeps going without crashing or asking you to do anything.
-
-### 💻 Full Coding Toolkit
-`/fix` error messages, `/review` entire files, `/explain` code, `/run` code blocks directly in terminal, `/diff` between replies, and `/git` helpers for status, commits, and logs.
-
-### 🧬 Long-term Memory
-Lumi extracts facts from your conversations every 8 turns and saves them. It remembers your stack, preferences, and projects across sessions. You can also manually `/remember` anything.
-
-### 🌐 Smart Web Search
-Lumi automatically searches the web when your question needs current information. You can also use `/search` for explicit lookups. Results are fed directly into the conversation as context.
-
-### 🎨 Syntax Highlighting
-Code blocks in Lumi's replies render with full ANSI color in your terminal. Supports Python, JavaScript, Bash, and JSON — no extra setup.
-
-### 🔄 Short-term Memory
-Keeps the last 20 turns of conversation in context. Full multi-turn awareness — Lumi knows what you said 10 messages ago.
 
 ---
 
 ## Quick Start
 
-### 1. Clone the repo
-
 ```bash
+# 1. Clone
 git clone https://github.com/SardorchikDev/lumi
 cd lumi
-```
 
-### 2. Create a virtual environment
-
-```bash
-# Standard
+# 2. Virtual environment
 python -m venv venv
-source venv/bin/activate
+source venv/bin/activate        # bash/zsh
+source venv/bin/activate.fish   # fish shell
 
-# Fish shell
-source venv/bin/activate.fish
-
-# Windows
-venv\Scripts\activate
-```
-
-### 3. Install dependencies
-
-```bash
+# 3. Install
 pip install -r requirements.txt
-```
 
-### 4. Add at least one API key to `.env`
-
-```bash
-touch .env
-```
-
-Add any or all of these (you only need one to start):
-
-```env
+# 4. Add API keys to .env (you only need one to start)
 GEMINI_API_KEY=AIza...          # https://aistudio.google.com/apikey
 GROQ_API_KEY=gsk_...            # https://console.groq.com
 OPENROUTER_API_KEY=sk-or-...    # https://openrouter.ai/keys
 MISTRAL_API_KEY=...             # https://console.mistral.ai
 HF_TOKEN=hf_...                 # https://huggingface.co/settings/tokens
+
+# 5. Run
+python main.py
 ```
 
-> All of these are **free**. No credit card required for any of them.
-
-### 5. Run Lumi
-
+**Run from anywhere:**
 ```bash
-python main.py
+# Fish shell — add once
+echo 'alias lumi="cd ~/Lumi && source venv/bin/activate.fish && python main.py"' >> ~/.config/fish/config.fish
+source ~/.config/fish/config.fish
+
+# Then just type:
+lumi
 ```
 
 ---
 
 ## API Keys
 
-| Provider | Free Tier | Get Key | Best For |
-|---|---|---|---|
-| **Gemini** | 15 req/min, 1M context | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | Long context, coding |
-| **Groq** | 30 req/min, very fast | [console.groq.com](https://console.groq.com) | Speed, Llama models |
-| **OpenRouter** | 30+ free models | [openrouter.ai/keys](https://openrouter.ai/keys) | Most model variety |
-| **Mistral** | Free "Experiment" plan | [console.mistral.ai](https://console.mistral.ai) | Code, European AI |
-| **HuggingFace** | Free inference API | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) | Open models |
+Every key here is free. No credit card required.
 
-**Recommended setup:** Add Gemini + Groq + OpenRouter. That gives you the best coverage and auto-fallback between providers when one hits rate limits.
+| Provider | Free Tier | Get Key | Best Model |
+|---|---|---|---|
+| **Gemini** | 15 req/min, 1M context | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `gemini-2.5-flash` |
+| **Groq** | 30 req/min, very fast | [console.groq.com](https://console.groq.com) | `kimi-k2-instruct` |
+| **OpenRouter** | 40+ free models | [openrouter.ai/keys](https://openrouter.ai/keys) | `hermes-3-405b:free` |
+| **Mistral** | Free experiment plan | [console.mistral.ai](https://console.mistral.ai) | `codestral-latest` |
+| **HuggingFace** | Free inference API | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) | `Llama-3.3-70B` |
+
+> **OpenRouter setup:** Go to [openrouter.ai/settings/privacy](https://openrouter.ai/settings/privacy) → enable *"Allow free endpoints that may train on inputs"* and *"Allow free endpoints that may publish prompts"*.
 
 ---
 
 ## Providers & Models
 
-### Gemini (Google)
-| Model | Context | Notes |
-|---|---|---|
-| `gemini-2.5-flash` | 1M tokens | Smart, capable |
-| `gemini-2.0-flash` | 1M tokens | Fast, reliable |
-| `gemini-2.0-flash-lite` | 1M tokens | Fastest, lightest |
-| `gemini-3.1-flash-lite-preview` | 1M tokens | Free tier confirmed |
+Lumi fetches live model lists on startup and filters out broken or decommissioned models automatically.
+
+### Gemini
+- `gemini-2.5-flash` — smartest, 1M context
+- `gemini-2.0-flash` — fast, capable
+- `gemini-2.0-flash-lite` — fastest Gemini
 
 ### Groq
-| Model | Notes |
-|---|---|
-| `openai/gpt-oss-120b` | OpenAI open-weight 120B |
-| `llama-3.3-70b-versatile` | Best all-rounder |
-| `meta-llama/llama-4-maverick` | Latest Llama 4 |
-| `qwen/qwen3-32b` | Great for coding |
-| `llama-3.1-8b-instant` | Fastest responses |
+- `moonshotai/kimi-k2-instruct` — 1T MoE, best on Groq
+- `llama-3.3-70b-versatile` — reliable all-rounder
+- `qwen/qwen3-32b` — strong at coding
 
-### OpenRouter (30+ free models)
-| Model | Notes |
-|---|---|
-| `deepseek/deepseek-r1:free` | 671B deep reasoning |
-| `qwen/qwen3-235b-a22b:free` | Massive MoE |
-| `hermes-3-llama-3.1-405b:free` | Largest free model |
-| `qwen3-coder:free` | Best for pure coding |
-| `gpt-oss-120b:free` | OpenAI open-weight |
+### OpenRouter (40+ free models)
+- `qwen/qwen3-coder-480b-a35b:free` — 480B coding specialist
+- `openai/gpt-oss-120b:free` — OpenAI open-weight 120B
+- `nousresearch/hermes-3-llama-3.1-405b:free` — 405B, best general
+- `zhipuai/glm-4.5-air:free` — massive weekly quota
+- `meta-llama/llama-3.3-70b-instruct:free` — solid all-rounder
 
 ### Mistral
-| Model | Notes |
-|---|---|
-| `mistral-small-latest` | General use, fast |
-| `open-mistral-nemo` | Multilingual, 12B |
-| `open-codestral-mamba` | Code completion |
+- `codestral-latest` — best coding model on Mistral
+- `mistral-large-latest` — most capable
+- `mistral-small-latest` — fast, free
 
 ### HuggingFace
-| Model | Notes |
-|---|---|
-| `Qwen/Qwen2.5-72B-Instruct` | Smart, capable |
-| `meta-llama/Llama-3.3-70B-Instruct` | Strong reasoning |
-| `meta-llama/Llama-3.1-8B-Instruct` | Fast, reliable |
+- `meta-llama/Llama-3.3-70B-Instruct` — default
+- `Qwen/Qwen2.5-72B-Instruct` — great at reasoning
+- `meta-llama/Llama-3.1-70B-Instruct` — reliable fallback
+
+### Ollama (offline)
+- Any locally installed model
+- Zero API limits, fully offline
+- Auto-detected at `localhost:11434`
 
 ---
 
@@ -196,191 +199,120 @@ python main.py
 ### Chat
 | Command | Description |
 |---|---|
+| `/council <q>` | Ask all 5 agents simultaneously — best answer synthesized |
+| `/council --show <q>` | Same but show each agent's raw response |
 | `/help` | Show all commands |
-| `/clear` | Reset the conversation |
-| `/undo` | Remove the last exchange |
-| `/retry` | Resend your last message |
-| `/more` | Expand on the last reply |
-| `/tl;dr` | One-sentence summary of the last reply |
-| `/rewrite` | Rewrite the last reply differently |
-| `/summarize` | Summarize the whole conversation |
-| `/multi` | Toggle multi-line input mode |
+| `/clear` | Reset conversation |
+| `/undo` · `/retry` | Remove last turn or resend it |
+| `/more` · `/tl;dr` | Expand or one-line summarize |
+| `/rewrite` · `/summarize` | Rewrite reply or summarize chat |
+| `/short` · `/detailed` · `/bullets` | One-shot reply format |
+| `/multi` | Toggle multi-line input |
 
-### Coding
+### Code
 | Command | Description |
 |---|---|
-| `/edit <path>` | Edit a file — Lumi writes changes back with diff preview |
-| `/file <path>` | Load a file into the conversation as context |
-| `/fix <error>` | Diagnose and fix an error message |
-| `/review [file]` | Full code review — bugs, performance, security, style |
-| `/explain [file]` | Explain last reply or a specific file |
-| `/run` | Execute the code block from the last reply |
-| `/diff` | Colored diff — previous reply vs latest |
+| `/edit <path>` | Edit file — shows diff, writes with backup |
+| `/file <path>` | Load file as context |
+| `/project <dir>` | Load entire codebase |
+| `/fix <error>` | Diagnose and fix an error |
+| `/review [file]` | Full code review — bugs, security, performance |
+| `/explain [file]` | Explain code or last reply |
+| `/comment [file]` | Add docstrings and inline comments |
+| `/run` | Execute code block from last reply |
+| `/diff` | Diff previous vs latest reply |
+| `/git status\|commit\|log` | Git helpers |
 
-### Git
+### Files & Data
 | Command | Description |
 |---|---|
-| `/git status` | Show git status + last 5 commits |
-| `/git commit` | AI writes your commit message, asks to confirm |
-| `/git log` | Last 15 commits with color |
+| `/pdf <path>` | Read and analyze a PDF |
+| `/data <path>` | Analyze CSV or JSON |
+| `/screenshot` | Capture screen → AI analysis |
+| `/paste` · `/copy` | Clipboard into chat / copy reply out |
 
-### Web & Tools
+### Voice
 | Command | Description |
 |---|---|
-| `/search <query>` | Explicit web search with results |
-| `/imagine <prompt>` | Generate an image (opens browser) |
-| `/translate <lang>` | Translate the last reply |
+| `/listen [secs]` | Record mic → Groq Whisper → send as message |
+| `/speak` | Read last reply aloud |
+
+### Productivity
+| Command | Description |
+|---|---|
+| `/todo add\|list\|done\|remove` | Persistent task tracker |
+| `/note [#tag] <text>` | Timestamped notes with tags |
+| `/standup` | Daily standup from git log + todos |
+| `/timer <25m\|5s\|1h>` | Countdown + desktop notification |
+| `/draft <description>` | Draft email, Slack message, or text |
+| `/weather [city]` | Current weather |
 
 ### Memory & Persona
 | Command | Description |
 |---|---|
-| `/remember <fact>` | Save a fact to long-term memory |
-| `/memory` | View all saved long-term memories |
-| `/forget` | Manage and delete memories |
-| `/persona` | Change Lumi's name, tone, and traits |
+| `/remember <fact>` | Save to long-term memory |
+| `/memory` · `/forget` | View or delete memories |
+| `/persona` | Edit name, tone, and traits |
 
 ### Sessions
 | Command | Description |
 |---|---|
-| `/save` | Save the current conversation |
-| `/load` | Load the most recent saved session |
+| `/save` · `/load` | Save or load conversation |
 | `/sessions` | List all saved sessions |
-| `/export` | Export the conversation as a `.md` file |
-| `/find <keyword>` | Search through all saved sessions |
+| `/export` | Export as markdown |
+| `/find <keyword>` | Search past sessions |
 
 ### Settings
 | Command | Description |
 |---|---|
-| `/model` | 2-step picker — choose provider first, then model |
+| `/model` | 2-step picker — provider then model |
 | `/theme` | Switch color theme (5 themes) |
-| `/cost` | Show session token usage |
+| `/cost` | Token usage this session |
 | `/quit` | Save and exit |
-
-### Response Modifiers (one-shot)
-| Command | Description |
-|---|---|
-| `/short` | Next reply: 2-3 sentences |
-| `/detailed` | Next reply: thorough and comprehensive |
-| `/bullets` | Next reply: bullet points only |
-
----
-
-## File Editing
-
-```bash
-# Edit any file by path
-/edit src/index.html
-/edit ~/projects/myapp/config.py
-/edit ./README.md
-```
-
-**How it works:**
-1. Lumi loads the file (up to 300KB)
-2. You type your instruction in plain English
-3. Lumi generates and streams the edit
-4. A colored diff is shown — green for additions, red for removals
-5. You type `y` to write, anything else to discard
-6. A `.lumi.bak` backup is always created before writing
-
-**Examples:**
-```
-/edit src/components/Navbar.jsx
-› make the navbar sticky and add a hamburger menu for mobile
-
-/edit server.py
-› add proper error handling to all the API endpoints
-
-/edit styles.css
-› convert all px values to rem and add CSS variables for colors
-
-/edit package.json
-› add a build:prod script that minifies and sets NODE_ENV=production
-```
-
----
-
-## Running Code
-
-```
-  ›  write me a script to find all duplicate files in a folder
-
-  ✦ Lumi  [writes Python script]
-
-  ›  /run
-
-  Running code  (python)
-  ────────────────────────────────────────
-  Found 3 duplicate groups:
-  - photo_copy.jpg == photo.jpg
-  - backup.zip == archive.zip
-
-  ✓  Exit 0
-```
-
-Supported: **Python**, **Bash/sh**, **JavaScript (Node.js)**
 
 ---
 
 ## Long-term Memory
 
+Lumi remembers you across sessions. It auto-extracts facts from conversations every 8 turns.
+
 ```
-  ›  /remember I use Python 3.11 and FastAPI for all my backend projects
-  ✓  Saved to long-term memory
+  ›  /remember I use Python 3.11, FastAPI, and Fish shell on CachyOS
+
+  ✓  Saved
 
   ›  /memory
-
-  Long-term memory (4 facts)
-  ──────────────────────────────────────────
-  1. Uses Python 3.11 and FastAPI for backend
-  2. Prefers type hints and async/await patterns
-  3. Working on a SaaS project called Lumi
-  4. Fish shell user on CachyOS Linux
+  1.  Uses Python 3.11 and FastAPI for backend
+  2.  Fish shell on CachyOS Linux
+  3.  Working on an AI CLI called Lumi
 ```
 
-Lumi also silently extracts facts from your conversation every 8 turns automatically — no manual input needed. These facts persist across sessions and are used to give you more relevant answers.
-
----
-
-## Themes
-
-Switch with `/theme`:
-
-| Theme | Description |
-|---|---|
-| `tokyo` | Tokyo Night Storm (default) |
-| `dracula` | Classic dark with purple and pink |
-| `nord` | Arctic blues and muted tones |
-| `gruvbox` | Warm retro with earthy colors |
-| `monokai` | High-contrast vivid greens and yellows |
+Next session Lumi already knows your stack without you repeating yourself. Claude Code, Gemini CLI, and every other terminal AI starts from zero every time.
 
 ---
 
 ## Auto-Fallback
 
 ```
-  ›  explain this algorithm
-
   ◆  Quota hit on gemini — switching to groq automatically
-
-  ✦ Lumi  [continues seamlessly on Groq]
+  ✦  Lumi  [continues without interruption]
 ```
 
-With multiple providers in `.env`, Lumi never crashes on quota errors — it silently switches to the next available provider.
+Configure multiple providers and Lumi cascades through them automatically when one hits limits. No crashes, no manual intervention.
 
 ---
 
-## Pipe Mode
+## Themes
 
-```bash
-# Pipe code directly in
-cat src/buggy.py | python main.py
+Switch with `/theme` — color swatches previewed in the picker:
 
-# One-off question
-echo "explain what a Merkle tree is" | python main.py
-
-# Feed error logs
-npm run build 2>&1 | python main.py
-```
+| Theme | Vibe |
+|---|---|
+| `tokyo` | Tokyo Night Storm — purple and cyan (default) |
+| `dracula` | Dark purple and hot pink |
+| `nord` | Arctic blues and soft whites |
+| `gruvbox` | Warm earthy retro |
+| `catppuccin` | Pastel mocha |
 
 ---
 
@@ -388,50 +320,26 @@ npm run build 2>&1 | python main.py
 
 ```
 lumi/
-├── main.py                    # Entry point — all commands and main loop
-├── .env                       # Your API keys (never commit this)
+├── main.py                     # Entry point — all commands, main loop
+├── .env                        # API keys (never commit this)
 ├── requirements.txt
 ├── data/
-│   ├── memory/
-│   │   ├── longterm.json      # Persisted long-term memories
-│   │   └── theme.json         # Saved theme preference
-│   ├── personas/
-│   │   └── default.json       # Lumi's personality config
-│   └── sessions/              # Saved conversation history
+│   ├── memory/                 # Persisted memories, mood log, theme
+│   ├── personas/default.json   # Lumi's personality
+│   └── sessions/               # Saved conversations
 └── src/
-    ├── chat/
-    │   └── hf_client.py       # Multi-provider API client
-    ├── memory/
-    │   ├── longterm.py
-    │   ├── short_term.py
-    │   └── conversation_store.py
-    ├── prompts/
-    │   └── builder.py         # System prompt construction
-    ├── tools/
-    │   └── search.py          # Web search (stdlib only)
+    ├── agents/council.py       # 5-agent parallel council
+    ├── chat/hf_client.py       # Multi-provider API client
+    ├── memory/                 # Short-term, long-term, session store
+    ├── prompts/builder.py      # Dynamic system prompt with coding mode
+    ├── tools/search.py         # Web search
     └── utils/
-        ├── highlight.py       # ANSI syntax highlighter
-        ├── markdown.py        # Terminal markdown renderer
-        ├── themes.py          # Theme system
-        ├── intelligence.py    # Emotion detection, topic tracking
-        ├── autoremember.py    # Background fact extraction
-        ├── history.py         # Readline input history
-        └── export.py          # Export to .md
-```
-
----
-
-## Persona
-
-Edit `data/personas/default.json` or use `/persona`:
-
-```json
-{
-  "name": "Lumi",
-  "creator": "Sardor Sodiqov (SardorchikDev)",
-  "tone": "chill, warm, and real — like texting a close friend",
-  "traits": ["supportive", "elite programmer", "honest", "laid-back", "encouraging"]
-}
+        ├── filesystem.py       # Natural language file creation agent
+        ├── intelligence.py     # Emotion + coding task detection
+        ├── autoremember.py     # Background fact extraction
+        ├── todo.py · notes.py  # Productivity tools
+        ├── voice.py            # Mic + Whisper transcription
+        └── themes.py           # 5 color themes
 ```
 
 ---
@@ -439,43 +347,45 @@ Edit `data/personas/default.json` or use `/persona`:
 ## Troubleshooting
 
 **`No API key found in .env`**
-Make sure `.env` is in the project root and formatted as `KEY=value` with no spaces around `=`.
+Ensure `.env` is in the project root. Format: `KEY=value` with no spaces around `=`.
 
-**`Error code: 429` — Rate limit**
-Free tier limit hit. Wait a moment or use `/model` to switch providers. With multiple providers configured, Lumi auto-switches for you.
+**`Error 429` — Rate limited**
+Hit free tier limit. Lumi switches providers automatically if you have multiple configured.
 
-**`Error code: 400 — Developer instruction is not enabled`**
-That model doesn't support system prompts (usually Gemma models). Run `/model` and pick a different one.
+**`Error 404 — No endpoints matching data policy`**
+OpenRouter privacy setting. Enable free endpoints at [openrouter.ai/settings/privacy](https://openrouter.ai/settings/privacy).
 
-**`Error code: 401 — Invalid API key`**
-Check your key in `.env`. Gemini keys start with `AIza`, Groq with `gsk_`, OpenRouter with `sk-or-`.
+**`Error 400 — Developer instruction not enabled`**
+Model doesn't support system prompts (usually Gemma). Run `/model` and pick another.
 
-**`404 — Model not found`**
-Model was decommissioned. Run `/model` to see the current working list.
-
-**Terminal looks broken**
-Use a modern terminal with 256-color ANSI support: Alacritty, Kitty, WezTerm, iTerm2. Avoid Windows CMD (use Windows Terminal).
-
----
-
-## Contributing
-
-PRs welcome. The code is intentionally simple.
-
-**Add a new provider:** Follow the pattern in `src/chat/hf_client.py` — add model list, client in `_make_client()`, key detection in `get_available_providers()`, label in `PROVIDER_LABELS`.
-
-**Add a new command:** Add the function before `main()`, add the handler in the main loop, add the entry to `print_help()`.
+**Terminal looks garbled**
+Use a terminal with 256-color ANSI support: Alacritty, Kitty, WezTerm, iTerm2.
 
 ---
 
 ## Requirements
 
-- Python 3.9+
-- `huggingface_hub`
-- `python-dotenv`
-- `openai`
+```
+Python 3.9+
+openai
+python-dotenv
+huggingface_hub
+pdfplumber          # for /pdf
+```
 
-No GPU. No Docker. No heavy ML libraries.
+Optional: `alsa-utils` + `espeak-ng` for voice · `scrot` + `xclip` for screenshot
+
+No GPU. No Docker. Runs on anything.
+
+---
+
+## Contributing
+
+PRs welcome.
+
+- **Add a provider:** Follow the pattern in `src/chat/hf_client.py`
+- **Add a command:** Add the function, wire it in the main loop, add it to `print_help()`
+- **Add a council agent:** Add an entry to `AGENTS` in `src/agents/council.py`
 
 ---
 
@@ -489,6 +399,10 @@ MIT — do whatever you want with it.
 
 Built by **[Sardor Sodiqov (SardorchikDev)](https://github.com/SardorchikDev)**
 
-If this saved you time, give it a ⭐
+*Claude Code costs $20/mo and only runs Claude.*
+*Gemini CLI only runs Gemini.*
+*Lumi runs everything, remembers you, and is free.*
+
+If this saved you money or time, give it a ⭐
 
 </div>
