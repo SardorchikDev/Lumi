@@ -33,7 +33,7 @@ from src.memory.longterm import (
     get_persona_override, set_persona_override, clear_persona_override,
 )
 from src.memory.conversation_store import save, load_latest, list_sessions
-from src.prompts.builder import load_persona, build_system_prompt, build_messages, is_coding_task, is_file_generation_task, make_system_prompt
+from src.prompts.builder import load_persona, build_system_prompt, build_messages, is_coding_task, is_file_generation_task
 from src.agents.council import council_ask, AGENTS as COUNCIL_AGENTS
 from src.tools.search import search, search_display
 from src.utils.markdown import render as md_render
@@ -42,6 +42,16 @@ from src.utils.themes import get_theme, list_themes, save_theme_name, load_theme
 from src.utils.history import setup as history_setup, save as history_save
 from src.utils.intelligence import detect_emotion, emotion_hint, detect_topic, should_search, is_complex_coding_task, needs_plan_first
 from src.utils.autoremember import auto_extract_facts
+
+# ── System prompt builder (unified) ──────────────────────────
+def make_system_prompt(persona: dict, override: dict = None,
+                       coding_mode: bool = False,
+                       file_mode: bool = False) -> str:
+    """Build full system prompt with memory, optional coding/file modes."""
+    merged = {**persona, **(override or {})}
+    mem    = build_memory_block()
+    return build_system_prompt(merged, mem, coding_mode, file_mode)
+
 
 # ── ANSI base ─────────────────────────────────────────────────
 R  = "\033[0m"
@@ -132,8 +142,8 @@ def draw_header(model: str, turns: int = 0, provider: str = ""):
     # Status line — clean, no boxes, just text
     m     = model.split("/")[-1]
     if provider == "council":
-        pcol  = "[38;5;220m"   # gold
-        pname = "⚡ Council"
+        pcol  = PU
+        pname = "Council"
         m     = "5 agents"
     else:
         pcol  = _pcolor(provider)
@@ -307,12 +317,6 @@ def print_help():
 
 
 
-# ── System prompt builder ─────────────────────────────────────
-def make_system_prompt(persona: dict, override: dict = None) -> str:
-    merged = {**persona, **(override or {})}
-    base   = build_system_prompt(merged)
-    mem    = build_memory_block()
-    return f"{base}\n\n{mem}" if mem else base
 
 
 # ── Model picker ──────────────────────────────────────────────
@@ -468,6 +472,13 @@ def cmd_council(user_input: str, messages: list, name: str,
 
 
 def stream_and_render(client, messages: list, model: str, name: str = "Lumi") -> str:
+    # ── Council mode — route to all 5 agents ─────────────────
+    if model == "council":
+        user_q = next(
+            (m["content"] for m in reversed(messages) if m["role"] == "user"), ""
+        )
+        return cmd_council(user_q, messages, name)
+
     spinner   = Spinner("thinking")
     spinner.start()
     raw_reply = ""
@@ -568,9 +579,6 @@ def cmd_file(path: str, client, model: str, memory, system_prompt: str, name: st
 def cmd_fix(error: str, client, model: str, memory, system_prompt: str, name: str, last_reply: str):
     """Diagnose and fix an error."""
     # Inject elite coding prompt for this command
-    from src.prompts.builder import make_system_prompt as _msp
-    from src.memory.longterm import get_persona_override
-    system_prompt = _msp(load_persona(), coding_mode=True)
     context = f"\n\nContext from our last exchange:\n{last_reply}" if last_reply else ""
     msg = (
         f"I'm getting this error:\n\n```\n{error}\n```"
@@ -629,9 +637,6 @@ def cmd_explain(target: str, client, model: str, memory, system_prompt: str, nam
 def cmd_review(target: str, client, model: str, memory, system_prompt: str, name: str, last_reply: str):
     """Code review — either a file or the last reply."""
     # Inject elite coding prompt for this command
-    from src.prompts.builder import make_system_prompt as _msp
-    from src.memory.longterm import get_persona_override
-    system_prompt = _msp(load_persona(), coding_mode=True)
     if target:
         try:
             code = _read_file(target)
@@ -836,9 +841,6 @@ def cmd_run(last_reply: str):
 def cmd_edit(path: str, client, model: str, memory, system_prompt: str, name: str, last_reply: str = ""):
     """Load a file, send it to Lumi for editing, write result back."""
     # Inject elite coding prompt for this command
-    from src.prompts.builder import make_system_prompt as _msp
-    from src.memory.longterm import get_persona_override
-    system_prompt = _msp(load_persona(), coding_mode=True)
     path = path.strip().strip("'\"")
     if not os.path.isabs(path):
         path = os.path.join(os.getcwd(), path)
@@ -1291,9 +1293,6 @@ def cmd_draft(args: str, client, model: str, memory, system_prompt: str, name: s
 # ── /comment — add code comments ─────────────────────────────
 def cmd_comment(target: str, client, model: str, memory, system_prompt: str, name: str, last_reply: str):
     # Inject elite coding prompt for this command
-    from src.prompts.builder import make_system_prompt as _msp
-    from src.memory.longterm import get_persona_override
-    system_prompt = _msp(load_persona(), coding_mode=True)
     import re as _re
     if target and os.path.exists(os.path.expanduser(target.strip())):
         code  = open(os.path.expanduser(target.strip()), encoding="utf-8", errors="replace").read()
@@ -1462,7 +1461,7 @@ def main():
     AUTOSAVE_EVERY   = 5
     AUTOREMEMBER_EVERY = 8  # extract facts every N turns
 
-    draw_header(current_model, 0, get_provider())
+    draw_header(current_model, 0, "council" if current_model == "council" else get_provider())
     print_welcome(name)
     # Background health check
     threading.Thread(target=health_check, args=(get_available_providers(),), daemon=True).start()
@@ -1494,7 +1493,7 @@ def main():
 
         if cmd == "/clear":
             memory.clear(); last_msg = None; last_reply = None; turns = 0; current_topic = None
-            draw_header(current_model, 0, get_provider()); print_welcome(name); continue
+            draw_header(current_model, 0, "council" if current_model == "council" else get_provider()); print_welcome(name); continue
 
         if cmd == "/save":    ok(f"Saved → {save(memory.get())}"); continue
 
@@ -1502,7 +1501,7 @@ def main():
             h = load_latest()
             if h:
                 memory._history = h; turns = len(h) // 2
-                draw_header(current_model, turns, get_provider()); ok(f"Loaded {len(h)} messages.")
+                draw_header(current_model, turns, "council" if current_model == "council" else get_provider()); ok(f"Loaded {len(h)} messages.")
             else: warn("No saved conversations found.")
             continue
 
@@ -1655,7 +1654,7 @@ def main():
             persona_override = get_persona_override()
             name             = persona_override.get("name") or persona.get("name", "Lumi")
             system_prompt    = make_system_prompt(persona, persona_override)
-            draw_header(current_model, turns, get_provider()); continue
+            draw_header(current_model, turns, "council" if current_model == "council" else get_provider()); continue
 
         if cmd in ("/short", "/detailed", "/bullets"):
             response_mode = cmd[1:]
@@ -1689,7 +1688,7 @@ def main():
 
         if cmd == "/theme":
             current_theme = cmd_theme(current_theme)
-            draw_header(current_model, turns, get_provider()); continue
+            draw_header(current_model, turns, "council" if current_model == "council" else get_provider()); continue
 
         if cmd == "/model":
             new_model, new_provider = pick_model(current_model)
@@ -1723,7 +1722,7 @@ def main():
             if not q:
                 warn("Usage: /council <question>  or just ask and Lumi picks council mode"); continue
             _coding = is_complex_coding_task(q)
-            _sys_prompt = build_system_prompt(persona, coding_mode=_coding)
+            _sys_prompt = make_system_prompt(persona, override=get_persona_override(), coding_mode=_coding)
             _msgs = build_messages(_sys_prompt, memory.get()) + [{"role": "user", "content": q}]
             last_reply = cmd_council(q, _msgs, name, show_ind)
             if last_reply:
@@ -1918,6 +1917,7 @@ def main():
         if _is_code or _is_files:
             # Rebuild system prompt with coding/file modes on
             _enhanced = make_system_prompt(persona,
+                                           override=get_persona_override(),
                                            coding_mode=_is_code,
                                            file_mode=_is_files)
             # Preserve any /lang suffix
@@ -1938,7 +1938,14 @@ def main():
         # ── File system agent (intercept before anything else) ──
         if is_create_request(user_input):
             sp = Spinner("generating file plan"); sp.start()
-            plan = generate_file_plan(user_input, client, current_model)
+            # In council mode, client is valid but model is "council" — use a real model
+            _fs_client = client
+            _fs_model  = current_model
+            if current_model == "council":
+                from src.chat.hf_client import get_models as _gm
+                _real_prov = get_provider()
+                _fs_model  = _gm(_real_prov)[0]
+            plan = generate_file_plan(user_input, _fs_client, _fs_model)
             sp.stop()
             if plan:
                 root  = plan.get("root", ".")
@@ -2032,10 +2039,11 @@ def main():
                 try:
                     old_turns = memory.get()[:-4]  # keep last 4
                     if not old_turns: return
+                    _sc_model = get_models(get_provider())[0] if current_model == "council" else current_model
                     summary = silent_call(client,
                         'Summarize this conversation in 3-5 sentences, keeping all key technical details:\n\n' +
                         '\n'.join(f"{m['role']}: {m['content'][:200]}" for m in old_turns),
-                        current_model, 200
+                        _sc_model, 200
                     )
                     if summary:
                         memory._history = ([{'role':'system','content':f'[Conversation summary]: {summary}'}]
@@ -2050,17 +2058,11 @@ def main():
         print_you(user_input)
 
         try:
-            if current_model == "council":
-                # ── Council mode: 5 agents in parallel ────────
-                raw_reply = cmd_council(user_input, messages, name)
-                if not raw_reply:
-                    memory._history.pop(); continue
-            else:
-                raw_reply, client, current_model, new_prov = stream_with_fallback(
-                    client, messages, current_model, name, get_available_providers(), get_provider()
-                )
-                if new_prov != get_provider():
-                    draw_header(current_model, turns, get_provider())
+            raw_reply, client, current_model, new_prov = stream_with_fallback(
+                client, messages, current_model, name, get_available_providers(), get_provider()
+            )
+            if new_prov != get_provider():
+                draw_header(current_model, turns, "council" if current_model == "council" else get_provider())
         except Exception as e:
             fail(str(e)); memory._history.pop(); continue
 
