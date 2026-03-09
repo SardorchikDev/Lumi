@@ -1,10 +1,4 @@
 {
-  "facts": [
-    "Sardor Sodiqov is 14 years old",
-    "The user prefers the color blue as #7aa2f7.",
-    "The user prefers the color cyan as #7dcfff.",
-    "The user prefers the color green as #9ece6a.",
-    "The user is working on a project with a Tokyo theme."
-  ],
+  "facts": [],
   "persona_override": {}
 }

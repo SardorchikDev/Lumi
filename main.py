@@ -34,6 +34,7 @@ from src.memory.longterm import (
 )
 from src.memory.conversation_store import save, load_latest, list_sessions
 from src.prompts.builder import load_persona, build_system_prompt, build_messages, is_coding_task, is_file_generation_task, make_system_prompt
+from src.agents.council import council_ask, AGENTS as COUNCIL_AGENTS
 from src.tools.search import search, search_display
 from src.utils.markdown import render as md_render
 from src.utils.export import export_md
@@ -130,8 +131,13 @@ def draw_header(model: str, turns: int = 0, provider: str = ""):
 
     # Status line — clean, no boxes, just text
     m     = model.split("/")[-1]
-    pcol  = _pcolor(provider)
-    pname = provider.capitalize() if provider else "—"
+    if provider == "council":
+        pcol  = "[38;5;220m"   # gold
+        pname = "⚡ Council"
+        m     = "5 agents"
+    else:
+        pcol  = _pcolor(provider)
+        pname = provider.capitalize() if provider else "—"
 
     left  = f"  {pcol}◆ {pname}{R}  {DG}│{R}  {WH}{m}{R}"
     right = f"{DG}{turns} turns  {R}" if turns else ""
@@ -229,6 +235,8 @@ def print_help():
     print(line)
 
     section("CHAT")
+    cmd("/council <question>",      "ask all 5 agents simultaneously — best answer wins")
+    cmd("/council --show <q>",      "same but also show each agent's raw response")
     cmd("/help",                    "show this")
     cmd("/clear",                   "reset conversation")
     cmd("/undo · /retry",           "remove last turn or resend it")
@@ -315,6 +323,7 @@ PROVIDER_LABELS = {
     "mistral":     ("Mistral",     "Mistral free tier — great for coding"),
     "huggingface": ("HuggingFace", "HuggingFace — free tier, rate limited"),
     "ollama":      ("Ollama",      "Local Ollama — fully offline, no API limits"),
+    "council":     ("⚡ Council",  "5 agents in parallel — Gemini · Kimi · GPT-OSS · Codestral · Llama"),
 }
 
 def pick_model(cur_model: str) -> tuple:
@@ -322,6 +331,11 @@ def pick_model(cur_model: str) -> tuple:
     available = get_available_providers()
     if not available:
         warn("No API keys found in .env"); return cur_model, get_provider()
+
+    # Always add council if at least 2 providers are available
+    from src.agents.council import _get_available_agents as _cagents
+    if len(_cagents()) >= 2 and "council" not in available:
+        available = available + ["council"]
 
     cur_provider = get_provider()
 
@@ -350,6 +364,14 @@ def pick_model(cur_model: str) -> tuple:
             else: warn("No match."); return cur_model, cur_provider
     except (KeyboardInterrupt, EOFError):
         warn("Keeping current provider."); return cur_model, cur_provider
+
+    # Council mode — no model to pick, just confirm
+    if chosen_provider == "council":
+        from src.agents.council import _get_available_agents as _cag, AGENTS as _CA
+        active_agents = _cag()
+        names = "  ·  ".join(a["name"] for a in active_agents)
+        print(f"\n  {PU}⚡ Council mode{R}  {DG}{names}{R}\n")
+        return "council", "council"
 
     # Switch provider
     if chosen_provider != cur_provider:
@@ -423,6 +445,28 @@ def health_check(providers: list):
     pass  # removed — was causing false positives on startup
 
 
+# ── /council ─────────────────────────────────────────────────
+def cmd_council(user_input: str, messages: list, name: str,
+                show_individual: bool = False) -> str:
+    """Ask all 5 agents simultaneously, synthesize best answer."""
+    from src.utils.markdown import render as _md_render
+    try:
+        reply = council_ask(messages, user_input, show_individual)
+        # Render and display
+        for _ in range(reply.count("\n") + 4):
+            sys.stdout.write("\033[A\033[2K")
+        sys.stdout.flush()
+        print_lumi_label(name + "  " + f"{DG}[council]{R}")
+        indented = "\n".join("  " + l for l in _md_render(reply).split("\n"))
+        print(indented)
+        print(f"\n  {MU}{wc(reply)} words  {DG}5 agents{R}")
+        return reply
+    except RuntimeError as e:
+        fail(str(e))
+        return ""
+
+
+
 def stream_and_render(client, messages: list, model: str, name: str = "Lumi") -> str:
     spinner   = Spinner("thinking")
     spinner.start()
@@ -435,6 +479,8 @@ def stream_and_render(client, messages: list, model: str, name: str = "Lumi") ->
             max_tokens=1024, temperature=0.7, stream=True,
         )
         for chunk in stream:
+            if not chunk.choices:
+                continue
             delta = chunk.choices[0].delta.content
             if delta:
                 if first:
@@ -1648,13 +1694,43 @@ def main():
         if cmd == "/model":
             new_model, new_provider = pick_model(current_model)
             current_model = new_model
-            client = get_client()   # refresh client for new provider
-            draw_header(current_model, turns, get_provider())
-            ok(f"Model → {current_model.split('/')[-1]}  ({PROVIDER_LABELS.get(new_provider, (new_provider,))[0]})"); continue
+            if new_provider != "council":
+                client = get_client()   # refresh client for new provider
+            draw_header(current_model, turns, get_provider() if new_provider != "council" else "council")
+            label = PROVIDER_LABELS.get(new_provider, (new_provider,))[0]
+            ok(f"Model → {current_model.split('/')[-1]}  ({label})"); continue
 
         if cmd == "/multi":
             multiline = not multiline
             info(f"Multi-line input {'on' if multiline else 'off'}"); continue
+
+        if cmd == "/council":
+            # Show agent roster
+            from src.agents.council import _get_available_agents
+            active = _get_available_agents()
+            if not active:
+                fail("No council agents available — add API keys to .env"); continue
+            parts = user_input.split(maxsplit=1)
+            # /council <question> or /council --show <question>
+            show_ind = False
+            if len(parts) > 1 and parts[1].startswith("--show"):
+                show_ind = True
+                q = parts[1][6:].strip() if len(parts[1]) > 6 else last_msg or ""
+            elif len(parts) > 1:
+                q = parts[1].strip()
+            else:
+                q = last_msg or ""
+            if not q:
+                warn("Usage: /council <question>  or just ask and Lumi picks council mode"); continue
+            _coding = is_complex_coding_task(q)
+            _sys_prompt = build_system_prompt(persona, coding_mode=_coding)
+            _msgs = build_messages(_sys_prompt, memory.get()) + [{"role": "user", "content": q}]
+            last_reply = cmd_council(q, _msgs, name, show_ind)
+            if last_reply:
+                memory.add("user", q)
+                memory.add("assistant", last_reply)
+                turns += 1
+            continue
 
         if cmd == "/search":
             parts = user_input.split(maxsplit=1)
@@ -1974,11 +2050,17 @@ def main():
         print_you(user_input)
 
         try:
-            raw_reply, client, current_model, new_prov = stream_with_fallback(
-                client, messages, current_model, name, get_available_providers(), get_provider()
-            )
-            if new_prov != get_provider():
-                draw_header(current_model, turns, get_provider())
+            if current_model == "council":
+                # ── Council mode: 5 agents in parallel ────────
+                raw_reply = cmd_council(user_input, messages, name)
+                if not raw_reply:
+                    memory._history.pop(); continue
+            else:
+                raw_reply, client, current_model, new_prov = stream_with_fallback(
+                    client, messages, current_model, name, get_available_providers(), get_provider()
+                )
+                if new_prov != get_provider():
+                    draw_header(current_model, turns, get_provider())
         except Exception as e:
             fail(str(e)); memory._history.pop(); continue
 

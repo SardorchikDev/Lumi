@@ -84,44 +84,34 @@ HF_FALLBACKS = [
     "Qwen/Qwen2.5-7B-Instruct",
 ]
 
-# OpenRouter — free models (append :free), sorted smartest first
+# OpenRouter — free models (live-fetched, this is the fallback list)
+# Curated priority order — live API always fetches the full real list.
+# This is used as fallback when API is unreachable AND as the sort order.
 OPENROUTER_MODELS = [
-    "deepseek/deepseek-r1:free",                      # DeepSeek R1 671B reasoning
-    "deepseek/deepseek-r1-0528:free",                 # DeepSeek R1 latest
-    "qwen/qwen3-235b-a22b:free",                      # Qwen3 235B MoE
-    "qwen/qwen3-32b:free",                            # Qwen3 32B
-    "meta-llama/llama-4-maverick:free",               # Llama 4 Maverick
-    "meta-llama/llama-4-scout:free",                  # Llama 4 Scout
-    "mistralai/devstral-small:free",                  # Mistral coding model
-    "mistralai/mistral-small-3.1-24b-instruct:free",  # Mistral Small 3.1 24B
-    "google/gemma-3-27b-it:free",                     # Gemma 3 27B
-    "microsoft/mai-ds-r1:free",                       # Microsoft MAI DS R1
-    "openrouter/free",                                # auto-router (picks best available)
-]
+    # ── Best for coding & chat (large, powerful) ─────────────
+    "qwen/qwen3-coder-480b-a35b:free",                # Qwen3 Coder 480B — best coder, 262k ctx
+    "openai/gpt-oss-120b:free",                       # OpenAI open-weight 120B, 131k ctx
+    "nousresearch/hermes-3-llama-3.1-405b:free",      # Hermes 3 405B, 131k ctx
+    "meta-llama/llama-3.3-70b-instruct:free",         # Llama 3.3 70B, 128k ctx
+    "qwen/qwen3-next-80b-a3b-instruct:free",          # Qwen3 Next 80B, 262k ctx
+    "zhipuai/glm-4.5-air:free",                       # GLM-4.5 Air 60B weekly tokens, 131k ctx
+    "arcee-ai/trinity-mini:free",                     # Arcee Trinity Mini, 131k ctx
 
-# Mistral free tier (Experiment plan — needs phone verify, no card)
-MISTRAL_MODELS = [
-    "mistral-small-latest",      # Mistral Small — free tier
-    "open-mistral-nemo",         # Mistral NeMo 12B — free
-    "open-codestral-mamba",      # Codestral Mamba — free, great for code
-]
+    # ── Mid-size solid models ────────────────────────────────
+    "openai/gpt-oss-20b:free",                        # OpenAI open-weight 20B, 131k ctx
+    "nvidia/nemotron-nano-12b-2-vl:free",             # NVIDIA Nemotron 12B, 128k ctx
+    "nvidia/nemotron-nano-9b-v2:free",                # NVIDIA Nemotron 9B, 128k ctx
+    "google/gemma-3-27b-it:free",                     # Gemma 3 27B, 131k ctx
+    "mistralai/mistral-small-3.1-24b-instruct:free",  # Mistral Small 3.1 24B, 128k ctx
 
-# OpenRouter — free models (append :free suffix)
-OPENROUTER_MODELS = [
-    "deepseek/deepseek-r1:free",               # best reasoning, 671B
-    "deepseek/deepseek-r1-0528:free",          # latest DeepSeek R1
-    "deepseek/deepseek-v3-0324:free",          # DeepSeek V3, great coding
-    "qwen/qwen3-235b-a22b:free",               # Qwen3 235B, massive
-    "qwen/qwen3-30b-a3b:free",                 # Qwen3 30B fast
-    "mistralai/devstral-small-2505:free",      # 123B coding specialist
-    "meta-llama/llama-4-maverick:free",        # Llama 4 Maverick
-    "meta-llama/llama-4-scout:free",           # Llama 4 Scout
-    "microsoft/mai-ds-r1:free",                # Microsoft MAI reasoning
-    "google/gemma-3-27b-it:free",              # Gemma 3 27B via OpenRouter
-    "mistralai/mistral-7b-instruct:free",      # reliable Mistral 7B
-    "nvidia/llama-3.1-nemotron-ultra-253b:free", # NVIDIA 253B
+    # ── Fast & lightweight ───────────────────────────────────
+    "google/gemma-3-12b-it:free",                     # Gemma 3 12B, 32k ctx
+    "google/gemma-3-4b-it:free",                      # Gemma 3 4B, 32k ctx
+    "qwen/qwen3-4b:free",                             # Qwen3 4B, 40k ctx
+    "meta-llama/llama-3.2-3b-instruct:free",          # Llama 3.2 3B, 131k ctx
+    "google/gemma-3n-4b-it:free",                     # Gemma 3n 4B, 8k ctx
+    "google/gemma-3n-2b-it:free",                     # Gemma 3n 2B, 8k ctx
 ]
-
 # Mistral — free tier (1B tokens/month)
 MISTRAL_MODELS = [
     "mistral-large-latest",      # most capable
@@ -301,26 +291,77 @@ def _fetch_groq_models() -> list:
     return GROQ_FALLBACK
 
 
+# Models to always skip — image-only, audio, embed, or known bad for text chat
+OPENROUTER_SKIP = {
+    "embed", "audio", "tts", "whisper",
+    "dall-e", "stable-diffusion", "midjourney", "flux",
+    "rerank", "moderation", "classify",
+    "sourceful",   # tiny 8k ctx experimental models
+    "venice/uncensored",  # unreliable
+}
+
+# Vision/multimodal models — skip unless user explicitly picks them
+OPENROUTER_SKIP_PATTERNS = (
+    "flux", "dall-e", "stable-diffusion", "sourceful",
+)
+
 def _fetch_openrouter_models() -> list:
-    """Fetch free models from OpenRouter live API."""
+    """
+    Fetch ALL free models from OpenRouter live API.
+    - Filters out image/embed/audio/broken models
+    - Sorts: curated priority list first, then remaining by context size desc
+    - Falls back to OPENROUTER_MODELS if API unreachable
+    """
     try:
         req = urllib.request.Request(
             "https://openrouter.ai/api/v1/models",
-            headers={"Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY', '')}"}
+            headers={
+                "Authorization": f"Bearer {os.getenv('OPENROUTER_API_KEY', '')}",
+                "HTTP-Referer": "https://github.com/SardorchikDev/Lumi",
+            }
         )
-        with urllib.request.urlopen(req, timeout=6) as r:
+        with urllib.request.urlopen(req, timeout=8) as r:
             data = json.loads(r.read())
-        # Only keep :free models
-        free = [
-            m["id"] for m in data.get("data", [])
-            if m["id"].endswith(":free")
-            and "embed" not in m["id"].lower()
-            and "vision" not in m["id"].lower()
-        ]
-        # Sort: our curated order first, then rest alphabetically
-        ordered = [m for m in OPENROUTER_MODELS if m in free or m == "openrouter/free"]
-        extras  = sorted(set(free) - set(ordered))
-        return ordered + extras if ordered else OPENROUTER_MODELS
+
+        all_models = data.get("data", [])
+
+        # Filter to only free text models
+        free = []
+        for m in all_models:
+            mid = m.get("id", "")
+            if not mid.endswith(":free"):
+                continue
+            # Skip non-text modalities
+            mid_lower = mid.lower()
+            if any(skip in mid_lower for skip in OPENROUTER_SKIP):
+                continue
+            if any(p in mid_lower for p in OPENROUTER_SKIP_PATTERNS):
+                continue
+            # Skip models with no context window (usually broken)
+            ctx = m.get("context_length", 0) or 0
+            if ctx < 1024:
+                continue
+            free.append((mid, ctx))
+
+        if not free:
+            return OPENROUTER_MODELS
+
+        free_ids = {mid for mid, _ in free}
+
+        # Priority: curated list first (preserves our smart ordering)
+        ordered = [m for m in OPENROUTER_MODELS if m in free_ids]
+
+        # Then anything new not in our curated list, sorted by context size desc
+        curated_set = set(OPENROUTER_MODELS)
+        extras = sorted(
+            [(mid, ctx) for mid, ctx in free if mid not in curated_set],
+            key=lambda x: x[1], reverse=True
+        )
+        extras_ids = [mid for mid, _ in extras]
+
+        result = ordered + extras_ids
+        return result if result else OPENROUTER_MODELS
+
     except Exception:
         return OPENROUTER_MODELS
 
@@ -330,6 +371,13 @@ def _fetch_openrouter_models() -> list:
 def _friendly_error(msg: str, provider: str):
     if "API_KEY_INVALID" in msg or "API key not valid" in msg:
         return f"Invalid {provider} API key. Check your .env file."
+    if "data policy" in msg.lower() or "publication" in msg.lower() or "privacy" in msg.lower():
+        return (
+            "OpenRouter free models require a privacy setting.\n"
+            "  → Go to https://openrouter.ai/settings/privacy\n"
+            "  → Enable 'Allow AI training on my data'\n"
+            "  → Free models will work after that."
+        )
     if "404" in msg or "model_not_found" in msg:
         return "Model not found. Run /model to pick a working one."
     if "decommissioned" in msg.lower() or "model_decommissioned" in msg:
@@ -347,6 +395,34 @@ def _friendly_error(msg: str, provider: str):
 
 # ── Streaming ─────────────────────────────────────────────────────────────────
 
+# Errors that mean "this model is broken/unavailable, try next one"
+_SKIP_ERRORS = (
+    "404", "model_not_found", "decommissioned", "not found",
+    "limit: 0", "RESOURCE_EXHAUSTED", "503", "502", "not supported",
+    "no endpoints", "unavailable", "context length", "rate_limit",
+    "moderation", "content policy",
+)
+
+def _do_stream(client, model, messages, max_tokens, temperature) -> str:
+    """Single streaming attempt — returns full text."""
+    stream = client.chat.completions.create(
+        model=model, messages=messages,
+        max_tokens=max_tokens, temperature=temperature, stream=True,
+    )
+    full = ""
+    for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta.content
+        if delta:
+            print(delta, end="", flush=True)
+            full += delta
+    print()
+    if not full.strip():
+        raise RuntimeError("Empty response from model.")
+    return full.strip()
+
+
 def chat_stream(
     client: OpenAI,
     messages: list,
@@ -354,61 +430,60 @@ def chat_stream(
     max_tokens: int = 2048,
     temperature: float = 0.7,
 ) -> str:
+    import re as _re
     provider = get_provider()
     if model is None:
         model = get_models()[0]
 
-    fallbacks     = [m for m in HF_FALLBACKS if m != model] if provider == "huggingface" else []
-    attempt_models = [model] + fallbacks
+    # Build fallback chain
+    if provider == "openrouter":
+        all_models  = get_models("openrouter")           # full live list
+        # put chosen model first, then rest in order
+        rest        = [m for m in all_models if m != model]
+        attempt_models = [model] + rest[:12]             # try up to 13 before giving up
+    elif provider == "huggingface":
+        fallbacks      = [m for m in HF_FALLBACKS if m != model]
+        attempt_models = [model] + fallbacks
+    else:
+        attempt_models = [model]
+
+    last_err = "All models failed."
 
     for i, m in enumerate(attempt_models):
         try:
-            stream = client.chat.completions.create(
-                model=m, messages=messages,
-                max_tokens=max_tokens, temperature=temperature, stream=True,
-            )
-            full = ""
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content
-                if delta:
-                    print(delta, end="", flush=True)
-                    full += delta
-            print()
-            return full.strip()
+            return _do_stream(client, m, messages, max_tokens, temperature)
 
         except Exception as e:
-            msg     = str(e)
+            msg = str(e)
             friendly = _friendly_error(msg, provider)
 
-            if friendly and "429" not in msg:
-                raise RuntimeError(friendly)
+            # Hard errors (bad key, no credits, privacy policy) — stop immediately
+            if any(x in msg for x in ("API_KEY_INVALID", "API key not valid", "401", "402", "Insufficient Balance")) or "data policy" in msg.lower() or "privacy" in msg.lower():
+                raise RuntimeError(friendly or msg)
 
+            # Rate-limited on first model — wait then retry same model once
             if "429" in msg and i == 0:
-                import re as _re
-                delay = int(m2.group(1)) + 1 if (m2 := _re.search(r"retry[^0-9]*(\d+)s", msg, _re.I)) else 15
-                import sys as _sys
-                _sys.stdout.write(f"  ⏳  rate limited — waiting {delay}s...\r")
-                _sys.stdout.flush()
-                time.sleep(delay)
+                wait = 15
+                m2 = _re.search(r"retry[^0-9]*(\d+)s", msg, _re.I)
+                if m2:
+                    wait = int(m2.group(1)) + 1
+                sys.stdout.write(f"\r  ⏳  rate limited — retrying in {wait}s...  \r")
+                sys.stdout.flush()
+                time.sleep(wait)
                 try:
-                    stream = client.chat.completions.create(
-                        model=m, messages=messages,
-                        max_tokens=max_tokens, temperature=temperature, stream=True,
-                    )
-                    full = ""
-                    for chunk in stream:
-                        delta = chunk.choices[0].delta.content
-                        if delta:
-                            print(delta, end="", flush=True)
-                            full += delta
-                    print()
-                    return full.strip()
+                    return _do_stream(client, m, messages, max_tokens, temperature)
                 except Exception:
                     pass
 
-            if "limit: 0" in msg or any(c in msg for c in ("400","503")) or "not supported" in msg.lower():
-                if i < len(attempt_models) - 1:
+            # Broken/unavailable model — skip to next silently
+            msg_lower = msg.lower()
+            if any(e in msg_lower for e in _SKIP_ERRORS):
+                last_err = friendly or f"Model {m} unavailable, trying next..."
+                if provider in ("openrouter", "huggingface") and i < len(attempt_models) - 1:
+                    sys.stdout.write(f"\r  {m.split('/')[-1]} unavailable — trying next...  \r")
+                    sys.stdout.flush()
                     continue
-            raise
 
-    raise RuntimeError("All models failed.")
+            raise RuntimeError(friendly or msg)
+
+    raise RuntimeError(last_err)
