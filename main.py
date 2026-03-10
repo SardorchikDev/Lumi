@@ -351,13 +351,14 @@ def print_help():
 
 # ── Model picker ──────────────────────────────────────────────
 PROVIDER_LABELS = {
-    "gemini":      ("Gemini",      "Google Gemini — smart, 1M context"),
-    "groq":        ("Groq",        "Groq — fastest, Llama/Qwen/GPT-OSS"),
-    "openrouter":  ("OpenRouter",  "30+ free models — DeepSeek R1, Llama 4, Qwen3"),
-    "mistral":     ("Mistral",     "Mistral free tier — great for coding"),
-    "huggingface": ("HuggingFace", "HuggingFace — free tier, rate limited"),
-    "ollama":      ("Ollama",      "Local Ollama — fully offline, no API limits"),
-    "council":     ("⚡ Council",  "5 agents in parallel — Gemini · Kimi · GPT-OSS · Codestral · Llama"),
+    "gemini":      ("Gemini",       "Google Gemini — smart, 1M context"),
+    "groq":        ("Groq",         "Groq — fastest, Llama/Qwen/GPT-OSS"),
+    "openrouter":  ("OpenRouter",   "30+ free models — DeepSeek R1, Llama 4, Qwen3"),
+    "mistral":     ("Mistral",      "Mistral free tier — great for coding"),
+    "huggingface": ("HuggingFace",  "HuggingFace — free tier, rate limited"),
+    "github":      ("GitHub Models","GPT-4o, o1, DeepSeek R1, Phi-4 — free with GitHub account"),
+    "ollama":      ("Ollama",       "Local Ollama — fully offline, no API limits"),
+    "council":     ("⚡ Council",   "6 agents in parallel — Gemini · Kimi · GPT-OSS · Codestral · Llama · GitHub"),
 }
 
 def pick_model(cur_model: str) -> tuple:
@@ -435,6 +436,16 @@ def pick_model(cur_model: str) -> tuple:
         "mistral-small-latest":         "⚡ fast",
         "Llama-3.3-70B-Instruct":       "🧠 smart",
         "Qwen2.5-72B-Instruct":         "🧠 smart  💻 code",
+        # GitHub Models
+        "gpt-4o":                       "🧠 smart  💬 general",
+        "gpt-4o-mini":                  "⚡ fast   💬 general",
+        "o1-mini":                      "🧠 smart  🔍 reasoning",
+        "DeepSeek-R1":                  "🧠 smart  🔍 reasoning",
+        "DeepSeek-V3-0324":             "🧠 smart  💻 code",
+        "Phi-4":                        "⚡ fast   💻 code",
+        "Phi-3.5-MoE":                  "⚡ fast",
+        "Mistral-large":                "🧠 smart",
+        "grok-3-mini":                  "⚡ fast   🔍 reasoning",
     }
     def _tags(m):
         short = m.split("/")[-1]
@@ -515,16 +526,35 @@ def cmd_council(user_input: str, messages: list, name: str,
     """Ask all 5 agents simultaneously, synthesize best answer."""
     from src.utils.markdown import render as _md_render
     try:
-        reply = council_ask(messages, user_input, show_individual)
-        # Render and display
-        for _ in range(reply.count("\n") + 4):
+        gen = council_ask(messages, user_input,
+                          show_individual=show_individual,
+                          stream=True, debate=True, refine=True)
+        print_lumi_label(name + "  " + f"{DG}[council]{R}")
+        raw_reply  = ""
+        stats_line = ""
+        refined    = ""
+        for chunk in gen:
+            if chunk.startswith("\n\n__STATS__\n"):
+                stats_line = chunk[len("\n\n__STATS__\n"):]
+                continue
+            if chunk.startswith("\n\n__REFINED__\n\n"):
+                refined = chunk[len("\n\n__REFINED__\n\n"):]
+                continue
+            print(chunk, end="", flush=True)
+            raw_reply += chunk
+        print()
+        final_reply = refined if refined else raw_reply
+        # Re-render with markdown
+        for _ in range(final_reply.count("\n") + 4):
             sys.stdout.write("\033[A\033[2K")
         sys.stdout.flush()
         print_lumi_label(name + "  " + f"{DG}[council]{R}")
-        indented = "\n".join("  " + l for l in _md_render(reply).split("\n"))
+        indented = "\n".join("  " + l for l in _md_render(final_reply).split("\n"))
         print(indented)
-        print(f"\n  {MU}{wc(reply)} words  {DG}5 agents{R}")
-        return reply
+        print(f"\n  {MU}{wc(final_reply)} words{R}")
+        if stats_line:
+            print(f"  {stats_line}")
+        return final_reply
     except RuntimeError as e:
         fail(str(e))
         return ""
@@ -745,50 +775,49 @@ def stream_and_render(client, messages: list, model: str, name: str = "Lumi") ->
         user_q = next(
             (m["content"] for m in reversed(messages) if m["role"] == "user"), ""
         )
-        from src.agents.council import council_ask as _ca
-        # Run agents in parallel (blocking), then stream synthesis
-        import threading as _th
-        _results = {}
-        _errors  = {}
-        agents   = __import__("src.agents.council", fromlist=["_get_available_agents",
-                   "_call_agent", "CouncilSpinner"
-                   ])
-        avail    = agents._get_available_agents()
-        spinner  = agents.CouncilSpinner(avail)
+        from src.agents.council import (
+            council_ask as _ca,
+            _get_available_agents as _gav,
+            format_council_stats as _fcs,
+        )
+        avail = _gav()
         print(f"\n  {DG}council  {GR}{len(avail)} agents  {DG}→  asking in parallel...{R}\n")
-        spinner.start()
-        _threads = []
-        def _w(a):
-            agents._call_agent(a, messages, _results, _errors, spinner)
-            spinner.mark_done(a["id"], a["id"] in _results)
-        for _a in avail:
-            _t = _th.Thread(target=_w, args=(_a,), daemon=True)
-            _threads.append(_t); _t.start()
-        for _t in _threads: _t.join(timeout=45)
-        spinner.stop()
-        if not _results:
-            raise RuntimeError("All council agents failed")
-        if _errors:
-            failed = ", ".join(_errors.keys())
-            print(f"  {YE}▲  unavailable: {failed}{R}")
-        # Stream the synthesis
-        if len(_results) > 1:
-            print(f"  {DG}synthesizing {len(_results)} responses...{R}\n")
+
+        # council_ask handles agents, spinner, debate, refinement — just stream it
+        gen = _ca(messages, user_q, show_individual=False, stream=True,
+                  debate=True, refine=True)
+
         print_lumi_label(name + f"  {DG}[council]{R}")
         raw_reply = ""
-        for _chunk in agents._judge_stream(_results, user_q):
+        stats_line = ""
+        refined    = ""
+        for _chunk in gen:
+            if _chunk.startswith("\n\n__STATS__\n"):
+                stats_line = _chunk[len("\n\n__STATS__\n"):]
+                continue
+            if _chunk.startswith("\n\n__REFINED__\n\n"):
+                refined = _chunk[len("\n\n__REFINED__\n\n"):]
+                continue
             print(_chunk, end="", flush=True)
             raw_reply += _chunk
         print()
-        # Re-render
-        for _ in range(raw_reply.count("\n") + 4):
+
+        # Use refined answer if judge improved it
+        final_reply = refined if refined else raw_reply
+
+        # Re-render with markdown
+        for _ in range(final_reply.count("\n") + 4):
             sys.stdout.write("\033[A\033[2K")
         sys.stdout.flush()
         print_lumi_label(name + f"  {DG}[council]{R}")
         from src.utils.markdown import render as _mdr
-        print("\n".join("  " + l for l in _mdr(raw_reply).split("\n")))
-        print(f"\n  {MU}{wc(raw_reply)} words  {DG}{len(_results)} agents{R}")
-        return raw_reply
+        print("\n".join("  " + l for l in _mdr(final_reply).split("\n")))
+        # Stats line: word count + agent breakdown
+        n_agents = len([c for c in stats_line.split("  ") if c.strip()])
+        print(f"\n  {MU}{wc(final_reply)} words  {DG}{len(avail)} agents{R}")
+        if stats_line:
+            print(f"  {stats_line}")
+        return final_reply
 
     spinner   = Spinner("thinking")
     spinner.start()
@@ -1986,7 +2015,7 @@ def main():
         try:
             if current_model == "council":
                 from src.agents.council import council_ask
-                reply = council_ask(messages, q)
+                reply, _ = council_ask(messages, q, stream=False, debate=True, refine=True)
             else:
                 resp = client.chat.completions.create(
                     model=current_model, messages=messages,

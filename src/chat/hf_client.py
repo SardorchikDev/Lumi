@@ -122,6 +122,48 @@ MISTRAL_MODELS = [
     "open-codestral-mamba",      # fast coding model
 ]
 
+# GitHub Models — free tier via GitHub API key
+GITHUB_MODELS = [
+    "gpt-4o",                                  # GPT-4o — flagship
+    "gpt-4o-mini",                             # GPT-4o Mini — fast
+    "o1-mini",                                 # o1 mini — reasoning
+    "DeepSeek-R1",                             # DeepSeek R1 — strong reasoning
+    "DeepSeek-V3-0324",                        # DeepSeek V3 — general
+    "Meta-Llama-3.1-70B-Instruct",             # Llama 3.1 70B
+    "Meta-Llama-3.1-8B-Instruct",              # Llama 3.1 8B — fast
+    "Phi-4",                                   # Phi-4 — efficient
+    "Phi-3.5-MoE-instruct",                    # Phi-3.5 MoE
+    "Mistral-large",                           # Mistral Large
+    "Mistral-small",                           # Mistral Small
+    "Cohere-command-r-plus-08-2024",           # Command R+
+    "AI21-Jamba-1.5-Large",                    # Jamba 1.5 Large
+    "xai/grok-3-mini",                         # Grok 3 Mini
+]
+
+def _fetch_github_models() -> list:
+    """Fetch available models from GitHub Models API."""
+    try:
+        req = urllib.request.Request(
+            "https://models.inference.ai.azure.com/models",
+            headers={
+                "Authorization": f"Bearer {os.getenv('GITHUB_API_KEY', '')}",
+                "Content-Type": "application/json",
+            }
+        )
+        with urllib.request.urlopen(req, timeout=6) as r:
+            data = json.loads(r.read())
+        live = [m.get("name") or m.get("id", "") for m in data if isinstance(m, dict)]
+        live = [m for m in live if m]
+        if live:
+            # Keep our curated order, add any new ones at the end
+            ordered = [m for m in GITHUB_MODELS if m in live]
+            extras  = [m for m in live if m not in set(GITHUB_MODELS)]
+            return ordered + extras
+    except Exception:
+        pass
+    return GITHUB_MODELS[:]
+
+
 # Ollama local models (auto-detected at runtime)
 OLLAMA_BASE = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
@@ -156,6 +198,7 @@ def get_provider() -> str:
     if os.getenv("GROQ_API_KEY"):        return "groq"
     if os.getenv("OPENROUTER_API_KEY"):  return "openrouter"
     if os.getenv("MISTRAL_API_KEY"):     return "mistral"
+    if os.getenv("GITHUB_API_KEY"):      return "github"
     if _has_ollama():                    return "ollama"
     raise EnvironmentError(
         "No API key found in .env\n"
@@ -163,7 +206,8 @@ def get_provider() -> str:
         "  GROQ_API_KEY=...        https://console.groq.com\n"
         "  OPENROUTER_API_KEY=...  https://openrouter.ai/keys\n"
         "  MISTRAL_API_KEY=...     https://console.mistral.ai\n"
-        "  HF_TOKEN=...            https://huggingface.co/settings/tokens"
+        "  HF_TOKEN=...            https://huggingface.co/settings/tokens\n"
+        "  GITHUB_API_KEY=...      https://github.com/settings/tokens"
     )
 
 
@@ -181,6 +225,7 @@ def get_available_providers() -> list:
     if os.getenv("OPENROUTER_API_KEY"):  providers.append("openrouter")
     if os.getenv("MISTRAL_API_KEY"):     providers.append("mistral")
     if os.getenv("HF_TOKEN"):            providers.append("huggingface")
+    if os.getenv("GITHUB_API_KEY"):      providers.append("github")
     if _has_ollama():                    providers.append("ollama")
     return providers
 
@@ -205,6 +250,11 @@ def _make_client(provider: str) -> OpenAI:
         return OpenAI(
             base_url="https://api.mistral.ai/v1",
             api_key=os.getenv("MISTRAL_API_KEY"),
+        )
+    if provider == "github":
+        return OpenAI(
+            base_url="https://models.inference.ai.azure.com",
+            api_key=os.getenv("GITHUB_API_KEY"),
         )
     if provider == "ollama":
         return OpenAI(
@@ -239,6 +289,8 @@ def get_models(provider: str = None) -> list:
         models = _fetch_openrouter_models()
     elif p == "mistral":
         models = MISTRAL_MODELS[:]
+    elif p == "github":
+        models = _fetch_github_models()
     elif p == "ollama":
         models = _fetch_ollama_models()
     else:
