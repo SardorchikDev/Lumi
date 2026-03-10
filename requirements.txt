@@ -11,3 +11,6 @@ pyttsx3
 
 # Optional: faster PDF fallback if pdfplumber fails
 pdfminer.six
+
+#textual
+textual>=0.80.0

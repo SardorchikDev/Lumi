@@ -148,7 +148,8 @@ def draw_header(model: str, turns: int = 0, provider: str = ""):
     if provider == "council":
         pcol  = PU
         pname = "Council"
-        m     = "5 agents"
+        from src.agents.council import _get_available_agents as _gav
+        m     = f"{len(_gav())} agents"
     else:
         pcol  = _pcolor(provider)
         pname = provider.capitalize() if provider else "—"
@@ -249,7 +250,7 @@ def print_help():
     print(line)
 
     section("CHAT")
-    cmd("/council <q>",             "ask all 5 agents — best answer synthesized")
+    cmd("/council <q>",             "ask all 6 agents — best answer synthesized")
     cmd("/council --show <q>",      "same + show each agent's raw response")
     cmd("/context",                 "show token usage and context window")
     cmd("/redo [model]",            "regenerate last answer, optionally with different model")
@@ -351,14 +352,16 @@ def print_help():
 
 # ── Model picker ──────────────────────────────────────────────
 PROVIDER_LABELS = {
-    "gemini":      ("Gemini",       "Google Gemini — smart, 1M context"),
+    "gemini":      ("Gemini",       "Google Gemini — 2.5 Pro · 3.1 Pro · Flash · 1M context (paid)"),
     "groq":        ("Groq",         "Groq — fastest, Llama/Qwen/GPT-OSS"),
     "openrouter":  ("OpenRouter",   "30+ free models — DeepSeek R1, Llama 4, Qwen3"),
     "mistral":     ("Mistral",      "Mistral free tier — great for coding"),
     "huggingface": ("HuggingFace",  "HuggingFace — free tier, rate limited"),
     "github":      ("GitHub Models","GPT-4o, o1, DeepSeek R1, Phi-4 — free with GitHub account"),
+    "cohere":      ("Cohere",       "Cohere — free 1000 req/month, Command A · Command R+"),
+    "cloudflare":  ("Cloudflare",   "Cloudflare Workers AI — free 10k neurons/day, GPT-OSS · Qwen3 · Llama"),
     "ollama":      ("Ollama",       "Local Ollama — fully offline, no API limits"),
-    "council":     ("⚡ Council",   "6 agents in parallel — Gemini · Kimi · GPT-OSS · Codestral · Llama · GitHub"),
+    "council":     ("⚡ Council",   "All agents in parallel — Gemini · Kimi · GPT-OSS · Codestral · Llama · GPT-4o · Command A · Cloudflare"),
 }
 
 def pick_model(cur_model: str) -> tuple:
@@ -419,24 +422,42 @@ def pick_model(cur_model: str) -> tuple:
 
     # Speed/quality ratings
     MODEL_TAGS = {
+        # ── Gemini 3.x ────────────────────────────────────────────────────────
+        "gemini-3.1-pro-preview":       "🧠 smartest  🔍 reasoning  🤖 agentic",
+        "gemini-3-flash-preview":       "⚡ fast   🧠 frontier",
+        "gemini-3.1-flash-lite-preview":"🚀 fastest  🧠 frontier",
+        # ── Gemini 2.5 Pro ────────────────────────────────────────────────────
+        "gemini-2.5-pro":               "🧠 smart   🔍 reasoning  💻 code  1M ctx",
+        "gemini-2.5-pro-preview-06-05": "🧠 smart   🔍 reasoning  💡 thinking",
+        # ── Gemini 2.5 Flash ──────────────────────────────────────────────────
+        "gemini-2.5-flash":             "⚡ fast   🧠 smart  🔍 reasoning",
         "gemini-flash-latest":          "⚡ fast   🧠 smart",
-        "gemini-2.5-flash":             "⚡ fast   🧠 smart",
-        "gemini-2.0-flash":             "⚡ fast",
-        "gemini-2.0-flash-lite":        "🚀 fastest",
+        "gemini-2.5-flash-preview-05-20": "⚡ fast   💡 thinking",
+        # ── Gemini 2.5 Flash-Lite ─────────────────────────────────────────────
+        "gemini-2.5-flash-lite":        "🚀 fastest  💰 cheapest",
+        "gemini-2.5-flash-lite-preview":"🚀 fastest",
+        # ── Gemini 2.0 ────────────────────────────────────────────────────────
+        "gemini-2.0-flash":             "⚡ fast   ✓ stable",
+        "gemini-2.0-flash-001":         "⚡ fast   ✓ pinned",
+        "gemini-2.0-flash-lite":        "🚀 fastest  ✓ stable",
+        # ── Groq ──────────────────────────────────────────────────────────────
         "kimi-k2":                      "🧠 smart  📊 analysis",
         "llama-3.3-70b-versatile":      "⚡ fast   💬 general",
         "llama-4-maverick":             "🧠 smart",
         "gpt-oss-120b":                 "🧠 smart",
         "gpt-oss-20b":                  "⚡ fast",
         "qwen-3-32b":                   "💻 code",
+        # ── OpenRouter ────────────────────────────────────────────────────────
         "hermes-3-llama-3.1-405b":      "🧠 smart  💬 general",
         "qwen3-coder":                  "💻 code   🧠 smart",
+        # ── Mistral ───────────────────────────────────────────────────────────
         "codestral-latest":             "💻 code   ⚡ fast",
         "mistral-large-latest":         "🧠 smart",
         "mistral-small-latest":         "⚡ fast",
+        # ── HuggingFace ───────────────────────────────────────────────────────
         "Llama-3.3-70B-Instruct":       "🧠 smart",
         "Qwen2.5-72B-Instruct":         "🧠 smart  💻 code",
-        # GitHub Models
+        # ── GitHub Models ─────────────────────────────────────────────────────
         "gpt-4o":                       "🧠 smart  💬 general",
         "gpt-4o-mini":                  "⚡ fast   💬 general",
         "o1-mini":                      "🧠 smart  🔍 reasoning",
@@ -445,7 +466,22 @@ def pick_model(cur_model: str) -> tuple:
         "Phi-4":                        "⚡ fast   💻 code",
         "Phi-3.5-MoE":                  "⚡ fast",
         "Mistral-large":                "🧠 smart",
-        "grok-3-mini":                  "⚡ fast   🔍 reasoning",
+        # ── Cohere ────────────────────────────────────────────────────────────
+        "command-a-03-2025":           "🧠 smart  💬 general",
+        "command-a-reasoning-08-2025": "🧠 smart  🔍 reasoning",
+        "command-r-plus-08-2024":      "🧠 smart",
+        "command-r-08-2024":           "⚡ fast",
+        "c4ai-aya-expanse-32b":        "🌍 multilingual",
+        "command-r7b-12-2024":         "🚀 fastest",
+        # ── Cloudflare ────────────────────────────────────────────────────────
+        "gpt-oss-120b":                "🧠 smart  💬 general",
+        "gpt-oss-20b":                 "⚡ fast",
+        "qwen3-30b-a3b-fp8":           "💻 code  🔍 reasoning",
+        "glm-4.7-flash":               "⚡ fast  🌍 multilingual",
+        "deepseek-r1-distill-qwen-32b":"🔍 reasoning",
+        "llama-3.3-70b-instruct-fp8":  "🧠 smart",
+        "llama-3.2-3b-instruct":       "🚀 fastest",
+        "qwq-32b":                     "🔍 reasoning  🧠 smart",
     }
     def _tags(m):
         short = m.split("/")[-1]
@@ -523,7 +559,7 @@ def health_check(providers: list):
 # ── /council ─────────────────────────────────────────────────
 def cmd_council(user_input: str, messages: list, name: str,
                 show_individual: bool = False) -> str:
-    """Ask all 5 agents simultaneously, synthesize best answer."""
+    """Ask all 6 agents simultaneously, synthesize best answer."""
     from src.utils.markdown import render as _md_render
     try:
         gen = council_ask(messages, user_input,
@@ -1820,6 +1856,8 @@ def _parse_args():
     ap.add_argument("--output-format",  metavar="FMT",   choices=["text","json"],
                     default="text",
                     help="Output format for --print mode: text (default) or json")
+    ap.add_argument("--no-tui",         action="store_true",
+                    help="disable TUI, use classic CLI mode")
     ap.add_argument("--verbose",        action="store_true",
                     help="Show verbose output (full API errors, token counts, etc)")
     ap.add_argument("--no-color",       action="store_true",
@@ -1844,6 +1882,23 @@ def main():
     if args.version:
         print(f"Lumi {LUMI_VERSION}")
         sys.exit(0)
+
+    # ── TUI mode (default unless --no-tui or non-interactive flags) ───────────
+    _tui_bypass = (
+        args.print_mode or args.query or args.no_tui or
+        args.list_sessions or args.delete_session or args.help
+    )
+    if not _tui_bypass:
+        try:
+            from src.tui.app import launch as _tui_launch
+            _tui_launch()
+            return
+        except ImportError:
+            print(f"  {YE}▲  textual not installed — run: pip install textual --break-system-packages{R}")
+            print(f"  {DG}  falling back to CLI mode...{R}\n")
+        except Exception as _te:
+            print(f"  {RE}✗  TUI error: {_te}{R}")
+            print(f"  {DG}  falling back to CLI mode...{R}\n")
 
     # ── --help ────────────────────────────────────────────────
     if args.help:

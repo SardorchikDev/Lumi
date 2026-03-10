@@ -49,10 +49,13 @@ AGENTS = [
         "id":       "gemini",
         "name":     "Gemini",
         "models":   [
-            "gemini-flash-latest",
-            "gemini-2.5-flash",
-            "gemini-2.0-flash",
-            "gemini-2.0-flash-lite",
+            "gemini-3.1-pro-preview",         # most advanced
+            "gemini-3-flash-preview",         # frontier-class
+            "gemini-2.5-pro",                 # deepest reasoning, stable
+            "gemini-2.5-pro-preview-06-05",   # adaptive thinking
+            "gemini-2.5-flash",               # fast + smart
+            "gemini-flash-latest",            # alias fallback
+            "gemini-2.0-flash",               # stable fallback
         ],
         "provider": "gemini",
         "role":     "reasoning",
@@ -153,6 +156,44 @@ AGENTS = [
         "key_env":  "GITHUB_API_KEY",
         "color":    "\033[38;5;252m",
     },
+    {
+        "id":       "cohere",
+        "name":     "Command A",
+        "models":   [
+            "command-a-03-2025",
+            "command-a-reasoning-08-2025",
+            "command-r-plus-08-2024",
+            "command-r-08-2024",
+        ],
+        "provider": "cohere",
+        "role":     "language",
+        "strengths": [TASK_CREATIVE, TASK_ANALYSIS, TASK_GENERAL, TASK_FACTUAL],
+        "tier":     "slow",
+        "base_url": "https://api.cohere.com/compatibility/v1",
+        "key_env":  "COHERE_API_KEY",
+        "color":    "\033[38;5;86m",
+    },
+    {
+        "id":       "cloudflare",
+        "name":     "Cloudflare",
+        "models":   [
+            "@cf/openai/gpt-oss-120b",
+            "@cf/qwen/qwen3-30b-a3b-fp8",
+            "qwen/qwq-32b",
+            "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+            "@cf/meta/llama-3.3-70b-instruct-fp8",
+            "@cf/openai/gpt-oss-20b",
+            "@cf/meta/llama-3.2-3b-instruct",
+        ],
+        "provider":  "cloudflare",
+        "role":      "diversity",
+        "strengths": [TASK_GENERAL, TASK_CODE, TASK_FACTUAL],
+        "tier":      "slow",
+        "base_url":  "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
+        "key_env":   "CLOUDFLARE_API_KEY",
+        "extra_env": "CLOUDFLARE_ACCOUNT_ID",   # both required
+        "color":     "\033[38;5;208m",
+    },
 ]
 
 # ── Specialist system prompts ─────────────────────────────────────────────────
@@ -186,6 +227,16 @@ SPECIALIST_PROMPTS = {
         "You are GPT-4o — the precision and reliability expert in this council.\n"
         "Excel at: factual accuracy, rigorous reasoning, clean concise code, catching subtle bugs.\n"
         "Be direct and authoritative. Prioritize correctness above all else."
+    ),
+    "cohere": (
+        "You are Command A — the language and nuance expert in this council.\n"
+        "Excel at: precise wording, well-structured arguments, nuanced analysis, and clear explanations.\n"
+        "Bring depth and clarity. Notice what others miss in the phrasing of the question."
+    ),
+    "cloudflare": (
+        "You are Cloudflare AI — the diversity and independence expert in this council.\n"
+        "Excel at: providing a genuinely independent perspective from a different model stack.\n"
+        "Be direct and efficient. Your unique model mix brings views others may not surface."
     ),
 }
 
@@ -289,11 +340,22 @@ _agent_timing:     dict = {}
 
 
 def _get_available_agents() -> list:
-    return [a for a in AGENTS if os.getenv(a["key_env"])]
+    def _available(a: dict) -> bool:
+        if not os.getenv(a["key_env"]):
+            return False
+        if a.get("extra_env") and not os.getenv(a["extra_env"]):
+            return False
+        return True
+    return [a for a in AGENTS if _available(a)]
 
 
 def _make_client(agent: dict) -> OpenAI:
-    return OpenAI(api_key=os.getenv(agent["key_env"]), base_url=agent["base_url"])
+    base_url = agent["base_url"]
+    # Cloudflare needs account ID resolved at runtime
+    if agent["provider"] == "cloudflare":
+        account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
+        base_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+    return OpenAI(api_key=os.getenv(agent["key_env"]), base_url=base_url)
 
 
 # ── Core agent call ────────────────────────────────────────────────────────────
@@ -676,12 +738,17 @@ def council_ask(messages: list, user_question: str,
                 show_individual: bool = False,
                 stream: bool = True,
                 debate: bool = True,
-                refine: bool = True):
+                refine: bool = True,
+                silent: bool = False,
+                agent_callback=None):
     """
     Full overpowered council call.
 
-    stream=True  → returns a generator yielding string chunks
-    stream=False → returns (synthesis_str, stats_str)
+    stream=True        → returns a generator yielding string chunks
+    stream=False       → returns (synthesis_str, stats_str)
+    silent=True        → suppress all terminal output (for TUI mode)
+    agent_callback     → called as agent_callback(aid, success, conf, timing)
+                         when each agent finishes (useful for TUI sidebar updates)
     """
     _agent_used_model.clear()
     _agent_confidence.clear()
@@ -700,13 +767,23 @@ def council_ask(messages: list, user_question: str,
     results: dict = {}
     errors:  dict = {}
 
-    spinner = CouncilSpinner(available)
-    spinner.start()
+    if not silent:
+        spinner = CouncilSpinner(available)
+        spinner.start()
+    else:
+        spinner = None
 
     # ── Parallel agent calls ──────────────────────────────────────────────────
     def _wrap(agent):
         _call_agent(agent, messages, results, errors, spinner, task_type, lead_id)
-        spinner.mark_done(agent["id"], agent["id"] in results)
+        success = agent["id"] in results
+        if spinner:
+            spinner.mark_done(agent["id"], success)
+        if agent_callback:
+            aid  = agent["id"]
+            conf = str(_agent_confidence.get(aid, ""))
+            t    = str(_agent_timing.get(aid, ""))
+            agent_callback(aid, success, conf, t)
 
     fast = [a for a in available if a.get("tier") == "fast"]
     slow = [a for a in available if a.get("tier") != "fast"]
@@ -718,23 +795,25 @@ def council_ask(messages: list, user_question: str,
     for t in fast_threads: t.join(timeout=22)
     for t in slow_threads: t.join(timeout=28)
 
-    spinner.stop()
+    if spinner:
+        spinner.stop()
 
     if not results:
         raise RuntimeError("All council agents failed — check your API keys and connection.")
 
-    if errors:
+    if errors and not silent:
         print(f"  {YE}▲  unavailable: {', '.join(errors)}{R}")
 
     # ── Debate round ──────────────────────────────────────────────────────────
     had_debate = False
     if debate and len(results) >= 3 and _detect_disagreement(results):
-        print(f"\n  {YE}⚔  disagreement detected — debating...{R}")
+        if not silent:
+            print(f"\n  {YE}⚔  disagreement detected — debating...{R}")
         results    = _debate_round(results, user_question, available)
         had_debate = True
 
     # ── Show individual responses ─────────────────────────────────────────────
-    if show_individual:
+    if show_individual and not silent:
         print()
         for aid, text in results.items():
             agent = next((a for a in AGENTS if a["id"] == aid), None)
@@ -749,8 +828,9 @@ def council_ask(messages: list, user_question: str,
                 print(f"  {DG}... (+{len(lines)-10} more lines){R}")
 
     n = len(results)
-    print(f"\n  {DG}synthesizing {n} response{'s' if n > 1 else ''}  [{task_type}]"
-          f"{'  [debated]' if had_debate else ''}{R}\n")
+    if not silent:
+        print(f"\n  {DG}synthesizing {n} response{'s' if n > 1 else ''}  [{task_type}]"
+              f"{'  [debated]' if had_debate else ''}{R}\n")
 
     if stream:
         def _gen():

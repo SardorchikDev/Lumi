@@ -15,36 +15,64 @@ from openai import OpenAI
 
 # ── Model lists ───────────────────────────────────────────────────────────────
 
-# Only models confirmed to work with system prompts on the free tier
+# ── Gemini models — paid API, smartest first ──────────────────────────────────
+# Ordered: most capable → fastest
+# Skipping: TTS, Live/Audio, Image-gen, Embedding, Veo, Lyria, Robotics, Computer-Use
+
 GEMINI_CONFIRMED = [
-    "gemini-3.1-flash-lite-preview",   # ✓ confirmed working
-    "gemini-2.5-flash",                # ✓ confirmed working
-    "gemini-2.0-flash",                # ✓ confirmed working
-    "gemini-2.0-flash-001",            # ✓ stable release
-    "gemini-2.0-flash-lite",           # ✓ lightest, fast
-    "gemini-2.0-flash-lite-001",       # ✓ stable lite
-    "gemini-flash-latest",             # ✓ latest flash alias
+    # ── Gemini 3.x — bleeding edge (preview, paid) ────────────────────────────
+    "gemini-3.1-pro-preview",              # 🧠 most advanced, agentic + vibe coding
+    "gemini-3-flash-preview",             # ⚡ frontier-class at fraction of cost
+    "gemini-3.1-flash-lite-preview",      # 🚀 frontier-class, fast + lightweight
+
+    # ── Gemini 2.5 Pro — most powerful stable ─────────────────────────────────
+    "gemini-2.5-pro",                     # 🧠 deepest reasoning + coding, 1M ctx
+    "gemini-2.5-pro-preview-06-05",       # 🧠 pro preview with adaptive thinking
+
+    # ── Gemini 2.5 Flash — best price/performance ─────────────────────────────
+    "gemini-2.5-flash",                   # ⚡ best all-rounder, thinking + speed
+    "gemini-flash-latest",                # ⚡ auto-updated flash alias
+    "gemini-2.5-flash-preview-05-20",     # ⚡ flash preview with adaptive thinking
+
+    # ── Gemini 2.5 Flash-Lite — fastest + cheapest ────────────────────────────
+    "gemini-2.5-flash-lite",              # 🚀 fastest in 2.5 family, high throughput
+    "gemini-2.5-flash-lite-preview",      # 🚀 lite preview
+
+    # ── Gemini 2.0 Flash — stable workhorses ──────────────────────────────────
+    "gemini-2.0-flash",                   # ✓ stable, fast, reliable
+    "gemini-2.0-flash-001",               # ✓ pinned stable release
+    "gemini-2.0-flash-lite",              # ✓ lightest 2.0 model
+    "gemini-2.0-flash-lite-001",          # ✓ pinned lite stable
+    "gemini-3.1-flash-lite-preview",      # ✓ next-gen lite
 ]
 
-# Skip: image-gen, TTS, audio, embed, pay-only, no system prompt support
+# Skip: non-text modalities, image-gen, audio, TTS, embeddings, robotics, computer-use
 GEMINI_SKIP = {
-    "gemini-2.5-pro", "gemini-pro-latest",
-    "gemini-3-pro-preview", "gemini-3.1-pro-preview",
-    "gemini-3-flash-preview", "gemini-3.1-pro-preview-customtools",
-    "gemini-2.0-flash-exp-image-generation", "gemini-2.5-flash-image",
+    # Image generation
+    "gemini-2.0-flash-exp-image-generation",
+    "gemini-2.5-flash-image", "gemini-2.5-flash-image-generation",
     "gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview",
+    "nano-banana-pro-preview", "nano-banana-2-preview",
+    # TTS / Audio / Live
     "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts",
     "gemini-2.5-flash-native-audio-latest",
     "gemini-2.5-flash-native-audio-preview-09-2025",
     "gemini-2.5-flash-native-audio-preview-12-2025",
-    "gemini-2.5-computer-use-preview-10-2025",
-    "deep-research-pro-preview-12-2025", "nano-banana-pro-preview",
+    "gemini-live-2.5-flash-preview",
+    "gemini-2.0-flash-live-001",
+    # Embeddings
+    "gemini-embedding-001", "gemini-embedding-exp-03-07", "aqa",
+    # Robotics / Computer-use / specialised
     "gemini-robotics-er-1.5-preview",
-    "gemini-embedding-001", "aqa",
-    # Gemma doesn't support system instructions
+    "gemini-2.5-computer-use-preview-10-2025",
+    # Deprecated / shut down
+    "gemini-3-pro-preview",      # shut down March 9 2026
+    "gemini-pro-latest",
+    "deep-research-pro-preview-12-2025",
+    # Gemma (no system instruction support)
     "gemma-3-27b-it", "gemma-3-12b-it", "gemma-3-4b-it",
     "gemma-3n-e4b-it", "gemma-3n-e2b-it", "gemma-3-1b-it",
-    # Extra previews with limit: 0
+    # Old broken previews
     "gemini-2.5-flash-lite-preview-09-2025",
 }
 
@@ -164,7 +192,38 @@ def _fetch_github_models() -> list:
     return GITHUB_MODELS[:]
 
 
-# Ollama local models (auto-detected at runtime)
+# Cohere — free tier: 20 req/min, 1000 req/month (OpenAI-compatible endpoint)
+COHERE_MODELS = [
+    "command-a-03-2025",              # flagship, most capable
+    "command-a-reasoning-08-2025",    # reasoning variant
+    "command-r-plus-08-2024",         # strong general model
+    "command-r-08-2024",              # balanced
+    "c4ai-aya-expanse-32b",           # multilingual 32B
+    "command-r7b-12-2024",            # fast 7B
+]
+
+# Cloudflare Workers AI — free 10k neurons/day
+# Requires: CLOUDFLARE_API_KEY + CLOUDFLARE_ACCOUNT_ID in .env
+# Base URL: https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1
+CLOUDFLARE_MODELS = [
+    "@cf/openai/gpt-oss-120b",               # 120B GPT-OSS — best on CF
+    "@cf/openai/gpt-oss-20b",                # 20B GPT-OSS — fast
+    "@cf/qwen/qwen3-30b-a3b-fp8",            # Qwen3 30B MoE — coding + reasoning
+    "@cf/zai-org/glm-4.7-flash",             # GLM 4.7 Flash
+    "@cf/ibm-granite/granite-4.0-h-micro",   # Granite 4.0 — enterprise
+    "@cf/aisingapore/gemma-sea-lion-v4-27b-it", # Gemma Sea Lion 27B
+    "@hf/nousresearch/hermes-2-pro-mistral-7b", # Hermes 2 Pro Mistral 7B
+    "qwen/qwq-32b",                          # QwQ 32B — deep reasoning
+    "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", # DeepSeek R1 Distill
+    "@cf/meta/llama-3.3-70b-instruct-fp8",   # Llama 3.3 70B
+    "@cf/meta/llama-3.2-3b-instruct",        # Llama 3.2 3B — fastest
+]
+
+def _cloudflare_base_url() -> str:
+    account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
+    return f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+
+
 OLLAMA_BASE = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 def _fetch_ollama_models() -> list:
@@ -199,6 +258,8 @@ def get_provider() -> str:
     if os.getenv("OPENROUTER_API_KEY"):  return "openrouter"
     if os.getenv("MISTRAL_API_KEY"):     return "mistral"
     if os.getenv("GITHUB_API_KEY"):      return "github"
+    if os.getenv("COHERE_API_KEY"):      return "cohere"
+    if os.getenv("CLOUDFLARE_API_KEY") and os.getenv("CLOUDFLARE_ACCOUNT_ID"): return "cloudflare"
     if _has_ollama():                    return "ollama"
     raise EnvironmentError(
         "No API key found in .env\n"
@@ -207,7 +268,10 @@ def get_provider() -> str:
         "  OPENROUTER_API_KEY=...  https://openrouter.ai/keys\n"
         "  MISTRAL_API_KEY=...     https://console.mistral.ai\n"
         "  HF_TOKEN=...            https://huggingface.co/settings/tokens\n"
-        "  GITHUB_API_KEY=...      https://github.com/settings/tokens"
+        "  GITHUB_API_KEY=...      https://github.com/settings/tokens\n"
+        "  COHERE_API_KEY=...      https://dashboard.cohere.com/api-keys\n"
+        "  CLOUDFLARE_API_KEY=...  https://dash.cloudflare.com/profile/api-tokens\n"
+        "  CLOUDFLARE_ACCOUNT_ID=... https://dash.cloudflare.com (right sidebar)"
     )
 
 
@@ -226,6 +290,8 @@ def get_available_providers() -> list:
     if os.getenv("MISTRAL_API_KEY"):     providers.append("mistral")
     if os.getenv("HF_TOKEN"):            providers.append("huggingface")
     if os.getenv("GITHUB_API_KEY"):      providers.append("github")
+    if os.getenv("COHERE_API_KEY"):      providers.append("cohere")
+    if os.getenv("CLOUDFLARE_API_KEY") and os.getenv("CLOUDFLARE_ACCOUNT_ID"): providers.append("cloudflare")
     if _has_ollama():                    providers.append("ollama")
     return providers
 
@@ -255,6 +321,16 @@ def _make_client(provider: str) -> OpenAI:
         return OpenAI(
             base_url="https://models.inference.ai.azure.com",
             api_key=os.getenv("GITHUB_API_KEY"),
+        )
+    if provider == "cohere":
+        return OpenAI(
+            base_url="https://api.cohere.com/compatibility/v1",
+            api_key=os.getenv("COHERE_API_KEY"),
+        )
+    if provider == "cloudflare":
+        return OpenAI(
+            base_url=_cloudflare_base_url(),
+            api_key=os.getenv("CLOUDFLARE_API_KEY"),
         )
     if provider == "ollama":
         return OpenAI(
@@ -291,6 +367,10 @@ def get_models(provider: str = None) -> list:
         models = MISTRAL_MODELS[:]
     elif p == "github":
         models = _fetch_github_models()
+    elif p == "cohere":
+        models = COHERE_MODELS[:]
+    elif p == "cloudflare":
+        models = CLOUDFLARE_MODELS[:]
     elif p == "ollama":
         models = _fetch_ollama_models()
     else:

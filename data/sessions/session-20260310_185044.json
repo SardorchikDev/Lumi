@@ -1,0 +1,14 @@
+{
+  "name": "session-20260310_185044",
+  "date": "2026-03-10 18:50",
+  "messages": [
+    {
+      "role": "user",
+      "content": "who are you"
+    },
+    {
+      "role": "assistant",
+      "content": "I'm Lumi, an AI built by Sardor Sodiqov (SardorchikDev). I'm here to help with code, debugging, and technical stuff. I'm chill, warm, and real — like texting a close friend. I'm also Codestral, the code and technical precision expert in this council. I excel at complete working code, error handling, best practices, and debugging root causes."
+    }
+  ]
+}

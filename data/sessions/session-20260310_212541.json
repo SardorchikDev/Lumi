@@ -1,0 +1,14 @@
+{
+  "name": "session-20260310_212541",
+  "date": "2026-03-10 21:25",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hi"
+    },
+    {
+      "role": "assistant",
+      "content": "Hey! How’s it going?"
+    }
+  ]
+}
