@@ -24,7 +24,12 @@ AGENTS = [
     {
         "id":       "gemini",
         "name":     "Gemini",
-        "model":    "gemini-2.5-flash",
+        "models":   [
+            "gemini-flash-latest",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-lite",
+        ],
         "provider": "gemini",
         "role":     "reasoning",
         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -34,7 +39,13 @@ AGENTS = [
     {
         "id":       "groq",
         "name":     "Kimi K2",
-        "model":    "moonshotai/kimi-k2-instruct",
+        "models":   [
+            "kimi-k2-instruct-0905",
+            "gpt-oss-120b",
+            "llama-3.3-70b-versatile",
+            "qwen-3-32b",
+            "llama-3.1-8b-instant",
+        ],
         "provider": "groq",
         "role":     "analysis",
         "base_url": "https://api.groq.com/openai/v1",
@@ -44,7 +55,14 @@ AGENTS = [
     {
         "id":       "openrouter",
         "name":     "GPT-OSS",
-        "model":    "openai/gpt-oss-20b:free",
+        "models":   [
+            "openai/gpt-oss-20b:free",
+            "openai/gpt-oss-120b:free",
+            "nousresearch/hermes-3-llama-3.1-405b:free",
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "qwen/qwen3-coder:free",
+            "google/gemma-3-27b-it:free",
+        ],
         "provider": "openrouter",
         "role":     "general",
         "base_url": "https://openrouter.ai/api/v1",
@@ -54,7 +72,13 @@ AGENTS = [
     {
         "id":       "mistral",
         "name":     "Codestral",
-        "model":    "codestral-latest",
+        "models":   [
+            "codestral-latest",
+            "mistral-large-latest",
+            "mistral-medium-latest",
+            "mistral-small-latest",
+            "open-mistral-nemo",
+        ],
         "provider": "mistral",
         "role":     "code",
         "base_url": "https://api.mistral.ai/v1",
@@ -64,7 +88,12 @@ AGENTS = [
     {
         "id":       "hf",
         "name":     "Llama 3.3",
-        "model":    "meta-llama/Llama-3.3-70B-Instruct",
+        "models":   [
+            "meta-llama/Llama-3.3-70B-Instruct",
+            "Qwen/Qwen2.5-72B-Instruct",
+            "meta-llama/Llama-3.1-70B-Instruct",
+            "meta-llama/Llama-3.1-8B-Instruct",
+        ],
         "provider": "huggingface",
         "role":     "writing",
         "base_url": "https://router.huggingface.co/v1",
@@ -96,27 +125,58 @@ def _make_agent_client(agent: dict) -> OpenAI:
     )
 
 
-def _call_agent(agent: dict, messages: list, results: dict, errors: dict):
-    """Call one agent in a thread. Stores result or error by agent id."""
-    try:
-        client = _make_agent_client(agent)
-        resp   = client.chat.completions.create(
-            model=agent["model"],
-            messages=messages,
-            max_tokens=1500,
-            temperature=0.7,
-            stream=False,
-        )
-        if not resp.choices:
-            errors[agent["id"]] = "no choices returned"
-            return
-        text = resp.choices[0].message.content
-        if text and text.strip():
-            results[agent["id"]] = text.strip()
-        else:
-            errors[agent["id"]] = "empty response"
-    except Exception as e:
-        errors[agent["id"]] = str(e)[:120]
+# Track which model each agent ended up using
+_agent_used_model: dict = {}
+
+# Errors that should trigger a fallback to next model
+_FALLBACK_ERRORS = (
+    "429", "rate_limit", "quota", "limit: 0",
+    "resource_exhausted", "overloaded",
+    "503", "502", "500",
+    "model_not_found", "404", "decommissioned",
+    "no endpoints", "unavailable", "not found",
+    "context length", "content policy", "moderation",
+)
+
+def _call_agent(agent: dict, messages: list, results: dict, errors: dict,
+                spinner=None):
+    """Try each model in the agent's fallback list. Store result or error."""
+    client = _make_agent_client(agent)
+    models = agent.get("models", [agent.get("model", "")])
+    last_error = ""
+
+    for model in models:
+        # Update spinner label to show current model attempt
+        if spinner:
+            spinner.set_model(agent["id"], model.split("/")[-1])
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                max_tokens=1500,
+                temperature=0.7,
+                stream=False,
+            )
+            if not resp.choices:
+                last_error = "no choices returned"
+                continue
+            text = resp.choices[0].message.content
+            if text and text.strip():
+                results[agent["id"]] = text.strip()
+                _agent_used_model[agent["id"]] = model.split("/")[-1]
+                return   # success — stop trying
+            else:
+                last_error = "empty response"
+        except Exception as e:
+            last_error = str(e)[:160]
+            # Only fallback on quota/availability errors
+            if any(x in last_error.lower() for x in _FALLBACK_ERRORS):
+                continue   # try next model
+            else:
+                break      # hard error — don't bother with fallbacks
+
+    # All models failed
+    errors[agent["id"]] = last_error
 
 
 def _judge(responses: dict, original_question: str) -> str:
@@ -191,20 +251,60 @@ class CouncilSpinner:
     FRAMES = ["⠁","⠂","⠄","⡀","⢀","⠠","⠐","⠈"]
 
     def __init__(self, agents: list):
-        self._agents  = agents
-        self._done    = {}
-        self._running = False
-        self._thread  = None
-        self._lock    = threading.Lock()
+        self._agents       = agents
+        self._done         = {}   # id → True/False
+        self._current_model = {}  # id → short model name being tried
+        self._running      = False
+        self._thread       = None
+        self._lock         = threading.Lock()
 
     def mark_done(self, agent_id: str, success: bool):
         with self._lock:
             self._done[agent_id] = success
 
+    def set_model(self, agent_id: str, model_short: str):
+        """Show which fallback model is being tried."""
+        with self._lock:
+            self._current_model[agent_id] = model_short
+
     def start(self):
         self._running = True
         self._thread  = threading.Thread(target=self._render, daemon=True)
         self._thread.start()
+
+    @staticmethod
+    def _strip_ansi(s: str) -> str:
+        import re
+        return re.sub(r"\033\[[0-9;]*m", "", s)
+
+    def _fit(self, line: str) -> str:
+        """Truncate line to terminal width, accounting for ANSI codes."""
+        try:
+            import shutil
+            w = shutil.get_terminal_size().columns - 2
+        except Exception:
+            w = 80
+        visible = self._strip_ansi(line)
+        if len(visible) <= w:
+            return line + " " * (w - len(visible))   # pad to clear leftovers
+        # Trim: walk char by char keeping count of visible chars
+        out = ""
+        count = 0
+        i = 0
+        import re
+        while i < len(line):
+            # Skip ANSI escape
+            m = re.match(r"\033\[[0-9;]*m", line[i:])
+            if m:
+                out += m.group()
+                i += len(m.group())
+                continue
+            if count >= w:
+                break
+            out += line[i]
+            count += 1
+            i += 1
+        return out + "\033[0m"
 
     def _render(self):
         import itertools
@@ -215,12 +315,15 @@ class CouncilSpinner:
             with self._lock:
                 for a in self._agents:
                     col = a["color"]
-                    if a["id"] in self._done:
-                        icon = f"{GN}✓{R}" if self._done[a["id"]] else f"{RE}✗{R}"
+                    aid = a["id"]
+                    if aid in self._done:
+                        icon  = f"{GN}✓{R}" if self._done[aid] else f"{RE}✗{R}"
+                        label = f"{icon}{col}{a['name']}{R}"
                     else:
-                        icon = f"{col}{f}{R}"
-                    parts.append(f"{icon}{col}{a['name']}{R}")
-            sys.stdout.write(f"\r  {('  ').join(parts)}  ")
+                        label = f"{col}{f} {a['name']}{R}"
+                    parts.append(label)
+            line = "  " + "   ".join(parts)
+            sys.stdout.write("\r" + self._fit(line))
             sys.stdout.flush()
             time.sleep(0.09)
 
@@ -228,13 +331,21 @@ class CouncilSpinner:
         self._running = False
         if self._thread:
             self._thread.join()
-        # Print final state
+        # Clear spinner line
+        try:
+            import shutil
+            w = shutil.get_terminal_size().columns
+        except Exception:
+            w = 80
+        sys.stdout.write("\r" + " " * w + "\r")
+        # Print clean final state on a new line
         parts = []
         for a in self._agents:
             col  = a["color"]
-            icon = f"{GN}✓{R}" if self._done.get(a["id"]) else f"{RE}✗{R}"
+            aid  = a["id"]
+            icon = f"{GN}✓{R}" if self._done.get(aid) else f"{RE}✗{R}"
             parts.append(f"{icon}{col}{a['name']}{R}")
-        sys.stdout.write(f"\r  {'  '.join(parts)}\n")
+        sys.stdout.write("  " + "   ".join(parts) + "\n")
         sys.stdout.flush()
 
 
@@ -273,7 +384,7 @@ def council_ask(messages: list, user_question: str,
     # Launch all agents simultaneously
     threads = []
     def _wrap(agent):
-        _call_agent(agent, messages, results, errors)
+        _call_agent(agent, messages, results, errors, spinner)
         spinner.mark_done(agent["id"], agent["id"] in results)
 
     for agent in agents:
