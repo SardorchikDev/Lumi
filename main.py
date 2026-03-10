@@ -5,6 +5,7 @@ load_dotenv()
 
 import os
 import sys
+import pathlib
 import json
 import shutil
 import textwrap
@@ -32,7 +33,10 @@ from src.memory.longterm import (
     get_facts, add_fact, remove_fact, clear_facts, build_memory_block,
     get_persona_override, set_persona_override, clear_persona_override,
 )
-from src.memory.conversation_store import save, load_latest, list_sessions
+from src.memory.conversation_store import save, load_latest, load_by_name, list_sessions, delete_session
+from src.utils.web import fetch_url
+from src.utils.plugins import load_plugins, get_commands, dispatch as plugin_dispatch
+from src.tools.mcp import list_servers as mcp_list, add_server as mcp_add, remove_server as mcp_remove, get_session as mcp_session, stop_all as mcp_stop
 from src.prompts.builder import load_persona, build_system_prompt, build_messages, is_coding_task, is_file_generation_task
 from src.agents.council import council_ask, AGENTS as COUNCIL_AGENTS
 from src.tools.search import search, search_display
@@ -245,8 +249,10 @@ def print_help():
     print(line)
 
     section("CHAT")
-    cmd("/council <question>",      "ask all 5 agents simultaneously — best answer wins")
-    cmd("/council --show <q>",      "same but also show each agent's raw response")
+    cmd("/council <q>",             "ask all 5 agents — best answer synthesized")
+    cmd("/council --show <q>",      "same + show each agent's raw response")
+    cmd("/context",                 "show token usage and context window")
+    cmd("/redo [model]",            "regenerate last answer, optionally with different model")
     cmd("/help",                    "show this")
     cmd("/clear",                   "reset conversation")
     cmd("/undo · /retry",           "remove last turn or resend it")
@@ -304,6 +310,30 @@ def print_help():
     cmd("/sessions",                "list all saved sessions")
     cmd("/export",                  "export current session as markdown")
     cmd("/find <keyword>",          "search through past sessions")
+
+    section("WEB & VISION")
+    cmd("/web <url> [question]",    "fetch any webpage, ask questions about it")
+    cmd("/image <path> [question]", "send image to AI — vision support")
+
+    section("AUTONOMOUS")
+    cmd("/agent <task>",            "multi-step autonomous agent — plans and executes")
+    cmd("/lumi.md show|create",     "view or create project context file")
+
+    section("MCP SERVERS")
+    cmd("/mcp list",                "show configured MCP servers")
+    cmd("/mcp add <n> <cmd>",       "add a new MCP server")
+    cmd("/mcp remove <n>",          "remove a server")
+    cmd("/mcp tools <server>",      "list tools on a server")
+    cmd("/mcp call <srv> <tool>",   "call a tool directly")
+
+    section("PLUGINS")
+    cmd("/plugins",                 "list loaded plugins")
+    cmd("/plugins reload",          "reload plugins from ~/Lumi/plugins/")
+
+    section("SESSIONS")
+    cmd("/save [name]",             "save conversation with optional name")
+    cmd("/load [name]",             "load session by name or latest")
+    cmd("/sessions",                "list all saved sessions")
 
     section("SETTINGS")
     cmd("/model",                   "switch provider and model (2-step picker)")
@@ -386,12 +416,42 @@ def pick_model(cur_model: str) -> tuple:
     models = get_models(chosen_provider)
     sp.stop()
 
+    # Speed/quality ratings
+    MODEL_TAGS = {
+        "gemini-flash-latest":          "⚡ fast   🧠 smart",
+        "gemini-2.5-flash":             "⚡ fast   🧠 smart",
+        "gemini-2.0-flash":             "⚡ fast",
+        "gemini-2.0-flash-lite":        "🚀 fastest",
+        "kimi-k2":                      "🧠 smart  📊 analysis",
+        "llama-3.3-70b-versatile":      "⚡ fast   💬 general",
+        "llama-4-maverick":             "🧠 smart",
+        "gpt-oss-120b":                 "🧠 smart",
+        "gpt-oss-20b":                  "⚡ fast",
+        "qwen-3-32b":                   "💻 code",
+        "hermes-3-llama-3.1-405b":      "🧠 smart  💬 general",
+        "qwen3-coder":                  "💻 code   🧠 smart",
+        "codestral-latest":             "💻 code   ⚡ fast",
+        "mistral-large-latest":         "🧠 smart",
+        "mistral-small-latest":         "⚡ fast",
+        "Llama-3.3-70B-Instruct":       "🧠 smart",
+        "Qwen2.5-72B-Instruct":         "🧠 smart  💻 code",
+    }
+    def _tags(m):
+        short = m.split("/")[-1]
+        for k, v in MODEL_TAGS.items():
+            if k.lower() in short.lower():
+                return f"  {DG}{v}{R}"
+        return ""
+
     print(f"\n  {B}{WH}Available models{R}  {DG}({PROVIDER_LABELS[chosen_provider][0]}){R}\n")
     default_model = models[0] if models else cur_model
     for i, m in enumerate(models):
-        dot    = f"{GN}●{R}" if m == cur_model and chosen_provider == cur_provider else f"{DG}○{R}"
-        active = f"  {MU}active{R}" if m == cur_model and chosen_provider == cur_provider else ""
-        print(f"  {dot}  {GR}{i+1}.{R}  {WH}{m.split('/')[-1]}{R}{active}")
+        is_active = m == cur_model and chosen_provider == cur_provider
+        is_council = m in [a["models"][0] for a in __import__("src.agents.council", fromlist=["AGENTS"]).AGENTS] if chosen_provider != "council" else False
+        dot    = f"{GN}●{R}" if is_active else f"{DG}○{R}"
+        active = f"  {MU}active{R}" if is_active else ""
+        tags   = _tags(m)
+        print(f"  {dot}  {GR}{i+1}.{R}  {WH}{m.split('/')[-1]}{R}{tags}{active}")
     print()
 
     try:
@@ -471,13 +531,264 @@ def cmd_council(user_input: str, messages: list, name: str,
 
 
 
+# ── /web ─────────────────────────────────────────────────────
+def cmd_web(url: str, client, model: str, memory, system_prompt: str, name: str):
+    """Fetch a webpage and answer questions about it."""
+    if not url:
+        warn("Usage: /web <url> [question]"); return
+    parts    = url.split(None, 1)
+    target   = parts[0]
+    question = parts[1] if len(parts) > 1 else "Summarize this page."
+    sp = Spinner("fetching"); sp.start()
+    content  = fetch_url(target)
+    sp.stop()
+    if content.startswith(("HTTP error", "Could not reach", "Fetch failed")):
+        fail(content); return
+    ctx = f"URL: {target}\n\nPage content:\n{content}"
+    memory.add("user", f"{ctx}\n\n{question}")
+    messages = build_messages(system_prompt, memory.get())
+    print_you(f"/web {target}")
+    try:
+        raw = stream_and_render(client, messages, model, name)
+        memory._history[-1] = {"role": "user", "content": f"[web: {target}] {question}"}
+        memory.add("assistant", raw)
+    except Exception as e:
+        fail(str(e)); memory._history.pop()
+
+
+# ── /image ────────────────────────────────────────────────────
+def cmd_image(args: str, client, model: str, memory, system_prompt: str, name: str):
+    """Send an image to a vision-capable model."""
+    parts    = args.split(None, 1)
+    path     = parts[0] if parts else ""
+    question = parts[1] if len(parts) > 1 else "Describe this image in detail."
+    if not path:
+        warn("Usage: /image <path> [question]"); return
+    path = os.path.expanduser(path)
+    if not os.path.exists(path):
+        fail(f"File not found: {path}"); return
+    try:
+        import base64, mimetypes
+        mime = mimetypes.guess_type(path)[0] or "image/jpeg"
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+    except Exception as e:
+        fail(f"Could not read image: {e}"); return
+
+    # Vision message format
+    vision_message = {
+        "role": "user",
+        "content": [
+            {"type": "image_url",
+             "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            {"type": "text", "text": question},
+        ]
+    }
+    messages = build_messages(system_prompt, memory.get()) + [vision_message]
+    print_you(f"/image {os.path.basename(path)}")
+    sp = Spinner("analyzing image"); sp.start()
+    try:
+        resp = client.chat.completions.create(
+            model=model, messages=messages,
+            max_tokens=1024, temperature=0.7, stream=False,
+        )
+        sp.stop()
+        raw = resp.choices[0].message.content.strip() if resp.choices else ""
+        if raw:
+            print_lumi_label(name)
+            from src.utils.markdown import render as _md_render
+            print("\n".join("  " + l for l in _md_render(raw).split("\n")))
+            print(f"\n  {MU}{wc(raw)} words{R}")
+            memory.add("user", f"[image: {os.path.basename(path)}] {question}")
+            memory.add("assistant", raw)
+        else:
+            fail("No response from model")
+    except Exception as e:
+        sp.stop(); fail(str(e))
+
+
+# ── /context ─────────────────────────────────────────────────
+def cmd_context(memory, system_prompt: str, model: str):
+    """Show token estimate for current conversation window."""
+    import math
+    all_text  = system_prompt + " ".join(
+        m["content"] for m in memory.get()
+        if isinstance(m.get("content"), str)
+    )
+    # Rough estimate: 1 token ≈ 4 chars
+    est_tokens = math.ceil(len(all_text) / 4)
+    turns      = len([m for m in memory.get() if m["role"] == "user"])
+    # Context limits by provider/model
+    limits = {
+        "gemini": 1_000_000, "gpt": 128_000, "llama": 128_000,
+        "mistral": 32_000,   "codestral": 200_000, "kimi": 131_072,
+        "qwen": 32_768,      "default": 8_192,
+    }
+    limit = next((v for k, v in limits.items() if k in model.lower()), limits["default"])
+    pct   = min(100, round(est_tokens / limit * 100))
+    bar_w = 30
+    filled = round(bar_w * pct / 100)
+    color  = GN if pct < 60 else (YE if pct < 85 else RE)
+    bar    = f"{color}{'█' * filled}{DG}{'░' * (bar_w - filled)}{R}"
+
+    print(f"\n  {B}{WH}Context window{R}\n")
+    print(f"  {bar}  {color}{pct}%{R}")
+    print(f"  {CY}~{est_tokens:,} tokens{R}  {DG}of ~{limit:,} limit{R}")
+    print(f"  {GR}{turns} turns  ·  {len(memory.get())} messages{R}\n")
+
+
+# ── /redo ─────────────────────────────────────────────────────
+def cmd_redo(client, model: str, memory, system_prompt: str, name: str,
+             last_msg: str, alt_model: str = "") -> str:
+    """Regenerate last answer, optionally with a different model."""
+    if not last_msg:
+        warn("Nothing to redo."); return ""
+    use_model = alt_model or model
+    # Remove last assistant message from memory
+    if memory.get() and memory.get()[-1]["role"] == "assistant":
+        memory._history.pop()
+    memory.add("user", last_msg)
+    messages = build_messages(system_prompt, memory.get())
+    if alt_model:
+        info(f"Redoing with {alt_model.split('/')[-1]}")
+    try:
+        raw = stream_and_render(client, messages, use_model, name)
+        memory._history[-1] = {"role": "user", "content": last_msg}
+        memory.add("assistant", raw)
+        return raw
+    except Exception as e:
+        fail(str(e)); memory._history.pop()
+        return ""
+
+
+# ── /agent ────────────────────────────────────────────────────
+def cmd_agent(task: str, client, model: str, memory,
+              system_prompt: str, name: str) -> str:
+    """Autonomous multi-step agent mode."""
+    from src.agents.agent import run_agent
+    if not task:
+        warn("Usage: /agent <task description>"); return ""
+    real_model = get_models(get_provider())[0] if model == "council" else model
+    yolo       = bool(os.environ.get("LUMI_YOLO"))
+    return run_agent(task, client, real_model, memory, system_prompt, yolo)
+
+
+# ── /mcp ─────────────────────────────────────────────────────
+def cmd_mcp(args: str, client, model: str, memory, system_prompt: str, name: str):
+    """MCP server management and tool calls."""
+    parts = args.split(None, 2)
+    sub   = parts[0] if parts else ""
+
+    if sub == "list" or not sub:
+        servers = mcp_list()
+        if not servers:
+            info("No MCP servers configured.  Use: /mcp add <name> <command>")
+            info("Example: /mcp add github npx -y @modelcontextprotocol/server-github")
+        else:
+            print(f"\n  {B}{WH}MCP servers{R}\n")
+            for name_, cfg in servers.items():
+                cmd_str = cfg.get("command", "") + " " + " ".join(cfg.get("args", []))
+                print(f"  {GN}●{R}  {WH}{name_}{R}  {DG}{cmd_str[:60]}{R}")
+            print()
+
+    elif sub == "add":
+        if len(parts) < 3:
+            warn("Usage: /mcp add <name> <command> [args...]"); return
+        mcp_name = parts[1]
+        rest     = parts[2].split()
+        command  = rest[0]
+        mcp_args = rest[1:]
+        mcp_add(mcp_name, command, mcp_args)
+        ok(f"Added MCP server: {mcp_name}")
+
+    elif sub == "remove":
+        if len(parts) < 2:
+            warn("Usage: /mcp remove <name>"); return
+        if mcp_remove(parts[1]):
+            ok(f"Removed: {parts[1]}")
+        else:
+            fail(f"Server not found: {parts[1]}")
+
+    elif sub == "call":
+        # /mcp call <server> <tool> [json_args]
+        if len(parts) < 3:
+            warn("Usage: /mcp call <server> <tool> [json_args]"); return
+        srv, tool = parts[1], parts[2] if len(parts) > 2 else ""
+        json_args = parts[3] if len(parts) > 3 else "{}"
+        try:
+            sess   = mcp_session(srv)
+            result = sess.call_tool(tool, __import__("json").loads(json_args or "{}"))
+            print(f"\n  {GN}MCP result:{R}\n  {result}\n")
+        except Exception as e:
+            fail(str(e))
+
+    elif sub == "tools":
+        if len(parts) < 2:
+            warn("Usage: /mcp tools <server>"); return
+        try:
+            sess  = mcp_session(parts[1])
+            tools = sess.list_tools()
+            print(f"\n  {B}{WH}Tools — {parts[1]}{R}\n")
+            for t in tools:
+                print(f"  {CY}{t['name']}{R}  {DG}{t.get('description','')}{R}")
+            print()
+        except Exception as e:
+            fail(str(e))
+    else:
+        warn(f"Unknown subcommand: {sub}  (list|add|remove|call|tools)")
+
+
+
 def stream_and_render(client, messages: list, model: str, name: str = "Lumi") -> str:
-    # ── Council mode — route to all 5 agents ─────────────────
+    # ── Council mode — stream synthesized answer ─────────────
     if model == "council":
         user_q = next(
             (m["content"] for m in reversed(messages) if m["role"] == "user"), ""
         )
-        return cmd_council(user_q, messages, name)
+        from src.agents.council import council_ask as _ca
+        # Run agents in parallel (blocking), then stream synthesis
+        import threading as _th
+        _results = {}
+        _errors  = {}
+        agents   = __import__("src.agents.council", fromlist=["_get_available_agents",
+                   "_call_agent", "CouncilSpinner"
+                   ])
+        avail    = agents._get_available_agents()
+        spinner  = agents.CouncilSpinner(avail)
+        print(f"\n  {DG}council  {GR}{len(avail)} agents  {DG}→  asking in parallel...{R}\n")
+        spinner.start()
+        _threads = []
+        def _w(a):
+            agents._call_agent(a, messages, _results, _errors, spinner)
+            spinner.mark_done(a["id"], a["id"] in _results)
+        for _a in avail:
+            _t = _th.Thread(target=_w, args=(_a,), daemon=True)
+            _threads.append(_t); _t.start()
+        for _t in _threads: _t.join(timeout=45)
+        spinner.stop()
+        if not _results:
+            raise RuntimeError("All council agents failed")
+        if _errors:
+            failed = ", ".join(_errors.keys())
+            print(f"  {YE}▲  unavailable: {failed}{R}")
+        # Stream the synthesis
+        if len(_results) > 1:
+            print(f"  {DG}synthesizing {len(_results)} responses...{R}\n")
+        print_lumi_label(name + f"  {DG}[council]{R}")
+        raw_reply = ""
+        for _chunk in agents._judge_stream(_results, user_q):
+            print(_chunk, end="", flush=True)
+            raw_reply += _chunk
+        print()
+        # Re-render
+        for _ in range(raw_reply.count("\n") + 4):
+            sys.stdout.write("\033[A\033[2K")
+        sys.stdout.flush()
+        print_lumi_label(name + f"  {DG}[council]{R}")
+        from src.utils.markdown import render as _mdr
+        print("\n".join("  " + l for l in _mdr(raw_reply).split("\n")))
+        print(f"\n  {MU}{wc(raw_reply)} words  {DG}{len(_results)} agents{R}")
+        return raw_reply
 
     spinner   = Spinner("thinking")
     spinner.start()
@@ -895,7 +1206,10 @@ def cmd_edit(path: str, client, model: str, memory, system_prompt: str, name: st
     else:
         info("No changes made."); return reply
     # Confirm write
-    print(f"\n  {YE}!{R}  {GR}Write changes to {WH}{path}{GR}? {DG}[y/N]{R}  ", end="")
+    if os.environ.get("LUMI_YOLO"):
+        ok(f"Auto-writing {path}  (--yolo)")
+    else:
+        print(f"\n  {YE}!{R}  {GR}Write changes to {WH}{path}{GR}? {DG}[y/N]{R}  ", end="")
     try:
         confirm = input().strip().lower()
     except (KeyboardInterrupt, EOFError):
@@ -1430,8 +1744,137 @@ def cmd_data(path: str, client, model: str, memory, system_prompt: str, name: st
         fail(str(e)); memory._history.pop()
 
 
+def _parse_args():
+    """Parse CLI arguments — inspired by Claude Code and Gemini CLI."""
+    import argparse
+    ap = argparse.ArgumentParser(
+        prog="lumi",
+        description="Lumi AI — terminal assistant with 5 providers and council mode",
+        formatter_class=argparse.RawTextHelpFormatter,
+        add_help=False,
+    )
+    # Core
+    ap.add_argument("query",            nargs="?",       default=None,
+                    help="Send a message and start interactive session")
+    ap.add_argument("-p", "--print",    dest="print_mode", action="store_true",
+                    help="Non-interactive: send query, print response, exit")
+    ap.add_argument("-c", "--continue", dest="resume_latest", action="store_true",
+                    help="Continue most recent conversation")
+    ap.add_argument("-r", "--resume",   metavar="SESSION",
+                    help="Resume session by name or ID  (use 'latest' for most recent)")
+    ap.add_argument("-v", "--version",  action="store_true",
+                    help="Show version and exit")
+    ap.add_argument("-h", "--help",     action="store_true",
+                    help="Show this help and exit")
+
+    # Model / provider
+    ap.add_argument("--model", "-m",    metavar="MODEL",
+                    help="Set model for this session  (e.g. gemini-2.5-flash, council)")
+    ap.add_argument("--provider",       metavar="PROVIDER",
+                    help="Set provider  (gemini|groq|openrouter|mistral|huggingface|ollama)")
+
+    # System prompt
+    ap.add_argument("--system-prompt",  metavar="TEXT",
+                    help="Replace system prompt with custom text")
+    ap.add_argument("--append-system-prompt", metavar="TEXT",
+                    help="Append text to the default system prompt")
+    ap.add_argument("--system-prompt-file",   metavar="FILE",
+                    help="Replace system prompt with contents of a file")
+    ap.add_argument("--append-system-prompt-file", metavar="FILE",
+                    help="Append file contents to default system prompt")
+
+    # Behaviour
+    ap.add_argument("--yolo",           action="store_true",
+                    help="Auto-approve all file writes — no confirmation prompts")
+    ap.add_argument("--max-turns",      metavar="N",     type=int, default=None,
+                    help="Exit after N conversation turns  (non-interactive use)")
+    ap.add_argument("--output-format",  metavar="FMT",   choices=["text","json"],
+                    default="text",
+                    help="Output format for --print mode: text (default) or json")
+    ap.add_argument("--verbose",        action="store_true",
+                    help="Show verbose output (full API errors, token counts, etc)")
+    ap.add_argument("--no-color",       action="store_true",
+                    help="Disable ANSI colors")
+
+    # Session utils
+    ap.add_argument("--list-sessions",  action="store_true",
+                    help="List saved sessions and exit")
+    ap.add_argument("--delete-session", metavar="ID",
+                    help="Delete a session by ID and exit")
+
+    return ap.parse_known_args()[0]
+
+
+LUMI_VERSION = "2.0.0"
+
+
 def main():
-    # Pipe mode: python main.py < file.txt or echo "msg" | python main.py
+    args = _parse_args()
+
+    # ── --version ─────────────────────────────────────────────
+    if args.version:
+        print(f"Lumi {LUMI_VERSION}")
+        sys.exit(0)
+
+    # ── --help ────────────────────────────────────────────────
+    if args.help:
+        print(f"  Lumi AI {LUMI_VERSION}")
+        print("  Usage: lumi [query] [flags]")
+        print("")
+        print(f"  {B}Flags:{R}")
+        print("   -p  --print               non-interactive mode")
+        print("   -c  --continue            resume last conversation")
+        print("   -r  --resume SESSION      resume by name/id")
+        print("   -m  --model MODEL         set model")
+        print("       --provider PROVIDER   set provider")
+        print("       --system-prompt TEXT  replace system prompt")
+        print("       --append-system-prompt TEXT  append to prompt")
+        print("       --yolo                auto-approve file writes")
+        print("       --max-turns N         exit after N turns")
+        print("       --output-format FMT   text or json")
+        print("       --verbose             full error output")
+        print("       --list-sessions       list sessions and exit")
+        print("   -v  --version             show version")
+        print("")
+        print(f"  {B}Examples:{R}")
+        print("   lumi -p \"explain this\" < file.py")
+        print("   lumi -c --model council")
+        print("   lumi --yolo --append-system-prompt \"always use TypeScript\"")
+        print("")
+        sys.exit(0)
+
+    # ── --no-color ────────────────────────────────────────────
+    if args.no_color:
+        # Monkey-patch all color vars to empty string
+        import src.utils.themes as _themes
+        _themes._NO_COLOR = True
+
+    # ── --list-sessions ───────────────────────────────────────
+    if args.list_sessions:
+        sessions = list_sessions()
+        if not sessions:
+            print("  No saved sessions found.")
+        else:
+            header = f"  {'#':<4}  {'ID':<36}  Date"
+            sep    = f"  {'─'*4}  {'─'*36}  {'─'*20}"
+            print(header)
+            print(sep)
+            for i, s in enumerate(sessions, 1):
+                print(f"  {i:<4}  {s.get('id','?'):<36}  {s.get('date','?')}")
+            print()
+        sys.exit(0)
+
+    # ── --delete-session ──────────────────────────────────────
+    if args.delete_session:
+        from src.memory.conversation_store import delete_session
+        try:
+            delete_session(args.delete_session)
+            print(f"  Deleted session: {args.delete_session}")
+        except Exception as e:
+            print(f"  Error: {e}")
+        sys.exit(0)
+
+    # ── Pipe mode ─────────────────────────────────────────────
     if not sys.stdin.isatty():
         piped = sys.stdin.read().strip()
         if piped:
@@ -1444,9 +1887,63 @@ def main():
     persona_override = get_persona_override()
     system_prompt    = make_system_prompt(persona, persona_override)
     memory           = ShortTermMemory(max_turns=20)
+
+    # ── --provider ────────────────────────────────────────────
+    if args.provider:
+        prov = args.provider.lower()
+        if prov in get_available_providers():
+            set_provider(prov)
+        else:
+            print(f"  Unknown provider: {prov}  (available: {', '.join(get_available_providers())})")
+            sys.exit(1)
+
     client           = get_client()
     name             = persona_override.get("name") or persona.get("name", "Lumi")
-    current_model    = get_models(get_provider())[0]
+
+    # ── --model ───────────────────────────────────────────────
+    if args.model:
+        current_model = args.model
+        if args.model == "council":
+            pass  # council handled in stream_and_render
+        else:
+            # Verify model exists for current provider
+            available_models = get_models(get_provider())
+            if args.model not in available_models:
+                # Try as partial match
+                matches = [m for m in available_models if args.model.lower() in m.lower()]
+                if matches:
+                    current_model = matches[0]
+                else:
+                    current_model = args.model  # trust the user
+    else:
+        current_model = get_models(get_provider())[0]
+
+    # ── --system-prompt / --append-system-prompt ──────────────
+    if args.system_prompt:
+        system_prompt = args.system_prompt
+    elif args.system_prompt_file:
+        try:
+            system_prompt = open(os.path.expanduser(args.system_prompt_file)).read()
+        except Exception as e:
+            print(f"  Error reading system prompt file: {e}"); sys.exit(1)
+
+    if args.append_system_prompt:
+        system_prompt = system_prompt + "\n\n" + args.append_system_prompt
+    elif args.append_system_prompt_file:
+        try:
+            extra = open(os.path.expanduser(args.append_system_prompt_file)).read()
+            system_prompt = system_prompt + "\n\n" + extra
+        except Exception as e:
+            print(f"  Error reading append file: {e}"); sys.exit(1)
+
+    # ── --yolo ────────────────────────────────────────────────
+    if args.yolo:
+        os.environ["LUMI_YOLO"] = "1"
+
+    # ── --verbose ─────────────────────────────────────────────
+    if args.verbose:
+        os.environ["LUMI_VERBOSE"] = "1"
+
     current_theme    = load_theme_name()
     multiline        = False
     last_msg         = None
@@ -1459,19 +1956,93 @@ def main():
     response_mode    = None
     current_topic    = None
     AUTOSAVE_EVERY   = 5
-    AUTOREMEMBER_EVERY = 8  # extract facts every N turns
+    AUTOREMEMBER_EVERY = 8
+    max_turns        = args.max_turns  # None = unlimited
+
+    # ── --continue / --resume ─────────────────────────────────
+    _load_session = None
+    if args.resume_latest or (args.resume and args.resume.lower() == "latest"):
+        _load_session = "latest"
+    elif args.resume:
+        _load_session = args.resume
+
+    if _load_session:
+        try:
+            h = load_latest() if _load_session == "latest" else load_by_name(_load_session)
+            if h:
+                for m in h:
+                    if isinstance(m.get("content"), str):
+                        memory.add(m["role"], m["content"])
+                info(f"Resumed session: {_load_session}  ({len(h)} messages)")
+        except Exception:
+            pass
+
+    # ── --print mode ──────────────────────────────────────────
+    if args.print_mode and args.query:
+        piped_ctx = os.environ.get("LUMI_PIPE_INPUT", "")
+        q = (piped_ctx + "\n\n" + args.query).strip() if piped_ctx else args.query
+        memory.add("user", q)
+        messages = build_messages(system_prompt, memory.get())
+        try:
+            if current_model == "council":
+                from src.agents.council import council_ask
+                reply = council_ask(messages, q)
+            else:
+                resp = client.chat.completions.create(
+                    model=current_model, messages=messages,
+                    max_tokens=1024, temperature=0.7, stream=False,
+                )
+                reply = resp.choices[0].message.content.strip()
+            if args.output_format == "json":
+                import json as _json
+                print(_json.dumps({"query": q, "response": reply, "model": current_model}))
+            else:
+                print(reply)
+        except Exception as e:
+            if os.environ.get("LUMI_VERBOSE"):
+                print(f"Error: {e}", file=sys.stderr)
+            else:
+                print(f"Error: {str(e)[:120]}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
+
+    # ── LUMI.md project context ──────────────────────────────
+    _lumi_md = None
+    for _md_path in [pathlib.Path("LUMI.md"), pathlib.Path("lumi.md")]:
+        if _md_path.exists():
+            _lumi_md = _md_path.read_text().strip()
+            break
+    if _lumi_md:
+        system_prompt += f"\n\n--- Project context (LUMI.md) ---\n{_lumi_md}"
+        info(f"Loaded LUMI.md project context ({len(_lumi_md)} chars)")
+
+    # ── Load plugins ──────────────────────────────────────────
+    _loaded_plugins = load_plugins()
+    if _loaded_plugins:
+        info(f"Plugins: {', '.join(_loaded_plugins)}")
 
     draw_header(current_model, 0, "council" if current_model == "council" else get_provider())
     print_welcome(name)
-    # Background health check
+
+    # ── Start with a query (interactive) ─────────────────────
+    _startup_query = args.query or os.environ.get("LUMI_PIPE_INPUT", "")
+
     threading.Thread(target=health_check, args=(get_available_providers(),), daemon=True).start()
+
+    # Inject startup query if provided via CLI arg or pipe
+    _pending_input = _startup_query if _startup_query else ""
 
     while True:
 
         # ── Input ─────────────────────────────────────────────
         try:
             div()
-            user_input = read_multiline().strip() if multiline else input(f"  {PU}›{R}  ").strip()
+            if _pending_input:
+                user_input = _pending_input
+                _pending_input = ""
+                print(f"  {PU}›{R}  {user_input}")
+            else:
+                user_input = read_multiline().strip() if multiline else input(f"  {PU}›{R}  ").strip()
         except (KeyboardInterrupt, EOFError):
             history_save()
             ok(f"Saved → {save(memory.get())}")
@@ -1495,21 +2066,29 @@ def main():
             memory.clear(); last_msg = None; last_reply = None; turns = 0; current_topic = None
             draw_header(current_model, 0, "council" if current_model == "council" else get_provider()); print_welcome(name); continue
 
-        if cmd == "/save":    ok(f"Saved → {save(memory.get())}"); continue
+        if cmd == "/save":
+            parts = user_input.split(maxsplit=1)
+            sname = parts[1].strip() if len(parts) > 1 else ""
+            p = save(memory.get(), sname)
+            ok(f"Saved → {p.name}"); continue
 
         if cmd == "/load":
-            h = load_latest()
+            parts = user_input.split(maxsplit=1)
+            sname = parts[1].strip() if len(parts) > 1 else ""
+            h = load_by_name(sname) if sname else load_latest()
             if h:
                 memory._history = h; turns = len(h) // 2
-                draw_header(current_model, turns, "council" if current_model == "council" else get_provider()); ok(f"Loaded {len(h)} messages.")
+                draw_header(current_model, turns, "council" if current_model == "council" else get_provider())
+                ok(f"Loaded {len(h)} messages" + (f" — {sname}" if sname else ""))
             else: warn("No saved conversations found.")
             continue
 
         if cmd == "/sessions":
             s = list_sessions()
             if s:
-                print(f"\n  {B}{WH}Saved sessions{R}\n")
-                for x in s: print(f"  {DG}·{R}  {GR}{x}{R}")
+                print(f"\n  {B}{WH}Saved sessions{R}  {DG}({len(s)} total){R}\n")
+                for x in s:
+                    print(f"  {DG}·{R}  {WH}{x['name']:<28}{R}  {GR}{x['date']}{R}  {DG}{x['msgs']} msgs{R}")
                 print()
             else: warn("No saved sessions.")
             continue
@@ -1729,6 +2308,86 @@ def main():
                 memory.add("user", q)
                 memory.add("assistant", last_reply)
                 turns += 1
+            continue
+
+        # ── New commands ──────────────────────────────────────
+
+        if cmd == "/web":
+            args = user_input.split(maxsplit=1)[1] if len(user_input.split(maxsplit=1)) > 1 else ""
+            cmd_web(args, client, current_model, memory, system_prompt, name)
+            turns += 1; print(); continue
+
+        if cmd == "/image":
+            args = user_input.split(maxsplit=1)[1] if len(user_input.split(maxsplit=1)) > 1 else ""
+            cmd_image(args, client, current_model, memory, system_prompt, name)
+            turns += 1; print(); continue
+
+        if cmd == "/context":
+            cmd_context(memory, system_prompt, current_model); continue
+
+        if cmd == "/redo":
+            parts = user_input.split(maxsplit=2)
+            alt   = parts[1] if len(parts) > 1 else ""
+            raw   = cmd_redo(client, current_model, memory, system_prompt, name, last_msg or "", alt)
+            if raw: last_reply = raw; turns += 1
+            print(); continue
+
+        if cmd == "/agent":
+            args = user_input.split(maxsplit=1)[1] if len(user_input.split(maxsplit=1)) > 1 else ""
+            reply = cmd_agent(args, client, current_model, memory, system_prompt, name)
+            if reply: last_reply = reply; turns += 1
+            print(); continue
+
+        if cmd == "/mcp":
+            args = user_input.split(maxsplit=1)[1] if len(user_input.split(maxsplit=1)) > 1 else ""
+            cmd_mcp(args, client, current_model, memory, system_prompt, name); continue
+
+        if cmd == "/plugins":
+            sub = (user_input.split(maxsplit=1)[1:] or [""])[0].strip()
+            if sub == "reload":
+                loaded = load_plugins()
+                ok(f"Reloaded: {', '.join(loaded) or 'none'}")
+            else:
+                cmds = get_commands()
+                if cmds:
+                    print(f"\n  {B}{WH}Loaded plugins{R}\n")
+                    for c, d in cmds.items():
+                        print(f"  {PU}{c:<20}{R}  {GR}{d}{R}")
+                    print()
+                else:
+                    info(f"No plugins loaded.  Drop .py files in ~/Lumi/plugins/")
+            continue
+
+        if cmd == "/lumi.md":
+            sub = (user_input.split(maxsplit=1)[1:] or [""])[0].strip()
+            if sub == "show":
+                md = pathlib.Path("LUMI.md")
+                if md.exists():
+                    print(f"\n  {GR}{md.read_text()}{R}\n")
+                else:
+                    warn("No LUMI.md in current directory")
+            elif sub == "create":
+                if pathlib.Path("LUMI.md").exists():
+                    warn("LUMI.md already exists"); 
+                else:
+                    template = f"""# Project Context
+
+## Stack
+<!-- e.g. Python 3.11, FastAPI, PostgreSQL -->
+
+## Conventions
+<!-- coding style, naming, patterns to follow -->
+
+## Rules
+<!-- things Lumi should always / never do in this project -->
+
+## Key files
+<!-- important files and what they do -->
+"""
+                    pathlib.Path("LUMI.md").write_text(template)
+                    ok("Created LUMI.md — edit it, then restart Lumi to load it")
+            else:
+                info("Usage: /lumi.md show | /lumi.md create")
             continue
 
         if cmd == "/search":
@@ -2051,6 +2710,19 @@ def main():
                 except Exception: pass
             threading.Thread(target=_compress, daemon=True).start()
 
+        # ── Plugin dispatch ───────────────────────────────────
+        if cmd:
+            handled, plug_result = plugin_dispatch(
+                cmd,
+                user_input.split(maxsplit=1)[1] if len(user_input.split(maxsplit=1)) > 1 else "",
+                client=client, model=current_model,
+                memory=memory, system_prompt=system_prompt, name=name,
+            )
+            if handled:
+                if plug_result:
+                    print(f"  {GR}{plug_result}{R}")
+                continue
+
         # ── Chat ──────────────────────────────────────────────
         last_msg = user_input
         memory.add("user", augmented)
@@ -2072,6 +2744,12 @@ def main():
         last_reply = raw_reply
         turns += 1
         print()
+        # --max-turns exit
+        if max_turns and turns >= max_turns:
+            ok(f"Reached --max-turns {max_turns} — exiting")
+            history_save()
+            save(memory.get())
+            sys.exit(0)
 
         # ── Auto-save ─────────────────────────────────────────
         if turns % AUTOSAVE_EVERY == 0:

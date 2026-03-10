@@ -179,36 +179,14 @@ def _call_agent(agent: dict, messages: list, results: dict, errors: dict,
     errors[agent["id"]] = last_error
 
 
-def _judge(responses: dict, original_question: str) -> str:
-    """
-    Use the best available agent as judge to synthesize all responses
-    into one definitive answer.
-    """
-    if len(responses) == 1:
-        return next(iter(responses.values()))
-
-    # Judge preference: Gemini > Groq > OpenRouter > Mistral > HF
-    JUDGE_ORDER = ["gemini", "groq", "openrouter", "mistral", "hf"]
-    judge_agent = None
-    for jid in JUDGE_ORDER:
-        candidate = next((a for a in AGENTS if a["id"] == jid), None)
-        if candidate and os.getenv(candidate["key_env"]):
-            judge_agent = candidate
-            break
-
-    if not judge_agent:
-        return max(responses.values(), key=len)
-
-    # Build synthesis prompt
+def _build_judge_prompt(responses: dict, original_question: str) -> str:
     parts = []
     for aid, text in responses.items():
         agent = next((a for a in AGENTS if a["id"] == aid), None)
         label = f"{agent['name']} ({agent['role']})" if agent else aid
         parts.append(f"[{label}]:\n{text}")
-
     combined = "\n\n---\n\n".join(parts)
-
-    judge_prompt = f"""You received responses from {len(responses)} AI models answering this:
+    return f"""You received responses from {len(responses)} AI models answering this:
 
 "{original_question}"
 
@@ -227,22 +205,64 @@ Synthesize the BEST possible final answer:
 Do NOT say "according to the models" or mention the synthesis process.
 Just write the best direct answer."""
 
+
+def _judge(responses: dict, original_question: str) -> str:
+    """Synthesize all responses into one answer (non-streaming fallback)."""
+    if len(responses) == 1:
+        return next(iter(responses.values()))
+    JUDGE_ORDER = ["gemini", "groq", "openrouter", "mistral", "hf"]
+    judge_agent = None
+    for jid in JUDGE_ORDER:
+        candidate = next((a for a in AGENTS if a["id"] == jid), None)
+        if candidate and os.getenv(candidate["key_env"]):
+            judge_agent = candidate
+            break
+    if not judge_agent:
+        return max(responses.values(), key=len)
     try:
         client = _make_agent_client(judge_agent)
         resp   = client.chat.completions.create(
-            model=judge_agent["model"],
-            messages=[{"role": "user", "content": judge_prompt}],
-            max_tokens=2048,
-            temperature=0.3,
-            stream=False,
+            model=judge_agent["models"][0],
+            messages=[{"role": "user", "content": _build_judge_prompt(responses, original_question)}],
+            max_tokens=2048, temperature=0.3, stream=False,
         )
         if resp.choices and resp.choices[0].message.content:
             return resp.choices[0].message.content.strip()
     except Exception:
         pass
-
-    # Judge failed — return the longest response
     return max(responses.values(), key=len)
+
+
+def _judge_stream(responses: dict, original_question: str):
+    """Stream synthesized answer token by token. Yields str chunks."""
+    if len(responses) == 1:
+        yield next(iter(responses.values()))
+        return
+    JUDGE_ORDER = ["gemini", "groq", "openrouter", "mistral", "hf"]
+    judge_agent = None
+    for jid in JUDGE_ORDER:
+        candidate = next((a for a in AGENTS if a["id"] == jid), None)
+        if candidate and os.getenv(candidate["key_env"]):
+            judge_agent = candidate
+            break
+    if not judge_agent:
+        yield max(responses.values(), key=len)
+        return
+    try:
+        client = _make_agent_client(judge_agent)
+        stream = client.chat.completions.create(
+            model=judge_agent["models"][0],
+            messages=[{"role": "user", "content": _build_judge_prompt(responses, original_question)}],
+            max_tokens=2048, temperature=0.3, stream=True,
+        )
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta.content
+            if delta:
+                yield delta
+    except Exception:
+        yield max(responses.values(), key=len)
 
 
 # ── Animated progress display ─────────────────────────────────────────────────
@@ -352,7 +372,12 @@ class CouncilSpinner:
 # ── Main public function ──────────────────────────────────────────────────────
 
 def council_ask(messages: list, user_question: str,
-                show_individual: bool = False) -> str:
+                show_individual: bool = False,
+                stream: bool = False):
+    """
+    stream=True  → returns a generator of string chunks
+    stream=False → returns a full string (default)
+    """
     """
     Send messages to all available agents in parallel, then synthesize.
 
@@ -424,4 +449,6 @@ def council_ask(messages: list, user_question: str,
     if len(results) > 1:
         print(f"\n  {DG}synthesizing {len(results)} responses...{R}\n")
 
+    if stream:
+        return _judge_stream(results, user_question)
     return _judge(results, user_question)
