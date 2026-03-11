@@ -72,24 +72,24 @@ The TUI launches automatically. That's it.
 Lumi's terminal interface is built from scratch — no Textual, no prompt_toolkit, no curses. Pure Python: `termios`, `tty`, `threading`, `signal`, and ANSI escape codes.
 
 ```
-┌─ ◆ Lumi AI  ─  terminal assistant ─────────── ~1,240tk  Gemini / gemini-3.1-pro ─┐
+┌─ ◆ Lumi AI  ─  terminal assistant ─────────── ~1,240tk  Gemini / gemini-3.1-pro ─────┐
 │                                                                                      │
 │  you  21:04                                                                          │
 │  write me a binary search in python                                                  │
 │                                                                                      │
 │  ◆ lumi  21:04                                                                       │
-│  ┌─ python──────────────────────────────────────────────────────────────────────┐   │
-│  │ def binary_search(arr, target):                                               │   │
-│  │     left, right = 0, len(arr) - 1                                            │   │
-│  │     while left <= right:                                                      │   │
-│  │         mid = (left + right) // 2                                            │   │
-│  │         if arr[mid] == target: return mid                                    │   │
-│  │         elif arr[mid] < target: left = mid + 1                               │   │
-│  │         else: right = mid - 1                                                │   │
-│  │     return -1                                                                 │   │
-│  └──────────────────────────────────────────────────────────────────────────────┘   │
+│  ┌─ python──────────────────────────────────────────────────────────────────────┐    │
+│  │ def binary_search(arr, target):                                              │    │
+│  │     left, right = 0, len(arr) - 1                                            │    │
+│  │     while left <= right:                                                     │    │
+│  │         mid = (left + right) // 2                                            │    │
+│  │         if arr[mid] == target: return mid                                    │    │
+│  │         elif arr[mid] < target: left = mid + 1                               │    │
+│  │         else: right = mid - 1                                                │    │
+│  │     return -1                                                                │    │
+│  └──────────────────────────────────────────────────────────────────────────────┘    │
 │                                                                                      │
-│──────────────────────────────────────────────────────────────────────────────────── │
+│ ──────────────────────────────────────────────────────────────────────────────────── │
 │ ›  ask lumi anything…   ( / for commands )                                           │
 └──────────────────────────────────────────────────────────────────────────────────────┘
 ```
