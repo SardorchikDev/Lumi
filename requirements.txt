@@ -13,4 +13,7 @@ pyttsx3
 pdfminer.six
 
 #textual
-textual>=0.80.0
+#textual>=0.80.0
+
+#promt toolkit
+#prompt_toolkit>=3.0.0

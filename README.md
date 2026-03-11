@@ -9,381 +9,331 @@
 ╚══════╝  ╚═════╝   ╚═╝     ╚═╝  ╚═╝
 ```
 
-### The terminal AI that runs 5 models at once, remembers you, edits your files, and costs nothing.
+### The terminal AI that runs 8 models at once, remembers you, edits your files, and costs nothing.
 
-[![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e?style=flat-square)](LICENSE)
 [![Free](https://img.shields.io/badge/Cost-100%25%20Free-22c55e?style=flat-square)](#-api-keys)
-[![Providers](https://img.shields.io/badge/Providers-5%2B-8b5cf6?style=flat-square)](#-api-keys)
-[![Council](https://img.shields.io/badge/Council-5%20Agents-f97316?style=flat-square)](#-council-mode)
+[![Providers](https://img.shields.io/badge/Providers-8%2B-8b5cf6?style=flat-square)](#-api-keys)
+[![Council](https://img.shields.io/badge/Council-8%20Agents-f97316?style=flat-square)](#-council-mode)
+[![TUI](https://img.shields.io/badge/TUI-Pure%20Python-7dcfff?style=flat-square)](#-tui)
 
-[Quick Start](#-quick-start) · [Why Lumi](#-why-lumi) · [Council Mode](#-council-mode) · [Commands](#-commands) · [Agent Mode](#-agent-mode) · [MCP](#-mcp-servers) · [Plugins](#-plugin-system)
+[Quick Start](#-quick-start) · [TUI](#-tui) · [Council](#-council-mode) · [Commands](#-commands) · [Providers](#-api-keys) · [Agent Mode](#-agent-mode) · [MCP](#-mcp-servers)
 
 </div>
 
 ---
 
-## ⚡ Quick Start
+## What is Lumi?
+
+Lumi is a **pure Python terminal AI assistant** with a hand-built TUI — no Electron, no web UI, no bloat. Zero UI framework dependencies. It runs in your terminal using raw ANSI escape codes and Tokyo Night colors.
+
+You type. It thinks. Eight AI models argue about the answer simultaneously. The best response wins.
+
+---
+
+## ✨ Highlights
+
+- **⚡ 8-Agent Council** — Gemini, Kimi, GPT-OSS, Codestral, Llama, GPT-4o, Command A, Cloudflare run in parallel. They debate. A judge synthesizes the best answer.
+- **🎨 Pure Python TUI** — Tokyo Night theme. Zero UI library dependencies. Built from scratch with ANSI escape codes and `termios`.
+- **🧠 Conversation memory** — Remembers context across sessions. Named sessions you can resume.
+- **🤖 Autonomous Agent** — Plans and executes multi-step tasks. Reads/writes files, runs code, searches the web.
+- **🔌 MCP Support** — Connect any MCP server via stdio. Use tools from your own servers.
+- **💾 100% Free** — Every provider has a free tier. You can run Lumi entirely for free.
+- **🔌 Plugin System** — Drop Python files into `~/Lumi/plugins/`. Auto-loaded as slash commands.
+
+---
+
+## 🚀 Quick Start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SardorchikDev/lumi/main/install.sh | bash
-nano ~/Lumi/.env    # add at least one API key
-lumi                # run from anywhere
+git clone https://github.com/SardorchikDev/lumi
+cd lumi
+bash install.sh
 ```
 
-Free key in 30 seconds: [aistudio.google.com/apikey](https://aistudio.google.com/apikey) (Gemini) or [console.groq.com](https://console.groq.com) (Groq). No credit card.
+Then add at least one API key to `~/Lumi/.env`:
+
+```env
+GEMINI_API_KEY=your_key_here
+```
+
+Run:
+```bash
+lumi
+```
+
+The TUI launches automatically. That's it.
 
 ---
 
-## 🏆 Why Lumi
+## 🖥 TUI
 
-| | **Lumi** | Claude Code | Gemini CLI | Aider | Copilot CLI |
-|---|:---:|:---:|:---:|:---:|:---:|
-| 100% free | ✅ | ❌ $20/mo | ❌ limited | ❌ | ❌ $10/mo |
-| 5+ providers | ✅ | ❌ Claude only | ❌ Gemini only | ⚠️ | ❌ |
-| 5-agent council | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Auto-fallback | ✅ | ❌ | ⚠️ | ❌ | ❌ |
-| Long-term memory | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Autonomous agent | ✅ | ✅ | ⚠️ | ✅ | ❌ |
-| MCP servers | ✅ | ✅ | ✅ | ❌ | ❌ |
-| Plugin system | ✅ | ❌ | ⚠️ | ❌ | ❌ |
-| Vision / images | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Web fetch | ✅ | ❌ | ✅ | ❌ | ❌ |
-| Project context | ✅ | ✅ | ✅ | ❌ | ❌ |
-| Named sessions | ✅ | ✅ | ✅ | ❌ | ❌ |
-| Custom persona | ✅ | ❌ | ❌ | ❌ | ❌ |
-| 5 color themes | ✅ | ❌ | ✅ | ❌ | ❌ |
-| Voice input | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Offline (Ollama) | ✅ | ❌ | ❌ | ⚠️ | ❌ |
-| Open source | ✅ | ❌ | ❌ | ✅ | ❌ |
+Lumi's terminal interface is built from scratch — no Textual, no prompt_toolkit, no curses. Pure Python: `termios`, `tty`, `threading`, `signal`, and ANSI escape codes.
 
-> Claude Code costs $20/mo and only runs Claude. Gemini CLI only runs Gemini. **Lumi runs everything, remembers you, and is free.**
+```
+┌─ ◆ Lumi AI  ─  terminal assistant ─────────── ~1,240tk  Gemini / gemini-3.1-pro ─┐
+│                                                                                      │
+│  you  21:04                                                                          │
+│  write me a binary search in python                                                  │
+│                                                                                      │
+│  ◆ lumi  21:04                                                                       │
+│  ┌─ python──────────────────────────────────────────────────────────────────────┐   │
+│  │ def binary_search(arr, target):                                               │   │
+│  │     left, right = 0, len(arr) - 1                                            │   │
+│  │     while left <= right:                                                      │   │
+│  │         mid = (left + right) // 2                                            │   │
+│  │         if arr[mid] == target: return mid                                    │   │
+│  │         elif arr[mid] < target: left = mid + 1                               │   │
+│  │         else: right = mid - 1                                                │   │
+│  │     return -1                                                                 │   │
+│  └──────────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                      │
+│──────────────────────────────────────────────────────────────────────────────────── │
+│ ›  ask lumi anything…   ( / for commands )                                           │
+└──────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Features
+- **Markdown rendering** — headings, bullets, numbered lists, blockquotes, **bold**, *italic*, `inline code`
+- **Syntax-highlighted code blocks** — keywords, numbers, strings, comments each a different color
+- **Scroll** — `↑↓` when input empty, `PgUp/PgDn` for pages, scroll indicator in title bar
+- **Input history** — `↑↓` inside input recalls previous messages
+- **Slash command popup** — type `/` for a floating menu, `Tab` to complete, `Enter` to run
+- **Model picker modal** — `Ctrl+N` opens an inline picker for providers and models
+- **Council sidebar** — live agent spinners with confidence scores when in council mode
+- **Notification toasts** — brief messages for copy/save/export confirmations
+- **Resize aware** — `SIGWINCH` triggers instant redraw at new terminal size
+- **Tokyo Night** — exact 24-bit color palette throughout
+
+### Keybinds
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Send message / confirm selection |
+| `↑↓` | Scroll (empty input) or input history |
+| `PgUp / PgDn` | Scroll pages |
+| `Tab` | Complete slash command |
+| `Ctrl+N` | Open model picker |
+| `Ctrl+L` | Clear chat |
+| `Ctrl+R` | Retry last message |
+| `Ctrl+W` | Delete word backwards |
+| `Ctrl+U` | Clear entire input |
+| `Ctrl+← / →` | Jump word |
+| `Home / End` | Jump to start/end of input |
+| `Ctrl+Q` | Quit |
+| `Esc` | Close popup |
 
 ---
 
-## 🧠 Council Mode
+## ⚡ Council Mode
 
-Five AI models answer simultaneously. A judge synthesizes the best answer and streams it back token by token. Fallbacks are automatic — quota hit on one model, next one fires.
+Switch with `/council` or `Ctrl+N → ⚡ Council`.
+
+All available agents fire simultaneously. Each gets a specialist system prompt tuned to their strength. A judge model synthesizes the final answer. If 3+ agents disagree, a debate round fires before synthesis. The result is then refined in a second pass.
 
 ```
-❯ lumi --model council
-
-◆ Lumi  │  Council  │  5 agents
-
-›  explain async vs parallel execution in Python
-
-  council  5 agents  →  asking in parallel...
-
-  ✓ Gemini     ✓ Kimi K2    ✓ GPT-OSS
-  ✓ Codestral  ✓ Llama 3.3
-
-  synthesizing 5 responses...
-
-✦ Lumi  [council]
-  Async and parallel solve different problems. Async is about
-  waiting efficiently — when one task blocks on I/O, other
-  tasks run in the meantime...
+◆ council  8 agents · code   21:09
+┌─────────────────────────────────────────────────────────────────┐
+│  ✓ Gemini    9/10 · 3.1s     ★ lead                            │
+│  ✓ Kimi K2   8/10 · 4.2s                                        │
+│  ✓ Codestral 9/10 · 2.8s                                        │
+│  ⠸ GPT-OSS   thinking…                                          │
+│  ✓ Llama 3.3 7/10 · 5.1s                                        │
+│  ✓ GPT-4o    9/10 · 3.7s                                        │
+│  ✓ Command A 8/10 · 6.2s                                        │
+│  ✓ Cloudflare 7/10 · 2.4s                                       │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-| Agent | Provider | Specialty |
-|---|---|---|
-| **Gemini** | Google AI | Reasoning, long context |
-| **Kimi K2** | Groq | Analysis, structured thinking |
-| **GPT-OSS** | OpenRouter | General purpose |
-| **Codestral** | Mistral | Code generation & review |
-| **Llama 3.3** | HuggingFace | Writing & explanation |
+**How it works:**
+1. **Task classification** — question type detected: `code / debug / analysis / creative / factual / design / general`
+2. **Lead agent** — best agent for that task type is promoted to lead
+3. **Parallel calls** — all agents fire simultaneously with specialist prompts
+4. **Confidence scoring** — each agent rates their own answer 1–10
+5. **Debate round** — fires if 3+ agents contradict each other
+6. **Synthesis** — judge model weighs confidence scores and builds the best answer
+7. **Refinement** — judge reviews its own synthesis, rewrites if gaps found
 
-Each agent has a fallback chain. You only see `✗` when every fallback fails.
+---
+
+## 📋 Commands
+
+Type `/` in the TUI to see the popup, or type any command directly:
+
+| Command | Description |
+|---------|-------------|
+| `/council` | Switch to council mode |
+| `/model` | Open model & provider picker |
+| `/clear` | Clear conversation history |
+| `/retry` | Retry the last message |
+| `/web <query>` | Search the web |
+| `/save [file]` | Save chat to `~/lumi_chat_<timestamp>.txt` |
+| `/export [file]` | Export chat as Markdown |
+| `/copy` | Copy last response to clipboard |
+| `/tokens` | Show token usage for current session |
+| `/sys` | Preview current system prompt |
+| `/agent` | Autonomous agent mode |
+| `/session` | Session management |
+| `/help` | Show all commands and keybinds |
+| `/exit` | Quit |
+
+### Non-interactive / print mode
+
+```bash
+lumi -p "explain this" < file.py       # pipe stdin
+lumi --no-tui                          # classic CLI
+lumi -p "summarize" --model council    # one-shot council
+```
 
 ---
 
 ## 🔑 API Keys
 
-All free. No credit card.
+Add to `~/Lumi/.env`. You only need **one** to get started — everything else is optional.
 
-| Provider | Get Key | Best Free Model |
-|---|---|---|
-| **Gemini** | [aistudio.google.com/apikey](https://aistudio.google.com/apikey) | `gemini-flash-latest` |
-| **Groq** | [console.groq.com](https://console.groq.com) | `kimi-k2-instruct` |
-| **OpenRouter** | [openrouter.ai/keys](https://openrouter.ai/keys) | `hermes-3-405b:free` |
-| **Mistral** | [console.mistral.ai](https://console.mistral.ai) | `codestral-latest` |
-| **HuggingFace** | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) | `Llama-3.3-70B-Instruct` |
-
-```env
-# ~/Lumi/.env
-GEMINI_API_KEY=AIza...
-GROQ_API_KEY=gsk_...
-OPENROUTER_API_KEY=sk-or-...
-MISTRAL_API_KEY=...
-HF_TOKEN=hf_...
-```
-
-> **OpenRouter:** Visit [openrouter.ai/settings/privacy](https://openrouter.ai/settings/privacy) and enable free endpoints.
-
----
-
-## 🚀 CLI Flags
-
-```bash
-lumi                                      # interactive session
-lumi "explain this code"                  # start with a message
-lumi -p "what is a closure"               # print answer and exit
-lumi -p "fix this" < broken.py            # pipe + print
-cat error.log | lumi -p "explain"         # pipe from any command
-lumi -c                                   # continue last session
-lumi -r my-project                        # resume named session
-lumi --model council                      # start in council mode
-lumi --model gemini-2.5-flash             # specific model
-lumi --provider groq                      # force provider
-lumi --system-prompt "Be concise"         # replace system prompt
-lumi --append-system-prompt "Use TS"      # append to default prompt
-lumi --system-prompt-file ./rules.txt     # load prompt from file
-lumi --yolo                               # auto-approve all file writes
-lumi --max-turns 10                       # exit after N turns
-lumi -p "query" --output-format json      # JSON output for scripts
-lumi --list-sessions                      # list sessions and exit
-lumi --verbose                            # full error output
-lumi -v                                   # version
-```
-
----
-
-## 💬 Commands
-
-### Chat
-| Command | Description |
-|---|---|
-| `/council <q>` | Ask all 5 agents — streams synthesized best answer |
-| `/council --show <q>` | Same + each agent's raw response |
-| `/context` | Token usage bar for current conversation |
-| `/redo [model]` | Regenerate last answer, optionally with a different model |
-| `/more` | Expand the last reply |
-| `/tl;dr` | One-sentence summary |
-| `/rewrite` | Rewrite in a different style |
-| `/short` · `/detailed` · `/bullets` | Format modifiers |
-| `/multi` | Toggle multi-line input |
-| `/clear` · `/undo` · `/retry` | Reset, undo turn, or resend |
-
-### Code
-| Command | Description |
-|---|---|
-| `/edit <path>` | Edit file — diff + backup |
-| `/file <path>` | Load file into context |
-| `/project <dir>` | Load entire codebase |
-| `/fix <error>` | Diagnose and fix an error |
-| `/review [file]` | Full code review |
-| `/explain [file]` | Explain code or last reply |
-| `/comment [file]` | Add docstrings and comments |
-| `/run` | Execute code from last reply |
-| `/git status\|commit\|log` | Git helpers |
-
-### Autonomous
-| Command | Description |
-|---|---|
-| `/agent <task>` | Plan + execute multi-step task autonomously |
-| `/lumi.md create` | Create project context file |
-| `/lumi.md show` | View current LUMI.md |
-
-### Web & Vision
-| Command | Description |
-|---|---|
-| `/web <url> [question]` | Fetch full webpage, ask questions |
-| `/image <path> [question]` | Send image — vision support |
-| `/search <query>` | Web search with AI summary |
-| `/pdf <path>` | Analyze PDF |
-| `/data <path>` | Analyze CSV/JSON |
-
-### MCP Servers
-| Command | Description |
-|---|---|
-| `/mcp list` | Show configured servers |
-| `/mcp add <n> <cmd>` | Add server |
-| `/mcp remove <n>` | Remove server |
-| `/mcp tools <server>` | List tools |
-| `/mcp call <srv> <tool>` | Call tool directly |
-
-### Sessions & Memory
-| Command | Description |
-|---|---|
-| `/save [name]` | Save with optional name |
-| `/load [name]` | Load by name or latest |
-| `/sessions` | Table of all sessions |
-| `/remember <fact>` | Save to long-term memory |
-| `/memory` · `/forget` | View or delete memories |
-| `/export` · `/find <kw>` | Export or search sessions |
-
-### Settings
-| Command | Description |
-|---|---|
-| `/model` | Pick provider + model (with speed tags) |
-| `/theme` | Switch color theme |
-| `/persona` | Edit name, tone, traits |
-| `/plugins` · `/plugins reload` | Manage plugins |
-| `/quit` | Save and exit |
+| Provider | Env Var | Free Tier | Get Key |
+|----------|---------|-----------|---------|
+| **Gemini** | `GEMINI_API_KEY` | 1M ctx, generous limits | [aistudio.google.com](https://aistudio.google.com) |
+| **Groq** | `GROQ_API_KEY` | Very fast, daily limits | [console.groq.com](https://console.groq.com) |
+| **OpenRouter** | `OPENROUTER_API_KEY` | $1 free credit | [openrouter.ai](https://openrouter.ai) |
+| **Mistral** | `MISTRAL_API_KEY` | Free tier available | [console.mistral.ai](https://console.mistral.ai) |
+| **HuggingFace** | `HF_TOKEN` | Free, many models | [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens) |
+| **GitHub Models** | `GITHUB_API_KEY` | Free with GitHub account | [github.com/settings/tokens](https://github.com/settings/tokens) |
+| **Cohere** | `COHERE_API_KEY` | 1000 req/month free | [dashboard.cohere.com](https://dashboard.cohere.com) |
+| **Cloudflare AI** | `CLOUDFLARE_API_KEY` + `CLOUDFLARE_ACCOUNT_ID` | 10k neurons/day free | [dash.cloudflare.com](https://dash.cloudflare.com) |
+| **Ollama** | *(auto-detected)* | Fully local, unlimited | [ollama.ai](https://ollama.ai) |
 
 ---
 
 ## 🤖 Agent Mode
 
-Give Lumi a goal. It plans, shows you the plan, then executes — asking before anything risky.
-
-```
-›  /agent build a FastAPI project with JWT auth and Postgres
-
-  Plan  (8 steps)
-
-  1. [shell]      Create project structure
-  2. [file_write] Write main.py
-  3. [file_write] Write models.py — SQLAlchemy
-  4. [file_write] Write auth.py — JWT logic
-  5. [ai_task]    Generate requirements.txt
-  6. [shell]      git init                    ▲ risky
-  7. [file_write] Write .env template
-  8. [shell]      pip install -r requirements  ▲ risky
-
-  Execute 8 steps? [y/N]  y
-
-  step 1/8  Create project structure
-  ✓  Created ./myapi/
-  ...
-  ✓  Agent completed 8/8 steps
-```
-
-Use `--yolo` to skip all confirmation prompts.
-
----
-
-## 📁 LUMI.md Project Context
-
-Put `LUMI.md` in any project directory. Lumi auto-loads it on startup — no config needed.
+Lumi can plan and execute multi-step tasks autonomously.
 
 ```bash
-cd ~/projects/myapp && lumi
-# Loaded LUMI.md project context (312 chars)
+lumi --yolo "refactor all Python files in this directory to use type hints"
 ```
 
-Create one with `/lumi.md create` or write it manually:
-
-```markdown
-# Project Context
-
-## Stack
-Python 3.11 · FastAPI · PostgreSQL · Redis
-
-## Conventions
-- Type hints everywhere
-- async/await for DB calls
-- Pydantic v2 models
-
-## Rules
-- Never use print() — use the logger
-- Docstrings on all public functions
-
-## Key files
-- main.py   — FastAPI entry point
-- models.py — SQLAlchemy ORM models
-- auth.py   — JWT authentication
+Or in the TUI:
 ```
+/agent
+> add docstrings to every function in src/utils/
+```
+
+Agent capabilities:
+- Read and write files
+- Execute shell commands
+- Search the web
+- Call MCP tools
+- Plan tasks into sub-steps and execute them in sequence
+
+`--yolo` flag auto-approves all file writes. Without it, Lumi asks before each write.
 
 ---
 
 ## 🔌 MCP Servers
 
-Connect Lumi to GitHub, Postgres, filesystem, Slack, and hundreds more.
+Lumi supports Model Context Protocol (MCP) via stdio.
 
-```bash
-/mcp add github npx -y @modelcontextprotocol/server-github
-/mcp add fs     npx -y @modelcontextprotocol/server-filesystem /home/user
-/mcp add db     npx -y @modelcontextprotocol/server-postgres postgresql://localhost/mydb
-
-/mcp tools github
-/mcp call github search_repositories {"query": "fastapi"}
+Add servers to `~/Lumi/.env`:
+```env
+MCP_SERVERS=filesystem,github,slack
 ```
 
-Config in `~/Lumi/mcp.json`. Available tools are injected into the system prompt automatically.
+Or connect directly in the TUI:
+```
+/mcp connect filesystem
+```
 
 ---
 
-## 🧩 Plugin System
+## 🔧 Plugin System
 
-Drop a `.py` in `~/Lumi/plugins/` → instant new slash command. No restart.
+Drop any `.py` file into `~/Lumi/plugins/`. It gets auto-loaded and its functions become slash commands.
 
+Example `~/Lumi/plugins/weather.py`:
 ```python
-# ~/Lumi/plugins/joke.py
-COMMANDS    = {"/joke": tell_joke}
-DESCRIPTION = {"/joke": "tell a programming joke"}
-
-def tell_joke(args, client, model, memory, system_prompt, name):
-    print("  Why do programmers prefer dark mode?")
-    print("  Because light attracts bugs 🐛")
+def weather(city: str = "Tokyo") -> str:
+    """Get current weather for a city."""
+    import urllib.request, json
+    url = f"https://wttr.in/{city}?format=j1"
+    with urllib.request.urlopen(url) as r:
+        data = json.load(r)
+    return data["current_condition"][0]["weatherDesc"][0]["value"]
 ```
 
-```bash
-/plugins reload   # hot-reload
-/joke             # works immediately
+Now `/weather London` works in Lumi.
+
+---
+
+## 📁 Project Structure
+
+```
+~/Lumi/
+├── main.py                    # CLI entry point, all commands
+├── lumi_system_instructions.md # system prompt (edit to customize Lumi's personality)
+├── .env                       # API keys
+├── requirements.txt
+└── src/
+    ├── agents/
+    │   ├── council.py         # 8-agent council with debate + refinement
+    │   └── agent.py           # autonomous multi-step agent
+    ├── chat/
+    │   └── hf_client.py       # multi-provider OpenAI-compatible client
+    ├── memory/
+    │   ├── conversation_store.py  # named sessions
+    │   ├── longterm.py            # long-term memory
+    │   └── short_term.py          # in-session context
+    ├── prompts/
+    │   └── builder.py         # loads + builds system prompt
+    ├── tools/
+    │   ├── mcp.py             # MCP stdio client
+    │   └── search.py          # web search
+    ├── tui/
+    │   └── app.py             # pure Python TUI (zero UI library dependencies)
+    └── utils/
+        ├── filesystem.py      # file read/write tools
+        ├── highlight.py       # syntax highlighting
+        ├── markdown.py        # markdown → ANSI renderer
+        ├── plugins.py         # plugin loader
+        ├── themes.py          # Tokyo Night color system
+        └── web.py             # stdlib web fetcher
 ```
 
 ---
 
-## 🎨 Themes
+## ⚙️ Configuration
 
-| Theme | Style |
-|---|---|
-| `tokyo` | Tokyo Night — purple & cyan *(default)* |
-| `dracula` | Dark purple, hot pink |
-| `nord` | Arctic blues |
-| `gruvbox` | Warm earthy retro |
-| `catppuccin` | Soft pastel mocha |
+Edit `lumi_system_instructions.md` to change Lumi's personality, behavior, and defaults. This file is the system prompt — it loads automatically on every session.
 
----
-
-## ❓ Troubleshooting
-
-**`No API key found`** — Add keys to `~/Lumi/.env`, format `KEY=value`
-
-**`Error 429`** — Hit free quota. Add more API keys, Lumi auto-switches.
-
-**`Error 404 — No endpoints matching data policy`** *(OpenRouter)* — Enable free endpoints at [openrouter.ai/settings/privacy](https://openrouter.ai/settings/privacy)
-
-**`Error 400 — Developer instruction not enabled`** — Model doesn't support system prompts (Gemma etc). Use `/model` to pick another.
-
-**Council spinner garbled** — Use Alacritty, Kitty, WezTerm, or iTerm2.
+Common customizations:
+- Change Lumi's name or personality
+- Set default response style (concise vs. detailed)
+- Add domain-specific knowledge
+- Set default provider/model
+- Add custom slash commands
 
 ---
 
-## 📦 Requirements
+## 🐛 Known Limitations
 
-```
-Python 3.9+ · openai · python-dotenv · huggingface_hub
-```
-
-Optional: `pdfplumber` (PDF) · `sounddevice` + `openai-whisper` (voice) · `node` + `npx` (MCP servers)
-
-No GPU. No Docker. Runs anywhere.
-
----
-
-## 🤝 Contributing
-
-- **New provider** → `src/chat/hf_client.py`
-- **New command** → add fn in `main.py` → wire in dispatch loop → add to `print_help()`
-- **New council agent** → add to `AGENTS` in `src/agents/council.py`
-- **New plugin** → drop `.py` in `~/Lumi/plugins/` — no code changes needed
+- MCP support is early — complex servers may need tweaking
+- Scroll in very long conversations can get slow (building all lines each frame)
+- Cloudflare models are experimental — some may return errors
+- Council mode uses 7–8 API calls per message — burns free tier quotas faster
 
 ---
 
 ## 📄 License
 
-MIT — use it, fork it, ship it.
+MIT. Use it, fork it, build on it.
 
 ---
 
 <div align="center">
 
-Built by **[Sardor Sodiqov](https://github.com/SardorchikDev)**
+Built by **SardorchikDev**
 
-*One terminal. Five AIs. Zero cost.*
-
-**[⭐ Star on GitHub](https://github.com/SardorchikDev/lumi)**
+*Pure Python. Zero bloat. Tokyo Night.*
 
 </div>
