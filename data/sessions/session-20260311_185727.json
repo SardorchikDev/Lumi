@@ -1,0 +1,22 @@
+{
+  "name": "session-20260311_185727",
+  "date": "2026-03-11 18:57",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hi"
+    },
+    {
+      "role": "assistant",
+      "content": "Hey there! What's up?"
+    },
+    {
+      "role": "user",
+      "content": "how are you"
+    },
+    {
+      "role": "assistant",
+      "content": "I'm doing pretty good, just chilling here, ready to chat. How about you? How's your day going?"
+    }
+  ]
+}
