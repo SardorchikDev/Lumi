@@ -88,15 +88,15 @@ def _erase_line(): return f"{CSI}2K"
 def _clr_down(): return f"{CSI}J"
 
 BG = "transparent"
-BG_DARK = "#16161e"
-BG_HL = "#1f2335"
-BG_POP = "#24283b"
-BORDER = "#29294a"
-MUTED = "#3b3f5e"
+BG_DARK = "#24283b"
+BG_HL = "#292e42"
+BG_POP = "#1f2335"
+BORDER = "#414868"
+MUTED = "#565f89"
 COMMENT = "#565f89"
-FG_DIM = "#737aa2"
-FG = "#a9b1d6"
-FG_HI = "#c0caf5"
+FG_DIM = "#a9b1d6"
+FG = "#c0caf5"
+FG_HI = "#cfc9c2"
 BLUE = "#7aa2f7"
 CYAN = "#7dcfff"
 GREEN = "#9ece6a"
@@ -109,7 +109,7 @@ TEAL = "#2ac3de"
 def B(h): return _fg(h) + _bold()
 R = _reset()
 
-SPINNER_FRAMES = list("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+SPINNER_FRAMES = list("⠋⠙⠚⠞⠖⠦⠴⠲⠳⠓")
 
 PROV_NAME = {
     "gemini": "Gemini", "groq": "Groq", "openrouter": "OpenRouter",
@@ -260,7 +260,9 @@ class Renderer:
 
     def _draw(self):
         rows, cols = _term_size()
-        chat_w = cols
+        pane_active = getattr(self.tui, "pane_active", False)
+        chat_w = int(cols * 0.6) if pane_active else cols
+        pane_w = cols - chat_w - 1 if pane_active else 0
         buf =[]
         w = buf.append
 
@@ -283,7 +285,20 @@ class Renderer:
         for i in range(chat_rows):
             w(_move(i + 1, 1)) 
             cl = chat_lines[i] if i < len(chat_lines) else ""
-            w(_bg(BG) + _erase_line() + cl + _bg(BG))
+            
+            if pane_active:
+                cl_stripped = _strip_ansi(cl)
+                pad = max(0, chat_w - len(cl_stripped))
+                cl_padded = cl + " " * pad
+                
+                pane_lines = getattr(self.tui, "pane_lines_output", [])
+                p_idx = i - chat_rows + len(pane_lines)
+                pane_line = pane_lines[p_idx] if p_idx >= 0 and p_idx < len(pane_lines) else ""
+                pane_line_padded = pane_line.ljust(pane_w)[:pane_w]
+                
+                w(_bg(BG) + cl_padded + _fg(BORDER) + "│" + _fg(FG) + pane_line_padded + _bg(BG))
+            else:
+                w(_bg(BG) + _erase_line() + cl + _bg(BG))
 
         w(self._input_area(rows, cols, chat_w))
 
@@ -306,22 +321,19 @@ class Renderer:
         msgs = self.tui.store.snapshot()
         lines =[]
         inner = max(30, width - 6)
-
         if not msgs:
-            # Reverting back directly to original Blocky Graphic exactly!
-            logo =[
-                "██╗      ██╗   ██╗  ███╗   ███╗  ██╗",
-                "██║      ██║   ██║  ████╗ ████║  ██║",
-                "██║      ██║   ██║  ██╔████╔██║  ██║",
-                "██║      ██║   ██║  ██║╚██╔╝██║  ██║",
-                "███████╗ ╚██████╔╝  ██║ ╚═╝ ██║  ██║",
-                "╚══════╝  ╚═════╝   ╚═╝     ╚═╝  ╚═╝"
+            logo = [
+                "  ▝▜▄     Lumi CLI v0.33.0",
+                "    ▝▜▄",
+                "   ▗▟▀    Logged in with API",
+                "  ▝▀      Lumi Code Assist for individuals /mode"
             ]
-            pad_top = max(1, (_term_size()[0] - 12) // 2)
-            lines += [""] * pad_top
             for l in logo:
-                lines.append(" " * max(1, (width - 40) // 2) + B(PURPLE) + l + R)
-            lines += [""] * 2
+                lines.append(" " + B(BLUE) + l + R)
+                
+            chat_rows = _term_size()[0] - 2
+            pad_mid = max(2, chat_rows - len(logo) - 2)
+            lines += [""] * pad_mid
             
             hint = _fg(MUTED) + "Begin anywhere. Try " + _fg(CYAN) + "Tab" + _fg(MUTED) + " or " + _fg(BLUE) + "/" + _fg(MUTED) + " commands." + R
             lines.append(" " * max(1, (width - _visible_len(hint)) // 2) + hint)
@@ -329,29 +341,29 @@ class Renderer:
 
         for msg in msgs:
             if msg.role == "user":
-                # Beautiful bounding bubbles
-                lines.append("  " + _fg(BORDER) + "╭─ " + B(BLUE) + "you" + "  " + _fg(COMMENT) + msg.ts + R)
+                # Minimalist vertical bar padding for User
+                lines.append("  " + _fg(BORDER) + "┃ " + _fg(FG_DIM) + "[YOU]  " + msg.ts + R)
                 for ln in textwrap.wrap(msg.text, inner) or [msg.text]:
-                    lines.append("  " + _fg(BORDER) + "│ " + _fg(FG_HI) + ln + R)
-                lines.append("  " + _fg(BORDER) + "╰" + "─" * min(20, inner) + R)
+                    lines.append("  " + _fg(BORDER) + "┃ " + _fg(FG_HI) + ln + R)
                 lines.append("")
 
             elif msg.role in ("assistant", "streaming"):
-                label = msg.label or "◆ lumi"
+                label = msg.label or "󰚩 Lumi"
                 cursor = (" " + _fg(CYAN) + "▋" + R) if msg.role == "streaming" else ""
-                # Vessel mode: override label + use RED instead of PURPLE
+                
                 if self.tui.vessel_mode and self.tui.active_vessel:
                     hdr_col = B(RED)
                     if "vessel" not in label:
-                        label = f"◆ vessel [{self.tui.active_vessel}]"
+                        label = f"󰚩 Vessel [{self.tui.active_vessel}]"
                 else:
                     hdr_col = B(PURPLE)
-                lines.append("  " + _fg(BORDER) + "╭─ " + hdr_col + label + "  " + _fg(COMMENT) + msg.ts + R)
+                    
+                lines.append("  " + _fg(BORDER) + "┃ " + hdr_col + label + "  " + _fg(COMMENT) + msg.ts + R)
                 raw_lines = msg.text.split("\n") if msg.text else [""]
                 
                 in_code = False
                 code_w = min(inner - 2, 92)
-                lpre = "  " + _fg(BORDER) + "│ "
+                lpre = "  " + _fg(BORDER) + "┃ "
                 
                 for ln in raw_lines:
                     if ln.startswith("```"):
@@ -359,28 +371,30 @@ class Renderer:
                             in_code = True
                             code_lang = ln[3:].strip()
                             lt = f" {code_lang} " if code_lang else ""
-                            bf = "─" * max(0, code_w - len(lt) - 2)
-                            lines.append(lpre + _bg(BG_DARK) + _fg(CYAN) + "╭" + (lt if lt else "─") + _fg(MUTED) + bf + "╮" + R)
+                            # Completely flat codeblock start (no borders, just padded code)
+                            lines.append(lpre + _bg(BG_DARK) + _fg(CYAN) + (lt if lt else " code ") + " " * max(0, code_w - len(lt if lt else " code ")) + R)
                         else:
                             in_code = False
-                            lines.append(lpre + _bg(BG_DARK) + _fg(MUTED) + "╰" + "─" * (code_w - 2) + "╯" + R)
+                            lines.append(lpre + _bg(BG_DARK) + " " * code_w + R)
                         continue
                         
                     if in_code:
                         mcc = code_w - 4
                         for sl in (textwrap.wrap(ln, mcc) if len(ln) > mcc else [ln]) or[""]:
                             hi = _syntax_hi(sl)
-                            pad = max(0, code_w - _visible_len(sl) - 3)
-                            # Deeply embedded proper color block!
-                            lines.append(lpre + _bg(BG_DARK) + _fg(MUTED) + "│ " + hi + _bg(BG_DARK) + " " * pad + _fg(MUTED) + "│" + R)
-                    
-                    elif re.match(r"^#{1,6} ", ln):
+                            pad = max(0, code_w - _visible_len(sl) - 2)
+                            lines.append(lpre + _bg(BG_DARK) + "  " + hi + _bg(BG_DARK) + " " * pad + R)
+                        continue
+                        
+                    # Standard Markdown Formatting inside AI Bubbles
+                    if re.match(r"^#{1,6} ", ln):
                         lvl = len(ln) - len(ln.lstrip("#"))
                         col =[BLUE, CYAN, TEAL, FG_HI, FG, FG_DIM][min(lvl - 1, 5)]
+                        lines.append(lpre) # Extra padding above headers
                         lines.append(lpre + _fg(col) + _bold() + ln.lstrip("# ") + R)
                         
                     elif ln.startswith("> "): lines.append(lpre + _fg(MUTED) + "▍" + _italic() + _fg(FG_DIM) + ln[2:] + R)
-                    elif re.match(r"^[-*•] ", ln): lines.append(lpre + _fg(PURPLE) + " •" + _fg(FG) + " " + ln[2:] + R)
+                    elif re.match(r"^[-*•] ", ln): lines.append(lpre + _fg(PURPLE) + " 󰍡" + _fg(FG) + " " + ln[2:] + R)
                     elif ln.strip() == "": lines.append(lpre)
                     else:
                         rendered = self._inline(ln)
@@ -389,10 +403,9 @@ class Renderer:
                             for wl in (textwrap.wrap(_strip_ansi(ln), inner) or [ln]):
                                 lines.append(lpre + _fg(FG) + wl + R)
                                 
-                if in_code: lines.append(lpre + _bg(BG_DARK) + _fg(RED) + "[STREAM PAUSED]" + " " * (code_w - 18) + R)
+                if in_code: lines.append(lpre + _bg(BG_DARK) + _fg(RED) + "[STREAM PAUSED]" + " " * (code_w - 15) + R)
                 if cursor: lines[-1] += cursor
                     
-                lines.append("  " + _fg(BORDER) + "╰" + "─" * min(20, inner) + R)
                 lines.append("")
 
             elif msg.role == "system":
@@ -437,24 +450,30 @@ class Renderer:
         mode = f" {tui.response_mode}" if tui.response_mode else ""
 
         if tui.vessel_mode and tui.active_vessel:
-            stat_bare = f" ⬡ VESSEL [{tui.active_vessel.upper()}] · ~{toks:,}tk{mode} "
-            stat_str  = _fg(RED) + _bold() + f" ⬡ VESSEL [{tui.active_vessel.upper()}]" + _reset() + _fg(COMMENT) + f" · ~{toks:,}tk{mode} "
+            stat_str = f" ⬡ VESSEL [{tui.active_vessel.upper()}] · ~{toks:,}tk{mode} "
+            stat_colored = _fg(RED) + _bold() + f"⬡ VESSEL [{tui.active_vessel.upper()}]" + R + _fg(COMMENT) + f" · ~{toks:,}tk{mode}"
         else:
-            stat_bare = f" ◆ {pname} · {model} · ~{toks:,}tk{mode} "
-            stat_str  = stat_bare
+            stat_str = f" {pname} · {model} · ~{toks:,}tk{mode} "
+            stat_colored = _fg(FG_DIM) + f"{pname}" + R + _fg(COMMENT) + f" · {model} · ~{toks:,}tk{mode}"
 
-        top_w = max(0, cols - len(stat_bare) - 3)
-        top = _move(rows - 1, 1) + _bg(BG) + _fg(BORDER) + "╭─" + _fg(COMMENT) + stat_str + _fg(BORDER) + "─" * top_w + "╮" + R
+        # Clean top status line (no borders, just floating right-aligned text)
+        top_w = max(0, chat_w - len(stat_str) - 2)
+        top = _move(rows - 1, 1) + _bg(BG) + _erase_line() + " " * top_w + stat_colored + " " + R
 
-        sym = _fg(YELLOW) + "⠿ " if tui.busy else (_fg(RED) + "λ " if tui.vessel_mode else _fg(PURPLE) + "λ ")
-        hint = _fg(MUTED) + "generating…" + R if tui.busy else ""
+        # Sleek glowing prompt chevron
+        sym = _fg(BLUE) + _bold() + "❯ " + R if not tui.busy else _fg(CYAN) + "⠋ " + R
+        if tui.busy:
+            # Overwrite the static spinner with the animated one in the draw loop natively
+            pass # handled by caller/spinner logic natively, we just set color
+
+        hint = _fg(MUTED) + _italic() + " generating…" + R if tui.busy else ""
 
         txt = tui.buf
         disp_w = chat_w - 7
         scroll = max(0, tui.cur_pos - disp_w + 1)
         shown = txt[scroll:scroll + disp_w]
 
-        bot = _move(rows, 1) + _bg(BG) + _erase_line() + _fg(BORDER) + "╰─ " + sym + _fg(FG_HI) + shown + hint + R
+        bot = _move(rows, 1) + _bg(BG) + _erase_line() + "  " + sym + _fg(FG_HI) + shown + hint + R
 
         return top + bot
 
@@ -464,8 +483,11 @@ class Renderer:
         out =[_move(top, left) + _bg(BG_DARK) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
         for i, (cmd, desc) in enumerate(hits[:10]):
             bg_ = _bg(BG_HL) if i == sel else _bg(BG_DARK); cc = _fg(CYAN) + _bold() if i == sel else _fg(BLUE)
-            dc = _fg(FG) if i == sel else _fg(MUTED); pad2 = max(0, pop_w - 2 - 2 - 16 - len(desc))
-            out.append(_move(top + 1 + i, left) + _bg(BG_DARK) + _fg(BORDER) + "│ " + bg_ + cc + f"{cmd:<16}" + R + bg_ + dc + desc + " " * pad2 + R + _bg(BG_DARK) + _fg(BORDER) + " │" + R)
+            dc = _fg(FG) if i == sel else _fg(MUTED)
+            d_cmd = f"{cmd[:15]:<16}"
+            d_desc = desc[:max(0, pop_w - 22)]
+            pad2 = max(0, pop_w - 20 - len(d_desc))
+            out.append(_move(top + 1 + i, left) + _bg(BG_DARK) + _fg(BORDER) + "│ " + bg_ + cc + d_cmd + R + bg_ + dc + d_desc + " " * pad2 + R + _bg(BG_DARK) + _fg(BORDER) + " │" + R)
         out.append(_move(top + 1 + n, left) + _bg(BG_DARK) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
         return "".join(out)
 
@@ -479,24 +501,30 @@ class Renderer:
         row = top + 3
         for i, (kind, value, label) in enumerate(items):
             if kind == "header":
-                sp = max(0, pop_w - 4 - len(label))
-                out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + B(COMMENT) + label + " " * sp + _fg(BORDER) + " │" + R)
+                lbl = label[:pop_w - 6]
+                sp = max(0, pop_w - 4 - len(lbl))
+                out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + B(COMMENT) + lbl + " " * sp + _fg(BORDER) + " │" + R)
             else:
                 is_sel = (i == sel); dot = "●" if is_sel else "○"; bg_ = _bg(BG_HL) if is_sel else _bg(BG_POP)
                 lc = B(CYAN) if is_sel else _fg(FG_DIM); vcol = PROV_COL.get(value, FG) if kind == "provider" else FG
-                pp = max(0, pop_w - 4 - len(f"{dot} {label}"))
-                out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + bg_ + lc + dot + " " + _fg(vcol if is_sel else FG_DIM) + label + " " * pp + R + _bg(BG_POP) + _fg(BORDER) + " │" + R)
+                lbl = label[:pop_w - 8]
+                pp = max(0, pop_w - 4 - len(f"{dot} {lbl}"))
+                out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + bg_ + lc + dot + " " + _fg(vcol if is_sel else FG_DIM) + lbl + " " * pp + R + _bg(BG_POP) + _fg(BORDER) + " │" + R)
             row += 1
         out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
         row += 1
-        out.append(_move(row, left) + _bg(BG_POP) + _fg(COMMENT) + "│ Esc Close · ↑↓ Move · Enter Mount " + " " * max(0, pop_w - 38) + _fg(BORDER) + "│" + R)
+        bot_txt = "Esc Close · ↑↓ Move · Enter Mount"
+        out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + _fg(COMMENT) + bot_txt + " " * max(0, pop_w - 4 - len(bot_txt)) + _fg(BORDER) + " │" + R)
         row += 1
         out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
         return "".join(out)
 
     def _notification_bar(self, rows, cols):
-        msg = self.tui.notification; pop_w = min(len(msg) + 6, cols - 4); left = max(1, cols - pop_w - 2)
-        return _move(rows - 3, left) + _bg(BG_POP) + _fg(CYAN) + " ╭─ " + _fg(FG_HI) + msg + " ─╮" + R
+        msg = self.tui.notification
+        pop_w = min(len(msg) + 6, cols - 4)
+        left = max(1, cols - pop_w - 2)
+        disp_msg = msg[:max(0, pop_w - 6)]
+        return _move(rows - 3, left) + _bg(BG_POP) + _fg(CYAN) + " ╭─ " + _fg(FG_HI) + disp_msg + _fg(CYAN) + " ─╮" + R
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -524,6 +552,9 @@ class LumiTUI:
         self.active_vessel = None    # "gemini" | "qwen" | "opencode" | None
 
         self._loaded_plugins =[]; self.renderer = Renderer(self)
+        self.original_termios = None
+        self.pane_active = False
+        self.pane_lines_output = []
 
     def _make_system_prompt(self, coding_mode=False, file_mode=False):
         return build_system_prompt({**self.persona, **self.persona_override}, build_memory_block(), coding_mode, file_mode)
@@ -563,7 +594,7 @@ class LumiTUI:
 
         full = ""
         try:
-            for chunk in self.client.chat.completions.create(model=model, messages=messages, max_tokens=2048, temperature=0.7, stream=True):
+            for chunk in self.client.chat.completions.create(model=model, messages=messages, max_tokens=8192, temperature=0.7, stream=True):
                 if not chunk.choices: continue
                 d = chunk.choices[0].delta.content
                 if d:
@@ -611,7 +642,7 @@ class LumiTUI:
                     set_provider(remaining[0]); self.client = get_client(); self.current_model = get_models(remaining[0])[0]
                     self.store.set_text(idx, "")
                     full = ""
-                    for chunk in self.client.chat.completions.create(model=self.current_model, messages=messages, max_tokens=2048, temperature=0.7, stream=True):
+                    for chunk in self.client.chat.completions.create(model=self.current_model, messages=messages, max_tokens=8192, temperature=0.7, stream=True):
                         if not chunk.choices: continue
                         d = chunk.choices[0].delta.content
                         if d: full += d; self.store.append(idx, d); self.redraw()
@@ -621,9 +652,27 @@ class LumiTUI:
         else: self.store.set_text(idx, f"⚠  {ex}")
         self.store.finalize(idx); return f"⚠  {ex}"
 
-    def _silent_call(self, prompt, model, max_tokens=300):
+    def _silent_call(self, prompt, model, max_tokens=8192):
         try: return self.client.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}], max_tokens=max_tokens, temperature=0.3, stream=False).choices[0].message.content.strip()
         except: return ""
+
+    def _guardian_loop(self):
+        while getattr(self, "_running", True):
+            time.sleep(30)
+            if not getattr(self, "_running", True): break
+            if not hasattr(self, "guardian_enabled"): self.guardian_enabled = True
+            if not self.guardian_enabled: continue
+            
+            msgs = []
+            if shutil.which("ruff"):
+                r = subprocess.run(["ruff", "check", ".", "--output-format=concise"], capture_output=True, text=True)
+                if r.returncode != 0: msgs.append("ruff errors")
+            if shutil.which("pytest"):
+                r = subprocess.run(["pytest", "-q"], capture_output=True, text=True)
+                if r.returncode != 0: msgs.append("pytest failing")
+            
+            if msgs:
+                self._notify(f"⚠ Guardian: {', '.join(msgs)}")
 
     # ── Application Main loop Thread setup / cleanup & Event bindings ───────
     def run(self):
@@ -640,6 +689,7 @@ class LumiTUI:
             if md_path.exists(): self.system_prompt += f"\n\n--- Project context (LUMI.md) ---\n{md_path.read_text().strip()}"; break
 
         fd = sys.stdin.fileno(); old = termios.tcgetattr(fd)
+        self.original_termios = old
         def _cleanup(*_):
             try: termios.tcsetattr(fd, termios.TCSADRAIN, old)
             except: pass
@@ -652,6 +702,7 @@ class LumiTUI:
         try:
             sys.stdout.write(_alt_on()); sys.stdout.flush(); tty.setraw(fd)
             with self._state_lock: self._running = True
+            threading.Thread(target=self._guardian_loop, daemon=True).start()
             self.redraw()
             while self._running:
                 key = _read_key()
@@ -1477,94 +1528,301 @@ def cmd_summarize(tui: LumiTUI, arg: str):
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
 
-@registry.register("/mode", "Toggle persona: /mode normal | /mode vessel <gemini|qwen|opencode>")
+@registry.register("/mode", "/mode <cli_name>  Handoff control to an external CLI tool")
 def cmd_mode(tui: LumiTUI, arg: str):
-    parts = arg.strip().lower().split()
-    sub   = parts[0] if parts else ""
+    target = arg.strip().lower()
+    allowed = ["opencode", "gemini", "qwen"]
 
-    VESSEL_MAP = {
-        # AI name → (provider key, partial model match hint, display name)
-        "gemini":   ("gemini",      "gemini",   "Gemini"),
-        "qwen":     ("openrouter",  "qwen",     "Qwen"),
-        "opencode": ("openrouter",  "opencode", "OpenCode"),
-    }
+    if target not in allowed:
+        tui._err(f"Invalid CLI tool: '{target}'. Must be one of: {', '.join(allowed)}")
+        return
 
-    if sub == "normal" or sub == "":
-        # ── Restore Lumi ──────────────────────────────────────────────────────
-        tui.vessel_mode   = False
-        tui.active_vessel = None
-        clear_persona_override()
-        tui.persona_override = {}
-        tui.system_prompt    = tui._make_system_prompt()
-        tui.name             = tui.persona_override.get("name") or tui.persona.get("name", "Lumi")
-        # restore saved provider if we switched; fall back gracefully
-        tui._sys(
-            "◆  Vessel mode deactivated — Lumi persona restored.\n"
-            "   Use /model to switch providers if needed."
-        )
-        tui._notify("Lumi mode ✓")
+    def _handoff():
+        tui.set_busy(True)
+        # Phase 1: TUI Suspension
+        sys.stdout.write("\033[?1049l\033[?25h")
+        sys.stdout.flush()
+        if hasattr(tui, 'original_termios') and tui.original_termios:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, tui.original_termios)
 
-    elif sub == "vessel":
-        ai_name = parts[1] if len(parts) > 1 else ""
-        if ai_name not in VESSEL_MAP:
-            tui._err(
-                f"Unknown vessel AI: '{ai_name}'\n"
-                f"Supported: {', '.join(VESSEL_MAP)}\n"
-                f"Usage: /mode vessel gemini | qwen | opencode"
-            )
-            return
+        log_file = f".{target}_raw.log"
+        dest_file = f"{target}_logs.txt"
 
-        provider_key, model_hint, display = VESSEL_MAP[ai_name]
-
-        # ── Switch provider & pick matching model ─────────────────────────────
+        # Phase 2: Execution & PTY Recording
         try:
-            set_provider(provider_key)
-            tui.client = get_client()
-            models     = get_models(provider_key)
-            # prefer a model whose name contains the hint
-            matched = next((m for m in models if model_hint in m.lower()), None)
-            tui.current_model = matched or (models[0] if models else tui.current_model)
+            subprocess.run(f"script -q -c '{target}' {log_file}", shell=True)
+        except Exception:
+            pass
+
+        # Phase 3: Log Processing
+        if os.path.exists(log_file):
+            try:
+                raw_text = Path(log_file).read_text(errors="replace")
+                clean_text = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b.', '', raw_text)
+                clean_text = re.sub(r'\r\n|\r', '\n', clean_text)
+
+                header = f"==== VESSEL SESSION: {target.upper()} | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ====\n"
+                with open(dest_file, "a", encoding="utf-8") as f:
+                    f.write(header + clean_text + "\n\n")
+                os.remove(log_file)
+            except Exception:
+                pass
+
+        # Phase 4: TUI Restoration
+        tty.setraw(sys.stdin.fileno())
+        sys.stdout.write("\033[?1049h\033[?25l\033[J")
+        sys.stdout.flush()
+        tui.redraw()
+
+        # Phase 5: Memory Injection & Auto-Trigger
+        sys_msg = f"[SYSTEM NOTE: I was temporarily put to sleep while the user used the '{target}' CLI. The session transcript was saved to {dest_file}. I should warmly welcome them back and ask if they want me to review the new code or read the logs.]"
+        tui.memory.add("system", sys_msg)
+
+        user_msg = f"(I have returned from using {target}. Greet me and mention {dest_file}.)"
+        tui.store.add(Msg("user", user_msg))
+        tui.memory.add("user", user_msg)
+
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+
+        def _stream_response():
+            raw = tui._tui_stream(msgs, tui.current_model)
+            if len(tui.memory._history) > 0:
+                tui.memory._history[-1] = {"role": "user", "content": user_msg}
+            tui.memory.add("assistant", raw)
+            tui.last_reply = raw
+            tui.turns += 1
+            tui.set_busy(False)
+            tui.redraw()
+
+        threading.Thread(target=_stream_response, daemon=True).start()
+
+    _handoff()
+
+@registry.register("/offline", "Enter air-gapped privacy mode via Ollama")
+def cmd_offline(tui: LumiTUI, arg: str):
+    try:
+        models = get_models("ollama")
+        if not models:
+            tui._err("Ollama is not running or no models found! Ensure ollama is active.")
+            return
+        
+        set_provider("ollama")
+        tui.client = get_client()
+        tui.current_model = models[0]
+        
+        tui._sys(f"◆  [OFFLINE] Privacy Mode ON. Cloud disconnected. Local: {tui.current_model}")
+        tui._notify(f"Offline Mode: {tui.current_model}")
+    except Exception as e:
+        tui._err(f"Offline switch failed: {e}")
+
+@registry.register("/godmode", "Agentic autonomous workflow loop")
+def cmd_godmode(tui: LumiTUI, arg: str):
+    if not arg: tui._err("Usage: /godmode <objective>"); return
+
+    def _go():
+        tui.set_busy(True)
+        tui._sys(f"◆  Entering God Mode. Objective: {arg}")
+        
+        prompt = (f"GOD MODE OBJECTIVE: {arg}\n"
+                  "You act autonomously. Respond STRICTLY in one of three formats:\n\n"
+                  "To run a shell command:\n"
+                  "[CMD] <bash command>\n\n"
+                  "To edit or create a file (write full file context):\n"
+                  "[EDIT] <file_path>\n"
+                  "<Content...>\n"
+                  "[ENDEDIT]\n\n"
+                  "To finish the task successfully:\n"
+                  "[DONE]\n\n"
+                  "Only do ONE action per message. The system will reply with feedback.")
+        
+        tui.memory.add("user", prompt)
+        
+        loop = 0
+        while getattr(tui, "_running", True) and loop < 15:
+            loop += 1
+            msgs = build_messages(tui.system_prompt, tui.memory.get())
+            raw = tui._tui_stream(msgs, tui.current_model, f"◆ God Mode [Loop {loop}]")
+            tui.memory.add("assistant", raw)
+            tui.last_reply = raw
+            tui.turns += 1
+            
+            if "[DONE]" in raw:
+                tui._sys("◆  God Mode successfully completed the objective.")
+                break
+                
+            cmd_match = re.search(r'\[CMD\]\s*(.+)', raw)
+            edit_match = re.search(r'\[EDIT\]\s*([^ \n]+)\n(.*?)(?:\[ENDEDIT\]|$)', raw, re.DOTALL)
+            
+            feedback = ""
+            if cmd_match:
+                command = cmd_match.group(1).strip()
+                tui._sys(f"◆  Executing: {command}")
+                try:
+                    r = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=60)
+                    feedback = f"Exit code {r.returncode}\nSTDOUT:\n{r.stdout[:2000]}\nSTDERR:\n{r.stderr[:2000]}"
+                except Exception as e:
+                    feedback = f"Execution failed: {e}"
+            elif edit_match:
+                fpath = edit_match.group(1).strip()
+                content = edit_match.group(2)
+                tui._sys(f"◆  Writing file: {fpath}")
+                try:
+                    Path(fpath).parent.mkdir(parents=True, exist_ok=True)
+                    Path(fpath).write_text(content, encoding='utf-8')
+                    feedback = f"File {fpath} successfully updated."
+                except Exception as e:
+                    feedback = f"Write failed: {e}"
+            else:
+                feedback = "No valid [CMD], [EDIT], or [DONE] block found. Format must be exact. Only one action allowed. Do not output markdown code blocks around commands."
+            
+            tui.memory.add("user", f"System Feedback:\n{feedback}")
+            time.sleep(1)
+            tui.redraw()
+            
+        tui.set_busy(False)
+        tui.redraw()
+        
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/pane", "Launch a command in a side pane")
+def cmd_pane(tui: LumiTUI, arg: str):
+    if not arg or arg.strip() == "close":
+        tui.pane_active = False
+        tui.redraw()
+        return
+        
+    tui.pane_active = True
+    tui.pane_lines_output = []
+    
+    def _read_pane():
+        proc = subprocess.Popen(arg, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        for line in iter(proc.stdout.readline, ""):
+            if not getattr(tui, "_running", True) or not tui.pane_active:
+                proc.terminate()
+                break
+            tui.pane_lines_output.append(line.rstrip('\n')[:120]) # Limit width
+            if len(tui.pane_lines_output) > 100:
+                tui.pane_lines_output = tui.pane_lines_output[-100:]
+            tui.redraw()
+            
+    threading.Thread(target=_read_pane, daemon=True).start()
+    tui.redraw()
+
+@registry.register("/apply", "Interactively apply code blocks from last LLM reply")
+def cmd_apply(tui: LumiTUI, arg: str):
+    if not tui.last_reply:
+        tui._err("No LLM reply to apply.")
+        return
+        
+    # Find markdown code blocks
+    blocks = re.findall(r'```[a-zA-Z]*\n(.*?)```', tui.last_reply, re.DOTALL)
+    if not blocks:
+        tui._err("No markdown code blocks found in the last reply.")
+        return
+        
+    target_file = arg.strip()
+    if not target_file:
+        tui._err("Usage: /apply <filename>")
+        return
+        
+    code = blocks[0].strip() # Take the first code block
+    
+    # Temporarily exit TUI to use blocking shell input
+    sys.stdout.write("\033[?1049l\033[?25h")
+    sys.stdout.flush()
+    if hasattr(tui, 'original_termios') and tui.original_termios:
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, tui.original_termios)
+        
+    print(f"\n\033[1;36m=== PROPOSED CHANGE FOR {target_file} ===\033[0m\n")
+    print(code[:1000] + ("...\n[TRUNCATED]" if len(code) > 1000 else ""))
+    print(f"\n\033[1;33mApply this code to {target_file}? [y/N]\033[0m ", end="")
+    sys.stdout.flush()
+    
+    try:
+       ans = input().strip().lower()
+    except:
+       ans = "n"
+       
+    if ans == "y":
+        try:
+            Path(target_file).parent.mkdir(parents=True, exist_ok=True)
+            Path(target_file).write_text(code + "\n", encoding='utf-8')
+            tui._sys(f"◆  Applied changes to {target_file}")
         except Exception as e:
-            tui._err(f"Provider switch failed: {e}\nVessel mode not activated."); return
-
-        # ── Inject vessel system prompt ────────────────────────────────────────
-        vessel_sp = (
-            f"You are no longer Lumi. You are acting as a raw vessel for {display}. "
-            f"Respond exactly as {display} would — with its native reasoning style, "
-            f"capabilities, and tone. Do NOT mention Lumi, do NOT maintain any Lumi persona. "
-            f"Do NOT add disclaimers about being an AI assistant named Lumi. "
-            f"You are {display}, channeled through a terminal interface. "
-            f"Be direct, technical, and raw. No pleasantries unless the user requests them."
-        )
-        overrides = {"__vessel_system__": vessel_sp}
-        set_persona_override(overrides)
-        tui.persona_override = overrides
-
-        # Rebuild system prompt with vessel injection
-        base_sp = tui._make_system_prompt()
-        tui.system_prompt = vessel_sp + "\n\n" + base_sp
-
-        tui.vessel_mode   = True
-        tui.active_vessel = ai_name
-
-        tui._sys(
-            f"⬡  VESSEL MODE  ─  {display}\n"
-            f"   Provider : {provider_key}\n"
-            f"   Model    : {tui.current_model.split('/')[-1]}\n\n"
-            f"   Lumi persona stripped. This terminal is now a pure conduit.\n"
-            f"   Type /mode normal to restore Lumi."
-        )
-        tui._notify(f"⬡ Vessel: {display}")
-
+            tui._err(f"Failed to write {target_file}: {e}")
     else:
-        tui._err(
-            f"Unknown mode: '{sub}'\n"
-            f"Usage:\n"
-            f"  /mode normal              — restore Lumi\n"
-            f"  /mode vessel gemini       — channel Gemini\n"
-            f"  /mode vessel qwen         — channel Qwen\n"
-            f"  /mode vessel opencode     — channel OpenCode"
-        )
+        tui._sys(f"◆  Skipped applying to {target_file}")
+        
+    # Restore TUI
+    tty.setraw(sys.stdin.fileno())
+    sys.stdout.write("\033[?1049h\033[?25l\033[J")
+    sys.stdout.flush()
+    tui.redraw()
+
+@registry.register("/index", "Build local semantic codebase RAG index")
+@bg_task
+def cmd_index(tui: LumiTUI, arg: str):
+    tui.set_busy(True)
+    tui._sys("◆  Indexing local repository for RAG... (this may take a moment)")
+    try:
+        from src.tools.rag import build_index
+        count = build_index(".")
+        tui._sys(f"◆  Successfully indexed {count} files natively via SQLite.")
+    except Exception as e:
+        tui._err(f"Indexing failed: {e}")
+    tui.set_busy(False)
+
+@registry.register("/rag", "Query the local codebase index")
+@bg_task
+def cmd_rag(tui: LumiTUI, arg: str):
+    if not arg:
+        tui._err("Usage: /rag <question>")
+        return
+        
+    tui.set_busy(True)
+    try:
+        from src.tools.rag import search_index
+        results = search_index(arg, limit=3)
+        if not results:
+            tui._err("No results found or index not built. Run /index first.")
+            tui.set_busy(False)
+            return
+            
+        context = "Here are the top relevant files from the local index:\n\n"
+        for filepath, content in results:
+            context += f"--- {filepath} ---\n{content}\n\n"
+            
+        prompt = f"{context}\n\nBased on the codebase above, answer this: {arg}"
+        tui.memory.add("user", prompt)
+        
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [RAG]")
+        tui.memory._history[-1] = {"role": "user", "content": f"/rag {arg}"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw
+        tui.turns += 1
+    except Exception as e:
+        tui._err(f"RAG search failed: {e}")
+    tui.set_busy(False)
+
+@registry.register("/voice", "Record 5s of voice and transcribe")
+@bg_task
+def cmd_voice(tui: LumiTUI, arg: str):
+    tui.set_busy(True)
+    tui._sys("◆  Listening for 5 seconds... Speak now!")
+    try:
+        from src.tools.voice import record_audio, transcribe_audio_hf
+        audio_file = record_audio(duration=5)
+        tui._sys("◆  Transcribing...")
+        text = transcribe_audio_hf(audio_file)
+        
+        # Inject the transcribed text directly into the user's input buffer
+        tui.buf = text
+        tui.cur_pos = len(text)
+        tui._sys(f"Transcribed: '{text}' (Press Enter to send)")
+    except Exception as e:
+        tui._err(f"Voice failed: {e}")
+    tui.set_busy(False)
 
 # ── Entry System Level ─────────────────────────────────────────────────────────────
 def launch(): LumiTUI().run()

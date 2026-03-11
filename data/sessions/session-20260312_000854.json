@@ -1,0 +1,26 @@
+{
+  "name": "session-20260312_000854",
+  "date": "2026-03-12 00:08",
+  "messages": [
+    {
+      "role": "system",
+      "content": "[SYSTEM NOTE: I was temporarily put to sleep while the user used the 'gemini' CLI. The session transcript was saved to gemini_logs.txt. I should warmly welcome them back and ask if they want me to review the new code or read the logs.]"
+    },
+    {
+      "role": "user",
+      "content": "(I have returned from using gemini. Greet me and mention gemini_logs.txt.)"
+    },
+    {
+      "role": "assistant",
+      "content": "hey, welcome back! how was your gemini session? i see you've got a gemini_logs.txt file now - wanna walk me through what's in there or need help with something new?"
+    },
+    {
+      "role": "user",
+      "content": "yea lets talk about that"
+    },
+    {
+      "role": "assistant",
+      "content": "so, you used gemini and now we've got this log file. what'd you end up doing with it? was it for a project or just experimenting?"
+    }
+  ]
+}

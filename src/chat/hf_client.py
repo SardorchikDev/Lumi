@@ -559,7 +559,7 @@ def chat_stream(
     client: OpenAI,
     messages: list,
     model: str = None,
-    max_tokens: int = 2048,
+    max_tokens: int = 8192,
     temperature: float = 0.7,
 ) -> str:
     import re as _re

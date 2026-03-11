@@ -1,515 +1,131 @@
-# ◆ Lumi AI — Terminal Development Environment
+<div align="center">
 
-```
-██╗      ██╗   ██╗  ███╗   ███╗  ██╗
-██║      ██║   ██║  ████╗ ████║  ██║
-██║      ██║   ██║  ██╔████╔██║  ██║
-██║      ██║   ██║  ██║╚██╔╝██║  ██║
-███████╗ ╚██████╔╝  ██║ ╚═╝ ██║  ██║
-╚══════╝  ╚═════╝   ╚═╝     ╚═╝  ╚═╝
-```
+# ◆ Lumi AI 
+**The Ultimate Terminal Development Environment**
 
-**Lumi** is a full-featured AI development environment that lives entirely inside your terminal. Pure Python, zero UI library dependencies — no `rich`, no `textual`, no `curses`. Every pixel is hand-drawn with raw ANSI escape codes and a Tokyo Night color palette.
+An unapologetically native, high-performance, and feature-rich AI agent built exclusively for the CLI. No heavy Electron apps, no proprietary GUI wrappers, no telemetry. Just raw ANSI, extreme speed, and unprecedented agentic autonomy.
 
-> Built by **Sardor Sodiqov**
+[![Python Version](https://img.shields.io/badge/Python-3.10+-blue?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
+[![Zero Dependencies](https://img.shields.io/badge/dependencies-0%20packages-success?style=for-the-badge)](https://github.com/SardorchikDev/Lumi)
+[![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
+
+</div>
 
 ---
 
-## Table of Contents
+## ⚡ Why Lumi? (vs. The Competition)
 
-1. [Features](#features)
-2. [Architecture](#architecture)
-3. [Installation](#installation)
-4. [Configuration](#configuration)
-5. [Running Lumi](#running-lumi)
-6. [Command Reference](#command-reference)
-7. [Vessel Mode](#vessel-mode)
-8. [Provider System](#provider-system)
-9. [Council Mode](#council-mode)
-10. [Memory System](#memory-system)
-11. [Plugin System](#plugin-system)
-12. [Keybindings](#keybindings)
-13. [Project Context (LUMI.md)](#project-context-lumimd)
-14. [File Structure](#file-structure)
+Most AI coding tools try to pull you out of the terminal. Lumi pulls the AI *into* it. 
 
----
+### Lumi vs Cursor / IDE Extensions 
+* **The Problem:** IDE extensions like Copilot and Cursor lock you into their editors. They abstract away the shell, making system-level tasks, deployment pipelines, and raw Git workflows clumsy.
+* **The Lumi Advantage:** Lumi is a first-class citizen of the UNIX ecosystem. It runs alongside your `vim`, `tmux`, and `ssh` sessions. It can run shell commands, parse `pytest` output live, execute `ruff` in the background, and seamlessly integrate into existing pipelines. You don't leave your terminal.
 
-## Features
+### Lumi vs Aider
+* **The Problem:** Aider is fantastic, but its UI is extremely basic (a linear chat log). It doesn't support interactive previews for diffs, and its agentic loops can't easily be paused or visualized in parallel.
+* **The Lumi Advantage:** Lumi features a **Rich Minimalist TUI** built entirely in pure Python (no `rich` or `curses` wrappers required). You get beautifully rendered Tokyo Night colors, syntax-highlighted code blocks, interactive `[y/N]` Live Diff patching (`/apply`), and split-screen **Terminal Panes** (`/pane`) for live execution tracking. You can even run Aider *inside* Lumi using Subprocess Handoff.
 
-- **Pure Python TUI** — Tokyo Night theme, zero external UI libraries
-- **10 AI providers** — Gemini, Groq, OpenRouter, Mistral, HuggingFace, GitHub Models, Cohere, Cloudflare, Ollama, Council
-- **8-agent Council mode** — all providers answer in parallel, debate, and produce a refined consensus
-- **Vessel Mode** — strip the Lumi persona and channel Gemini, Qwen, or OpenCode directly through your terminal
-- **Long-term memory** — facts persist across sessions and are injected into every system prompt
-- **Auto web search** — questions about current events trigger a live search before the AI answers
-- **File agent** — say "create a FastAPI app" and Lumi plans and writes every file to disk
-- **Context compression** — every 10 turns, old history is summarized to preserve quality
-- **Auto-remember** — every 8 turns, Lumi silently extracts facts and stores them permanently
-- **Plugin system** — drop a `.py` file into `~/Lumi/plugins/` to add new slash commands
-- **Session persistence** — auto-saves every 5 turns; full session list and restore
-- **Git integration** — status, AI commit messages, PR descriptions, changelogs, daily standups
-- **Code tools** — explain, review, fix, debug, refactor, optimize, security audit, type hints, tests
-- **Developer tools** — grep, find, tree, lint, format, scaffold any framework
-- **Emotion detection** — adjusts tone based on how you write
-- **Multiline input** — Enter for newlines, Ctrl+D to submit
+### Lumi vs SWE-Agent / OpenDevin
+* **The Problem:** These are massive, heavy frameworks running through Docker containers with complex web UI overheads.
+* **The Lumi Advantage:** Lumi is insanely lightweight. A single `python3 main.py` triggers an ultra-fast, raw `tty.setraw` loop. Zero Docker containers required (unless you ask Lumi to build one for you via `/godmode`).
 
 ---
 
-## Architecture
+## 🔥 Premium Features
 
-```
-Lumi/
-├── main.py                      # CLI entry point
-├── lumi_system_instructions.md  # Core system prompt
-├── LUMI.md                      # Per-project context (auto-loaded)
-├── .env                         # API keys
-├── requirements.txt
-├── install.sh
-│
-└── src/
-    ├── tui/
-    │   └── app.py               # Full TUI — renderer, input, commands, Vessel Mode
-    │
-    ├── chat/
-    │   └── hf_client.py         # Multi-provider OpenAI-compatible client
-    │
-    ├── agents/
-    │   ├── agent.py             # Autonomous multi-step agent
-    │   └── council.py           # 8-agent parallel council with debate + refinement
-    │
-    ├── memory/
-    │   ├── short_term.py        # Rolling window (max 20 turns)
-    │   ├── longterm.py          # Persistent facts, persona overrides
-    │   └── conversation_store.py
-    │
-    ├── prompts/
-    │   └── builder.py           # System prompt builder, task detection
-    │
-    ├── tools/
-    │   ├── search.py            # Web search + top-page fetch
-    │   └── mcp.py               # MCP (Model Context Protocol) server manager
-    │
-    └── utils/
-        ├── intelligence.py      # Emotion, topic detection, search triggers
-        ├── web.py               # URL fetcher
-        ├── filesystem.py        # File plan generator and writer
-        ├── autoremember.py      # Silent fact extraction
-        ├── export.py            # Markdown export
-        ├── plugins.py           # Plugin loader + dispatcher
-        ├── tools.py             # Weather, clipboard, PDF, project loader, data
-        ├── todo.py              # Persistent todo list
-        ├── notes.py             # Persistent notes
-        └── voice.py             # Voice input (Groq Whisper) + TTS
-```
+Lumi transcends standard AI chats with a suite of premium, native terminal integrations:
+
+### 1. Subprocess Terminal Handoff (`/mode <cli>`)
+Lumi can physically suspend its own event loop and hand full control of the terminal TTY over to another AI CLI tool (e.g., `gemini`, `opencode`, `qwen`). It records the entire interactive PTY session using `script`, cleans the ANSI tracking, and injects the transcript right back into Lumi's memory when the subprocess exits.
+
+### 2. Live Split-Screen Multiplexing (`/pane`)
+Run long-standing commands (like `npm run dev` or `pytest --watch`) inside a built-in terminal pane. The output streams live on the right side of the UI while you continue chatting with the AI about the errors on the left.
+
+### 3. Local FTS5 Codebase RAG (`/index`, `/rag`)
+Lumi builds incredibly fast, local SQLite FTS5 indexes of your active workspace. Zero vector database dependencies required. Query your codebase semantically, and Lumi auto-injects exactly the right context block directly into your LLM prompt.
+
+### 4. Interactive Live Diff Application (`/apply`)
+When the AI generates a code block, type `/apply <filename>`. Lumi suspends the TUI, visually maps the change to the file, and offers an interactive `[y/N]` preview. Upon approval, it surgically merges the update and wakes the UI back up seamlessly.
+
+### 5. Native Voice Commands (`/voice`)
+Hold your terminal workflow and speak naturally. Lumi taps into raw `arecord` to capture your microphone, pipes it through the HuggingFace Whisper API, and drops perfectly transcribed text right onto your typing cursor.
+
+### 6. Background Guardian Agent
+Lumi watches your back. Running on a separate background thread, Guardian silently monitors `ruff` linting and `pytest` status in your working directory. If it detects a broken build, a non-intrusive warning notification seamlessly pops into your TUI border.
+
+### 7. Autonomous God Mode (`/godmode`)
+Give Lumi an objective and let it run wild. God Mode puts the LLM into a self-feedback loop, generating autonomous shell commands, executing them, analyzing the stdout, and writing files until the specific goal is met.
+
+### 8. Air-gapped Offline Privacy (`/offline`)
+Working on sensitive proprietary code on an airplane? Run `/offline` to instantly sever all cloud API connections and route all LLM logic to a local Ollama instance (e.g., `llama3.1:8b`). Complete confidentiality.
 
 ---
 
-## Installation
+## 🏗️ Supported Providers & Models
+Lumi uses a modular OpenRouter/OpenAI-compatible backbone, maximizing context windows (up to 8,192 output tokens) to ensure it can write massive codebases without interruption. 
 
-**Requirements:** Python 3.10+
+| Provider | Purpose |
+|----------|---------|
+| **Gemini API** | State of the art coding logic (`gemini-3.1-pro-preview`, `gemini-2.5-flash`). Huge context limits. |
+| **OpenRouter** | Easy access to Qwen 72B Coder, Claude 3.5 Sonnet, and hundreds of others. |
+| **Groq** | Blistering fast Llama 3.3 for real-time responsiveness. |
+| **Mistral / Cohere / GitHub / HF** | Dozens of free-tier endpoints to ensure you never run out of credits. |
+
+---
+
+## 📥 Installation
+
+Because Lumi is built defensively with zero third-party core dependencies, setup takes seconds.
+
+**Requirements:** Python 3.10+ (Unix/macOS strongly recommended)
 
 ```bash
-git clone https://github.com/yourusername/Lumi.git ~/Lumi
+git clone https://github.com/SardorchikDev/Lumi.git ~/Lumi
 cd ~/Lumi
 python3 -m venv venv
-source venv/bin/activate.fish    # fish shell
-# or: source venv/bin/activate   # bash/zsh
-pip install -r requirements.txt
+source venv/bin/activate
+pip install -r requirements.txt # Optional plugins only
 ```
 
-Or use the one-line installer:
-
+Or just use the one-liner:
 ```bash
 chmod +x install.sh && ./install.sh
 ```
 
-Add an alias to your shell config:
-
-```bash
-# fish (~/.config/fish/config.fish)
-alias lumi "source ~/Lumi/venv/bin/activate.fish && python ~/Lumi/main.py"
-
-# bash/zsh (~/.bashrc or ~/.zshrc)
-alias lumi="source ~/Lumi/venv/bin/activate && python ~/Lumi/main.py"
-```
-
 ---
 
-## Configuration
+## ⚙️ Quick Start
 
-Create `~/Lumi/.env`:
-
+1. Set up your API keys in `~/Lumi/.env`:
 ```env
-# ── Required (at least one) ───────────────────────────────────────────
-GEMINI_API_KEY=AIza...
-GROQ_API_KEY=gsk_...
-OPENROUTER_API_KEY=sk-or-...
-MISTRAL_API_KEY=...
-HF_TOKEN=hf_...
-GITHUB_API_KEY=ghp_...
-COHERE_API_KEY=...
-CLOUDFLARE_API_KEY=...
-
-# ── Optional ──────────────────────────────────────────────────────────
-TAVILY_API_KEY=tvly-...        # Enables real-time web search
-GITHUB_TOKEN=ghp_...           # /github issues integration
+GEMINI_API_KEY=AIzaSy...
+# Or any other supported provider: GROQ_API_KEY, OPENROUTER_API_KEY, etc.
 ```
 
-Keys you don't have are skipped. Lumi falls back to the next available provider automatically on quota exhaustion.
-
----
-
-## Running Lumi
-
+2. Start the TUI:
 ```bash
-# Full TUI (recommended)
 lumi --tui
-
-# CLI interactive
-lumi
-
-# Single prompt
-lumi "explain async/await in Python"
-
-# Specific provider
-lumi --provider groq
-
-# Council mode
-lumi --council "architect a distributed job queue"
 ```
 
----
-
-## Command Reference
-
-All commands use the `/` prefix. Tab-completes in the TUI. Press `/` to open the command picker.
-
-### Conversation
-
-| Command | Description |
-|---------|-------------|
-| `/clear` | Clear conversation and memory |
-| `/retry` | Resend the last message |
-| `/redo [hint]` | Regenerate with a different approach: `/redo be more concise` |
-| `/undo` | Remove the last exchange |
-| `/more` | Expand the last response |
-| `/rewrite` | Rewrite with different structure |
-| `/tl;dr` | One-sentence summary of the last reply |
-| `/summarize` | Bullet-point conversation summary |
-| `/translate <lang>` | Translate the last reply |
-| `/short` | Next reply: concise |
-| `/detailed` | Next reply: comprehensive |
-| `/bullets` | Next reply: bullet points |
-| `/multi` | Toggle multiline input |
-
-### Code & Dev
-
-| Command | Description |
-|---------|-------------|
-| `/fix <error>` | Root cause, fix, and prevention |
-| `/debug [error]` | Deep debug: root cause + fix + regression test |
-| `/explain [file]` | Line-by-line explanation |
-| `/review [file]` | Full code review |
-| `/improve [file]` | Fix bugs, improve style and error handling |
-| `/optimize [file]` | Performance optimization with before/after |
-| `/security [file]` | Security audit with severity ratings |
-| `/refactor [file]` | Refactor with SOLID principles |
-| `/test [file]` | Generate pytest unit tests |
-| `/docs [file]` | Generate Google-style docstrings |
-| `/types [file]` | Add Python 3.10+ type hints |
-| `/comment [file]` | Add inline comments |
-| `/run` | Execute code block from last reply |
-| `/shell <cmd>` | Run any shell command |
-| `/edit <file>` | AI-rewrite a file |
-| `/file <path>` | Load file into context |
-| `/diff` | Diff current reply vs previous |
-
-### Scaffolding & Project
-
-| Command | Description |
-|---------|-------------|
-| `/scaffold <type>` | Full project: `fastapi`, `react`, `cli`, `flask`, `django`, `nextjs` |
-| `/readme [path]` | Generate README.md |
-| `/lint [path]` | Run ruff or flake8 |
-| `/fmt [path]` | Format with black or prettier |
-| `/grep <pattern> [path]` | Search codebase |
-| `/find <name>` | Find files by name |
-| `/tree [path]` | Directory tree |
-
-### Git
-
-| Command | Description |
-|---------|-------------|
-| `/git status` | Status + recent log |
-| `/git log` | Graph log |
-| `/git diff` | Full diff |
-| `/git branch` | List branches |
-| `/git commit` | AI-generate commit message |
-| `/git commit-confirm` | Stage all and commit |
-| `/git push` / `/git pull` | Push or pull |
-| `/pr` | Write PR description |
-| `/changelog` | Generate CHANGELOG |
-| `/standup` | Daily standup from commits + todos |
-
-### Web & Data
-
-| Command | Description |
-|---------|-------------|
-| `/web <url> [q]` | Fetch URL, ask a question |
-| `/search <query>` | Web search + AI summary |
-| `/image <path> [q]` | Vision: describe or query an image |
-| `/data <file>` | Analyze CSV or JSON |
-| `/agent <task>` | Autonomous multi-step agent |
-
-### Memory & Persona
-
-| Command | Description |
-|---------|-------------|
-| `/remember <fact>` | Save to long-term memory |
-| `/memory` | Show all stored facts |
-| `/forget [n]` | Remove fact by number |
-| `/persona [key=val]` | Change persona attribute |
-| `/persona reset` | Restore default Lumi persona |
-| `/sys` | Show current system prompt |
-
-### Tools
-
-| Command | Description |
-|---------|-------------|
-| `/todo add <text>` | Add a todo |
-| `/todo list` | List todos |
-| `/todo done <n>` | Mark done |
-| `/todo rm <n>` | Remove |
-| `/note add <text>` | Save a note |
-| `/note list` | List notes |
-| `/note search <q>` | Search notes |
-| `/draft <details>` | Draft email, Slack message, or text |
-| `/weather [location]` | Current weather |
-| `/timer 25m` | Countdown timer with system notification |
-| `/copy` | Copy last reply to clipboard |
-| `/paste` | Paste clipboard as message |
-| `/pdf <path>` | Load PDF into context |
-| `/project <path>` | Load project directory into context |
-
-### Session
-
-| Command | Description |
-|---------|-------------|
-| `/save [name]` | Save session |
-| `/load [name]` | Load session |
-| `/sessions` | List saved sessions |
-| `/export` | Export as Markdown |
-| `/tokens` | Token usage estimate |
-| `/context` | Context window breakdown |
-
-### Mode & System
-
-| Command | Description |
-|---------|-------------|
-| `/model` | Open provider/model picker (`Ctrl+N`) |
-| `/council` | Switch to Council mode |
-| `/mode normal` | Restore Lumi persona |
-| `/mode vessel <ai>` | Activate Vessel Mode |
-| `/compact` | Toggle compact display |
-| `/plugins` | List loaded plugins |
-| `/help` | Show all commands |
-| `/exit` | Quit (`Ctrl+Q`) |
+*(Tip: Add `alias lumi="source ~/Lumi/venv/bin/activate && python ~/Lumi/main.py"` to your `~/.bashrc` or `~/.zshrc`)*
 
 ---
 
-## Vessel Mode
+## 📖 Essential Commands Reference
 
-Vessel Mode transforms Lumi into a pure conduit for another AI. Your TUI stays exactly the same — Tokyo Night theme, same layout, same keybindings — but the underlying model, system prompt, and visual indicators all shift to reflect the new identity.
+Inside the Lumi TUI, hit `Tab` to see all commands, or `Ctrl+N` to open the model picker popup. The UI uses an elegant Tokyo Night Storm palette.
 
-```bash
-/mode vessel gemini      # Channel Google Gemini
-/mode vessel qwen        # Channel Qwen (via OpenRouter)
-/mode vessel opencode    # Channel OpenCode (via OpenRouter)
-/mode normal             # Restore Lumi
-```
-
-### What changes
-
-| Element | Normal | Vessel |
-|---------|--------|--------|
-| Input `λ` symbol | Purple | **Red** |
-| Status bar | `◆ Gemini · model · ~2,000tk` | `⬡ VESSEL [GEMINI] · ~2,000tk` |
-| Message header | `◆ lumi` in purple | `◆ vessel [gemini]` in **red** |
-| System prompt | Full Lumi persona | Stripped — target AI identity injected |
-| Provider + model | Current | Switched to target model |
-
-### How it works
-
-1. `set_provider()` switches the client to the correct backend
-2. The model is selected from available options, preferring one matching the target name
-3. `set_persona_override()` injects a vessel system prompt that explicitly strips the Lumi identity
-4. The full system prompt is rebuilt with the vessel instruction prepended
-5. All visual indicators shift to red
-
-No new imports. All colors use the existing `_fg()`, `_bg()`, `_bold()` helpers.
+* `/apply <file>` - Interactively deploy the last AI codeblock to a specific file.
+* `/pane <command>` - Run a bash command in a split-screen side-pane.
+* `/mode <cli>` - Subprocess handoff (e.g. `/mode opencode`, `/mode qwen`).
+* `/rag <query>` - Use the local SQLite FTS5 database to embed codebase context.
+* `/voice` - Dictate your prompt using your microphone.
+* `/godmode` - Trigger autonomous loop for objective completion.
+* `/offline` - Switch entirely to local Ollama inference.
+* `/council` - Multi-agent debate mode (cross-validates across different AI providers).
 
 ---
 
-## Provider System
-
-| Provider | Key | Best For |
-|----------|-----|----------|
-| Gemini | `GEMINI_API_KEY` | Long context, multimodal |
-| Groq | `GROQ_API_KEY` | Speed — Llama, Mixtral, Whisper |
-| OpenRouter | `OPENROUTER_API_KEY` | Qwen, Claude, many others |
-| Mistral | `MISTRAL_API_KEY` | Code (Codestral), multilingual |
-| HuggingFace | `HF_TOKEN` | Open source models |
-| GitHub Models | `GITHUB_API_KEY` | GPT-4o, o1, Phi |
-| Cohere | `COHERE_API_KEY` | Command A, RAG |
-| Cloudflare AI | `CLOUDFLARE_API_KEY` | Edge inference |
-| Ollama | *(auto-detect)* | Local models |
-| Council | *(uses all above)* | Maximum quality |
-
-**Auto-fallback:** On rate limit or quota exhaustion, Lumi automatically switches to the next available provider without interrupting you.
-
----
-
-## Council Mode
-
-Council sends your message to all 8 available agents simultaneously. They debate, and a lead agent (selected by task type) produces a refined consensus.
-
-```
-/council          # switch to Council mode
-/model            # switch back to single provider
-```
-
-**Council agents:** Gemini · Kimi K2 (Groq) · GPT-OSS (OpenRouter) · Codestral (Mistral) · Llama 3.3 (HuggingFace) · GPT-4o (GitHub) · Command A (Cohere) · Cloudflare AI
-
-While running, the sidebar shows each agent's live spinner, confidence score (out of 10), and response time.
-
----
-
-## Memory System
-
-### Short-term (in-session)
-Rolling window of the last 20 turns. When full, old turns are compressed silently in a background thread.
-
-### Long-term (persistent)
-Facts you tell Lumi are stored and injected into every system prompt.
-
-```
-/remember I use TypeScript, not JavaScript
-/remember My DB is PostgreSQL 16 on port 5433
-/memory                    # show all facts
-/forget 2                  # remove fact #2
-```
-
-### Auto-remember
-Every 8 turns, Lumi reads the conversation and extracts facts worth keeping — your name, preferences, tech stack, project details — without interrupting you.
-
-### Sessions
-Auto-saves every 5 turns and on exit. Restore with `/load`, browse with `/sessions`.
-
----
-
-## Plugin System
-
-Drop a `.py` file into `~/Lumi/plugins/`:
-
-```python
-# ~/Lumi/plugins/my_tools.py
-
-def register(registry):
-    @registry.register("/hello", "Greet someone")
-    def cmd_hello(tui, arg):
-        tui._sys(f"Hello, {arg or 'world'}!")
-```
-
-List loaded plugins: `/plugins`
-
----
-
-## Keybindings
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+N` | Model/provider picker |
-| `Ctrl+L` | Clear conversation |
-| `Ctrl+R` | Retry last message |
-| `Ctrl+W` | Delete previous word |
-| `Ctrl+U` | Clear input |
-| `Ctrl+D` | Submit multiline input |
-| `Ctrl+Q` / `Ctrl+C` | Quit |
-| `↑ / ↓` | Input history (input not empty) |
-| `↑ / ↓` | Scroll chat (input empty) |
-| `PgUp / PgDn` | Scroll by page |
-| `Ctrl+← / →` | Jump word |
-| `Home / End` | Start/end of input |
-| `Tab` | Complete slash command |
-| `Esc` | Close popup |
-
----
-
-## Project Context (LUMI.md)
-
-Create `LUMI.md` in your project root. Lumi loads it on startup and injects it into every system prompt.
-
-```markdown
-# Project Context
-
-## Stack
-Python 3.12, FastAPI, PostgreSQL 16, Redis, Docker
-
-## Conventions
-- All endpoints return {"data": ..., "error": null}
-- Tests in tests/ using pytest + httpx
-- Type hints required everywhere
-
-## Rules
-- Never use print() — use logger.info()
-- All DB queries go through the repository layer
-
-## Key files
-- src/api/routes/   HTTP routes
-- src/db/models.py  SQLAlchemy models
-- src/core/config.py  settings (pydantic-settings)
-```
-
----
-
-## File Structure
-
-```
-~/Lumi/
-├── .env
-├── LUMI.md               # optional, per-project
-├── main.py
-├── requirements.txt
-├── install.sh
-├── README.md
-│
-├── src/
-│   ├── tui/app.py
-│   ├── chat/hf_client.py
-│   ├── agents/
-│   ├── memory/
-│   ├── prompts/
-│   ├── tools/
-│   └── utils/
-│
-├── data/
-│   ├── memory/           # long-term memory + mood log
-│   └── sessions/         # saved conversations
-│
-└── plugins/              # drop .py files here
-```
-
----
-
-## Design Philosophy
-
-Lumi is deliberately built with no external UI libraries. Every border, color, and animation is raw ANSI. This means:
-
-- **No dependencies that can break your terminal** — works anywhere Python 3.10 runs
-- **Zero startup overhead** from TUI framework initialization
-- **Complete visual control** — Tokyo Night is the rendering logic, not a theme applied to someone else's widgets
-- **The TUI and CLI share identical code** — `main.py` and `src/tui/app.py` import the same modules. There is no "TUI mode" with cut-down features
-
----
-
-*Lumi v3.0 — built for developers who live in the terminal.*
+<div align="center">
+<i>Lumi — Uncompromising autonomy. Seamless terminal integration.</i>
+</div>
