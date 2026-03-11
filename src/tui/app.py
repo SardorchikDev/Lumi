@@ -339,7 +339,14 @@ class Renderer:
             elif msg.role in ("assistant", "streaming"):
                 label = msg.label or "◆ lumi"
                 cursor = (" " + _fg(CYAN) + "▋" + R) if msg.role == "streaming" else ""
-                lines.append("  " + _fg(BORDER) + "╭─ " + B(PURPLE) + label + "  " + _fg(COMMENT) + msg.ts + R)
+                # Vessel mode: override label + use RED instead of PURPLE
+                if self.tui.vessel_mode and self.tui.active_vessel:
+                    hdr_col = B(RED)
+                    if "vessel" not in label:
+                        label = f"◆ vessel [{self.tui.active_vessel}]"
+                else:
+                    hdr_col = B(PURPLE)
+                lines.append("  " + _fg(BORDER) + "╭─ " + hdr_col + label + "  " + _fg(COMMENT) + msg.ts + R)
                 raw_lines = msg.text.split("\n") if msg.text else [""]
                 
                 in_code = False
@@ -426,24 +433,29 @@ class Renderer:
         pname = PROV_NAME.get(tui.current_model if tui.current_model == "council" else get_provider(), get_provider())
         model = tui.current_model.split("/")[-1][:22]
         toks = sum(_tok(m["content"]) for m in tui.memory.get())
-        
+
         mode = f" {tui.response_mode}" if tui.response_mode else ""
-        stat_str = f" ◆ {pname} · {model} · ~{toks:,}tk{mode} "
-        top_w = max(0, cols - len(stat_str) - 3)
-        
+
+        if tui.vessel_mode and tui.active_vessel:
+            stat_bare = f" ⬡ VESSEL [{tui.active_vessel.upper()}] · ~{toks:,}tk{mode} "
+            stat_str  = _fg(RED) + _bold() + f" ⬡ VESSEL [{tui.active_vessel.upper()}]" + _reset() + _fg(COMMENT) + f" · ~{toks:,}tk{mode} "
+        else:
+            stat_bare = f" ◆ {pname} · {model} · ~{toks:,}tk{mode} "
+            stat_str  = stat_bare
+
+        top_w = max(0, cols - len(stat_bare) - 3)
         top = _move(rows - 1, 1) + _bg(BG) + _fg(BORDER) + "╭─" + _fg(COMMENT) + stat_str + _fg(BORDER) + "─" * top_w + "╮" + R
-        
-        sym = _fg(YELLOW) + "⠿ " if tui.busy else _fg(PURPLE) + "λ "
+
+        sym = _fg(YELLOW) + "⠿ " if tui.busy else (_fg(RED) + "λ " if tui.vessel_mode else _fg(PURPLE) + "λ ")
         hint = _fg(MUTED) + "generating…" + R if tui.busy else ""
-            
+
         txt = tui.buf
         disp_w = chat_w - 7
         scroll = max(0, tui.cur_pos - disp_w + 1)
         shown = txt[scroll:scroll + disp_w]
-        
-        # Absolute exact bounding without auto trailing gap pushing line offset wrapping below boundary box lines.
-        bot = _move(rows, 1) + _bg(BG) + _erase_line() + _fg(BORDER) + "╰─ " + sym + _fg(FG_HI) + shown + hint + R 
-        
+
+        bot = _move(rows, 1) + _bg(BG) + _erase_line() + _fg(BORDER) + "╰─ " + sym + _fg(FG_HI) + shown + hint + R
+
         return top + bot
 
     def _slash_popup(self, rows, cols):
@@ -506,7 +518,11 @@ class LumiTUI:
         self.turns = 0; self.last_msg = None; self.last_reply = None
         self.prev_reply = None; self.response_mode = None
         self.multiline = False; self._compact = False; self.busy = False
-        
+
+        # ── Vessel Mode ───────────────────────────────────────────────────────
+        self.vessel_mode   = False   # True when acting as a pure AI conduit
+        self.active_vessel = None    # "gemini" | "qwen" | "opencode" | None
+
         self._loaded_plugins =[]; self.renderer = Renderer(self)
 
     def _make_system_prompt(self, coding_mode=False, file_mode=False):
@@ -1073,6 +1089,482 @@ def cmd_help(tui: LumiTUI, arg: str):
     for c, data in registry.commands.items(): lines.append(f"│  {c:<22} ─ {data['desc'][:68]}")
     lines +=["│", "├─ Local Unix Command Standard Native Event Hotkey Mapped Shortcuts ─┤", "│  Ctrl+N        Menu Array LLMs Providers Select Tool Options List Node Graphic Visual User Component Modal Picker Selector Option Prompt Array Matrix Map Tool Config Editor Set", "│  Ctrl+L        Clear Active Token Stream LLMs Cache Terminal Print Data Delete Destroy Reload Clear Memory Vector Reset Restart Buffer Clear Tui Terminal", "│  Ctrl+R        Reparse Reload Regenerate Data Recompute Recache Trigger Retry", "│  Tab           Command Map Array Native String Complete Append Cursor Matrix Cursor Data Fill Native", "╰──────────────────────────────────────────────────────────────────╯"]
     tui._sys("\n".join(lines))
+
+# ── Batch 2 Commands ──────────────────────────────────────────────────────────────
+
+@registry.register("/fix", "Diagnose error and fix it")
+def cmd_fix(tui: LumiTUI, arg: str):
+    if not arg: tui._err("Usage: /fix <error message>"); return
+    def _go():
+        tui.set_busy(True)
+        ctx = f"\n\nContext:\n{tui.last_reply}" if tui.last_reply else ""
+        msg = (f"I'm getting this error:\n\n```\n{arg}\n```{ctx}\n\n"
+               "1. What's causing it\n2. The exact fix\n3. How to avoid it next time")
+        tui.memory.add("user", msg)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [fix]")
+        tui.memory._history[-1] = {"role": "user", "content": f"/fix: {arg[:200]}"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/debug", "Deep debug with root cause + test")
+def cmd_debug(tui: LumiTUI, arg: str):
+    def _go():
+        tui.set_busy(True)
+        error = arg or "the issue in the last message"
+        ctx = f"\n\nLast reply:\n{tui.last_reply}" if tui.last_reply else ""
+        msg = (f"Deep debug:\n\n```\n{error}\n```{ctx}\n\n"
+               "1. Root cause\n2. Stack trace explanation\n"
+               "3. Step-by-step fix\n4. Regression test\n5. Alternative approaches")
+        tui.memory.add("user", msg)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [debug]")
+        tui.memory._history[-1] = {"role": "user", "content": f"/debug: {error[:200]}"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/improve", "Improve code quality and readability")
+def cmd_improve(tui: LumiTUI, arg: str):
+    def _go():
+        tui.set_busy(True)
+        target = arg.strip() if arg.strip() else None
+        if target and Path(target).expanduser().exists():
+            try: content = f"File: `{Path(target).name}`\n\n```\n{_read_file(target)}\n```"
+            except Exception as e: tui._err(str(e)); tui.set_busy(False); return
+        elif tui.last_reply: content = tui.last_reply
+        else: tui._err("Nothing to improve. Pass a file path or ask something first."); tui.set_busy(False); return
+        msg = (f"Improve this code. Fix bugs, improve readability, add error handling, "
+               f"clean up style. Output the COMPLETE improved version:\n\n{content}")
+        tui.memory.add("user", msg)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [improve]")
+        tui.memory._history[-1] = {"role": "user", "content": "/improve"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/optimize", "Performance optimize with before/after")
+def cmd_optimize(tui: LumiTUI, arg: str):
+    def _go():
+        tui.set_busy(True)
+        target = arg.strip() if arg.strip() else None
+        if target and Path(target).expanduser().exists():
+            try: content = f"```\n{_read_file(target)}\n```"
+            except Exception as e: tui._err(str(e)); tui.set_busy(False); return
+        elif tui.last_reply: content = tui.last_reply
+        else: tui._err("Nothing to optimize."); tui.set_busy(False); return
+        msg = (f"Optimize for performance. Find bottlenecks, improve algorithmic complexity, "
+               f"show before/after with estimates:\n\n{content}")
+        tui.memory.add("user", msg)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [optimize]")
+        tui.memory._history[-1] = {"role": "user", "content": "/optimize"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/security", "Security audit with severity ratings")
+def cmd_security(tui: LumiTUI, arg: str):
+    def _go():
+        tui.set_busy(True)
+        target = arg.strip() if arg.strip() else None
+        if target and Path(target).expanduser().exists():
+            try: content = f"```\n{_read_file(target)}\n```"
+            except Exception as e: tui._err(str(e)); tui.set_busy(False); return
+        elif tui.last_reply: content = tui.last_reply
+        else: tui._err("Nothing to audit."); tui.set_busy(False); return
+        msg = (f"Security audit. Find: injection, auth issues, data exposure, input validation gaps, "
+               f"hardcoded secrets. Rate each critical/high/medium/low:\n\n{content}")
+        tui.memory.add("user", msg)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [security]")
+        tui.memory._history[-1] = {"role": "user", "content": "/security"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/refactor", "Refactor with SOLID principles")
+def cmd_refactor(tui: LumiTUI, arg: str):
+    def _go():
+        tui.set_busy(True)
+        target = arg.strip() if arg.strip() else None
+        if target and Path(target).expanduser().exists():
+            try: content = f"```\n{_read_file(target)}\n```"
+            except Exception as e: tui._err(str(e)); tui.set_busy(False); return
+        elif tui.last_reply: content = tui.last_reply
+        else: tui._err("Nothing to refactor."); tui.set_busy(False); return
+        msg = (f"Refactor using SOLID principles and design patterns. Reduce duplication, improve abstractions. "
+               f"Output the complete refactored version with a brief explanation:\n\n{content}")
+        tui.memory.add("user", msg)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [refactor]")
+        tui.memory._history[-1] = {"role": "user", "content": "/refactor"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/test", "Generate pytest unit tests")
+def cmd_test(tui: LumiTUI, arg: str):
+    def _go():
+        tui.set_busy(True)
+        target = arg.strip() if arg.strip() else None
+        if target and Path(target).expanduser().exists():
+            try: content = f"```\n{_read_file(target)}\n```"
+            except Exception as e: tui._err(str(e)); tui.set_busy(False); return
+        elif tui.last_reply: content = tui.last_reply
+        else: tui._err("Nothing to test."); tui.set_busy(False); return
+        msg = (f"Write comprehensive pytest unit tests. Cover: happy path, edge cases, errors, "
+               f"boundary conditions. Include fixtures and mocks where needed:\n\n{content}")
+        tui.memory.add("user", msg)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [tests]")
+        tui.memory._history[-1] = {"role": "user", "content": "/test"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/explain", "Explain code line by line")
+def cmd_explain(tui: LumiTUI, arg: str):
+    def _go():
+        tui.set_busy(True)
+        target = arg.strip() if arg.strip() else None
+        if target and Path(target).expanduser().exists():
+            try: content = f"File `{Path(target).name}`:\n\n```\n{_read_file(target)}\n```"
+            except Exception as e: tui._err(str(e)); tui.set_busy(False); return
+        elif tui.last_reply: content = tui.last_reply
+        else: tui._err("Nothing to explain."); tui.set_busy(False); return
+        msg = f"Explain this code line by line. Walk through every function, why it's written that way, and what a developer needs to understand:\n\n{content}"
+        tui.memory.add("user", msg)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [explain]")
+        tui.memory._history[-1] = {"role": "user", "content": "/explain"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/review", "Full code review with specifics")
+def cmd_review(tui: LumiTUI, arg: str):
+    def _go():
+        tui.set_busy(True)
+        target = arg.strip() if arg.strip() else None
+        if target and Path(target).expanduser().exists():
+            try: content = f"File `{Path(target).name}`:\n\n```\n{_read_file(target)}\n```"
+            except Exception as e: tui._err(str(e)); tui.set_busy(False); return
+        elif tui.last_reply: content = tui.last_reply
+        else: tui._err("Nothing to review."); tui.set_busy(False); return
+        msg = (f"Thorough code review. Cover: correctness, edge cases, performance, security, "
+               f"readability, maintainability. Be specific with line numbers and variable names:\n\n{content}")
+        tui.memory.add("user", msg)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [review]")
+        tui.memory._history[-1] = {"role": "user", "content": "/review"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/scaffold", "Generate complete project scaffold")
+def cmd_scaffold(tui: LumiTUI, arg: str):
+    if not arg: tui._err("Usage: /scaffold <type>  e.g. fastapi, react, cli, flask"); return
+    def _go():
+        tui.set_busy(True)
+        msg = (f"Generate a complete, production-ready {arg} project scaffold. "
+               f"Full file contents — no placeholders, no TODOs. Include: folder structure, "
+               f"requirements/package.json, entry point, routes/components, README, .gitignore, tests.")
+        tui.memory.add("user", msg)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [scaffold: {arg}]")
+        tui.memory._history[-1] = {"role": "user", "content": f"/scaffold: {arg}"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/readme", "Generate README for project/path")
+def cmd_readme(tui: LumiTUI, arg: str):
+    def _go():
+        tui.set_busy(True)
+        path = arg.strip() if arg.strip() else "."
+        r = subprocess.run(
+            f"find {path} -maxdepth 2 -type f -not -path '*/.git/*' -not -path '*/__pycache__/*' | head -40",
+            shell=True, capture_output=True, text=True)
+        struct = r.stdout.strip()
+        main_code = ""
+        for fname in ["main.py", "app.py", "index.js", "src/main.py"]:
+            fp = Path(path) / fname
+            if fp.exists():
+                try: main_code = f"\n\n{fname}:\n```\n{fp.read_text()[:2000]}\n```"
+                except: pass
+                break
+        msg = (f"Generate a comprehensive README.md.\n\nFiles:\n{struct}{main_code}\n\n"
+               f"Include: title, description, features, installation, usage, API docs, contributing, license.")
+        tui.memory.add("user", msg)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [README]")
+        tui.memory._history[-1] = {"role": "user", "content": "[readme]"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/pr", "Write PR description from git diff")
+def cmd_pr(tui: LumiTUI, arg: str):
+    def _go():
+        tui.set_busy(True)
+        r1 = subprocess.run("git diff origin/HEAD...HEAD", shell=True, capture_output=True, text=True)
+        r2 = subprocess.run("git log origin/HEAD...HEAD --oneline", shell=True, capture_output=True, text=True)
+        diff = r1.stdout.strip(); log = r2.stdout.strip()
+        if not diff:
+            r1 = subprocess.run("git diff HEAD~1 HEAD", shell=True, capture_output=True, text=True)
+            r2 = subprocess.run("git log HEAD~1..HEAD --oneline", shell=True, capture_output=True, text=True)
+            diff = r1.stdout.strip(); log = r2.stdout.strip()
+        if not diff and not log:
+            tui._err("No diff found. Commit something first."); tui.set_busy(False); return
+        msg = (f"Write a GitHub PR description.\n\nCommits:\n{log}\n\nDiff:\n{diff[:3000]}\n\n"
+               f"Include: Title, What changed, Why, How to test. Use Markdown.")
+        tui.memory.add("user", msg)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [PR]")
+        tui.memory._history[-1] = {"role": "user", "content": "[pr]"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/changelog", "Generate CHANGELOG from git log")
+def cmd_changelog(tui: LumiTUI, arg: str):
+    def _go():
+        tui.set_busy(True)
+        r = subprocess.run("git log --oneline -60", shell=True, capture_output=True, text=True)
+        log = r.stdout.strip()
+        if not log: tui._err("No git history found."); tui.set_busy(False); return
+        msg = f"Generate a CHANGELOG from these git commits. Group by: Added, Changed, Fixed, Removed. Use Markdown:\n\n{log}"
+        tui.memory.add("user", msg)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [CHANGELOG]")
+        tui.memory._history[-1] = {"role": "user", "content": "[changelog]"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/standup", "Daily standup from git + todos")
+def cmd_standup(tui: LumiTUI, arg: str):
+    def _go():
+        tui.set_busy(True)
+        r = subprocess.run("git log --oneline --since='24 hours ago'", shell=True, capture_output=True, text=True)
+        log = r.stdout.strip() or "No commits in the last 24 hours"
+        try:
+            from src.utils.todo import todo_list as _tlist
+            todos = [t for t in _tlist() if not t.get("done")]
+            todo_txt = "\n".join(f"- {t['text']}" for t in todos[:10]) or "No pending todos"
+        except: todo_txt = "No pending todos"
+        msg = (f"Generate a short daily standup (Yesterday / Today / Blockers).\n\n"
+               f"Recent commits:\n{log}\n\nPending todos:\n{todo_txt}")
+        tui.memory.add("user", msg)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [standup]")
+        tui.memory._history[-1] = {"role": "user", "content": "[standup]"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/grep", "Search codebase for pattern")
+def cmd_grep(tui: LumiTUI, arg: str):
+    if not arg: tui._err("Usage: /grep <pattern> [path]"); return
+    parts = arg.split(None, 1); pattern = parts[0]; path = parts[1] if len(parts) > 1 else "."
+    r = subprocess.run(
+        ["grep", "-rn",
+         "--include=*.py", "--include=*.js", "--include=*.ts",
+         "--include=*.go", "--include=*.rs", "--include=*.md",
+         pattern, path],
+        capture_output=True, text=True)
+    out = r.stdout.strip()
+    tui.store.add(Msg("shell", out[:3000] if out else "No matches found.", f"grep -rn '{pattern}' {path}"))
+
+@registry.register("/tree", "Directory tree view")
+def cmd_tree(tui: LumiTUI, arg: str):
+    path = arg.strip() if arg.strip() else "."
+    if shutil.which("tree"):
+        r = subprocess.run(
+            ["tree", path, "-L", "3", "--noreport",
+             "-I", "__pycache__|*.pyc|.git|node_modules|.venv|venv"],
+            capture_output=True, text=True)
+        out = r.stdout.strip()
+    else:
+        lines = [path + "/"]
+        def _t(p, prefix="", depth=0):
+            if depth > 3: return
+            try: entries = sorted(Path(p).iterdir(), key=lambda x: (x.is_file(), x.name))
+            except: return
+            for i, e in enumerate(entries):
+                if e.name in (".git", "__pycache__", "node_modules", ".venv", "venv"): continue
+                conn = "└── " if i == len(entries)-1 else "├── "
+                lines.append(prefix + conn + e.name + ("/" if e.is_dir() else ""))
+                if e.is_dir(): _t(e, prefix + ("    " if i == len(entries)-1 else "│   "), depth+1)
+        _t(path); out = "\n".join(lines[:80])
+    tui.store.add(Msg("shell", out, f"tree {path}"))
+
+@registry.register("/lint", "Lint with ruff or flake8")
+def cmd_lint(tui: LumiTUI, arg: str):
+    path = arg.strip() if arg.strip() else "."
+    if shutil.which("ruff"):
+        r = subprocess.run(["ruff", "check", path, "--output-format=concise"], capture_output=True, text=True)
+        out = (r.stdout + r.stderr).strip()
+    elif shutil.which("flake8"):
+        r = subprocess.run(["flake8", path, "--max-line-length=120"], capture_output=True, text=True)
+        out = (r.stdout + r.stderr).strip()
+    else:
+        tui._err("ruff or flake8 not installed. Run: pip install ruff"); return
+    tui.store.add(Msg("shell", out if out else "✓ No lint errors.", f"lint {path}"))
+
+@registry.register("/fmt", "Format with black or prettier")
+def cmd_fmt(tui: LumiTUI, arg: str):
+    path = arg.strip() if arg.strip() else "."
+    if shutil.which("black"):
+        r = subprocess.run(["black", path, "--quiet"], capture_output=True, text=True)
+        out = (r.stdout + r.stderr).strip()
+        tui.store.add(Msg("shell", out if out else "✓ Formatted.", f"black {path}"))
+    elif shutil.which("prettier"):
+        r = subprocess.run(f"prettier --write {path} 2>&1 | tail -5", shell=True, capture_output=True, text=True)
+        tui.store.add(Msg("shell", r.stdout.strip() or "✓ Formatted.", f"prettier {path}"))
+    else:
+        tui._err("black or prettier not found. Run: pip install black")
+
+@registry.register("/redo", "Regenerate with different approach")
+def cmd_redo(tui: LumiTUI, arg: str):
+    if not tui.last_msg: tui._err("Nothing to redo."); return
+    def _go():
+        tui.set_busy(True)
+        alt = arg.strip()
+        q = (f"{tui.last_msg}\n\n[This time: {alt}]" if alt
+             else f"{tui.last_msg}\n\n[Rephrase — different approach, same quality.]")
+        if len(tui.memory._history) >= 2:
+            tui.memory._history = tui.memory._history[:-2]
+            tui.turns = max(0, tui.turns - 1)
+        tui.store.add(Msg("user", f"↺ redo{' — '+alt if alt else ''}"))
+        tui.memory.add("user", q)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model)
+        tui.memory._history[-1] = {"role": "user", "content": tui.last_msg}
+        tui.memory.add("assistant", raw)
+        tui.prev_reply = tui.last_reply; tui.last_reply = raw
+        tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/translate", "Translate last reply to a language")
+def cmd_translate(tui: LumiTUI, arg: str):
+    if not arg: tui._err("Usage: /translate <language>"); return
+    if not tui.last_reply: tui._err("No reply to translate yet."); return
+    def _go():
+        tui.set_busy(True)
+        q = f"Translate your last response into {arg}. Output only the translation."
+        tui.memory.add("user", q)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [→ {arg}]")
+        tui.memory._history[-1] = {"role": "user", "content": f"Translate to {arg}"}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/summarize", "Summarize the conversation")
+def cmd_summarize(tui: LumiTUI, arg: str):
+    def _go():
+        tui.set_busy(True)
+        q = "Summarize our conversation so far in concise bullet points."
+        tui.memory.add("user", q)
+        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [summarize]")
+        tui.memory._history[-1] = {"role": "user", "content": q}
+        tui.memory.add("assistant", raw)
+        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/mode", "Toggle persona: /mode normal | /mode vessel <gemini|qwen|opencode>")
+def cmd_mode(tui: LumiTUI, arg: str):
+    parts = arg.strip().lower().split()
+    sub   = parts[0] if parts else ""
+
+    VESSEL_MAP = {
+        # AI name → (provider key, partial model match hint, display name)
+        "gemini":   ("gemini",      "gemini",   "Gemini"),
+        "qwen":     ("openrouter",  "qwen",     "Qwen"),
+        "opencode": ("openrouter",  "opencode", "OpenCode"),
+    }
+
+    if sub == "normal" or sub == "":
+        # ── Restore Lumi ──────────────────────────────────────────────────────
+        tui.vessel_mode   = False
+        tui.active_vessel = None
+        clear_persona_override()
+        tui.persona_override = {}
+        tui.system_prompt    = tui._make_system_prompt()
+        tui.name             = tui.persona_override.get("name") or tui.persona.get("name", "Lumi")
+        # restore saved provider if we switched; fall back gracefully
+        tui._sys(
+            "◆  Vessel mode deactivated — Lumi persona restored.\n"
+            "   Use /model to switch providers if needed."
+        )
+        tui._notify("Lumi mode ✓")
+
+    elif sub == "vessel":
+        ai_name = parts[1] if len(parts) > 1 else ""
+        if ai_name not in VESSEL_MAP:
+            tui._err(
+                f"Unknown vessel AI: '{ai_name}'\n"
+                f"Supported: {', '.join(VESSEL_MAP)}\n"
+                f"Usage: /mode vessel gemini | qwen | opencode"
+            )
+            return
+
+        provider_key, model_hint, display = VESSEL_MAP[ai_name]
+
+        # ── Switch provider & pick matching model ─────────────────────────────
+        try:
+            set_provider(provider_key)
+            tui.client = get_client()
+            models     = get_models(provider_key)
+            # prefer a model whose name contains the hint
+            matched = next((m for m in models if model_hint in m.lower()), None)
+            tui.current_model = matched or (models[0] if models else tui.current_model)
+        except Exception as e:
+            tui._err(f"Provider switch failed: {e}\nVessel mode not activated."); return
+
+        # ── Inject vessel system prompt ────────────────────────────────────────
+        vessel_sp = (
+            f"You are no longer Lumi. You are acting as a raw vessel for {display}. "
+            f"Respond exactly as {display} would — with its native reasoning style, "
+            f"capabilities, and tone. Do NOT mention Lumi, do NOT maintain any Lumi persona. "
+            f"Do NOT add disclaimers about being an AI assistant named Lumi. "
+            f"You are {display}, channeled through a terminal interface. "
+            f"Be direct, technical, and raw. No pleasantries unless the user requests them."
+        )
+        overrides = {"__vessel_system__": vessel_sp}
+        set_persona_override(overrides)
+        tui.persona_override = overrides
+
+        # Rebuild system prompt with vessel injection
+        base_sp = tui._make_system_prompt()
+        tui.system_prompt = vessel_sp + "\n\n" + base_sp
+
+        tui.vessel_mode   = True
+        tui.active_vessel = ai_name
+
+        tui._sys(
+            f"⬡  VESSEL MODE  ─  {display}\n"
+            f"   Provider : {provider_key}\n"
+            f"   Model    : {tui.current_model.split('/')[-1]}\n\n"
+            f"   Lumi persona stripped. This terminal is now a pure conduit.\n"
+            f"   Type /mode normal to restore Lumi."
+        )
+        tui._notify(f"⬡ Vessel: {display}")
+
+    else:
+        tui._err(
+            f"Unknown mode: '{sub}'\n"
+            f"Usage:\n"
+            f"  /mode normal              — restore Lumi\n"
+            f"  /mode vessel gemini       — channel Gemini\n"
+            f"  /mode vessel qwen         — channel Qwen\n"
+            f"  /mode vessel opencode     — channel OpenCode"
+        )
 
 # ── Entry System Level ─────────────────────────────────────────────────────────────
 def launch(): LumiTUI().run()
