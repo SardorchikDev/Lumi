@@ -1,4 +1,6 @@
 {
-  "facts": [],
+  "facts": [
+    "The user is interested in CLI and TUI."
+  ],
   "persona_override": {}
 }
