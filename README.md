@@ -50,6 +50,8 @@ You type. It thinks. Eight AI models argue about the answer simultaneously. The 
 git clone https://github.com/SardorchikDev/lumi
 cd lumi
 bash install.sh
+#or
+curl -fsSL https://raw.githubusercontent.com/SardorchikDev/lumi/main/install.sh | bash
 ```
 
 Then add at least one API key to `~/Lumi/.env`:
