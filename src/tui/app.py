@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import re
 import select
@@ -18,6 +19,7 @@ import textwrap
 import threading
 import time
 import tty
+import urllib.request
 from contextlib import redirect_stdout
 from datetime import datetime
 from pathlib import Path
@@ -283,7 +285,7 @@ class Renderer:
             chat_lines.insert(0, "")
 
         for i in range(chat_rows):
-            w(_move(i + 1, 1)) 
+            w(_move(i + 1, 1))
             cl = chat_lines[i] if i < len(chat_lines) else ""
             
             if pane_active:
@@ -300,7 +302,12 @@ class Renderer:
             else:
                 w(_bg(BG) + _erase_line() + cl + _bg(BG))
 
-        w(self._input_area(rows, cols, chat_w))
+        # When large overlays are visible, don't draw the bottom hint/prompt to avoid ASCII overlap
+        if self.tui.picker_visible or getattr(self.tui, "browser_visible", False):
+            w(_move(rows - 1, 1) + _bg(BG) + _erase_line())
+            w(_move(rows, 1) + _bg(BG) + _erase_line())
+        else:
+            w(self._input_area(rows, cols, chat_w))
 
         if getattr(self.tui, "browser_visible", False): w(self._browser_popup(rows, cols))
         if self.tui.slash_visible and self.tui.slash_hits: w(self._slash_popup(rows, cols))
@@ -323,27 +330,32 @@ class Renderer:
         lines =[]
         inner = max(30, width - 6)
         if not msgs:
-            logo = [
-                "  ▝▜▄     Lumi CLI v0.3.3",
-                "    ▝▜▄",
-                "   ▗▟▀    Logged in with API",
-                "  ▝▀      Lumi Vessel mode /mode"
-            ]
-            for l in logo:
-                lines.append(" " + B(BLUE) + l + R)
-                
-            chat_rows = _term_size()[0] - 2
-            pad_mid = max(2, chat_rows - len(logo) - 2)
+            title = "Lumi TUI"
+            subtitle = "agent console"
+            ver = "v0.3.3"
+            bar = "─" * max(10, min(width - 6, 32))
+
+            center = max(0, (width - _visible_len(bar)) // 2)
+            lines.append(" " * center + _fg(BLUE) + bar + R)
+            tline = f"{title}  {_fg(MUTED)}{ver}{R}"
+            tpad = max(0, width - _visible_len(tline) - center * 2)
+            lines.append(" " * center + B(FG_HI) + title + "  " + _fg(MUTED) + ver + R + " " * tpad)
+            sline = subtitle
+            spad = max(0, width - _visible_len(sline) - center * 2)
+            lines.append(" " * center + _fg(MUTED) + sline + R + " " * spad)
+            lines.append(" " * center + _fg(BLUE) + bar + R)
+
+            chat_rows = _term_size()[0] - 4
+            pad_mid = max(2, chat_rows - len(lines) - 2)
             lines += [""] * pad_mid
-            
-            hint = _fg(MUTED) + "Begin anywhere. Try " + _fg(CYAN) + "Tab" + _fg(MUTED) + " or " + _fg(BLUE) + "/" + _fg(MUTED) + " commands." + R
-            lines.append(" " * max(1, (width - _visible_len(hint)) // 2) + hint)
             return lines
 
         for msg in msgs:
             if msg.role == "user":
-                # Minimalist vertical bar padding for User
-                lines.append("  " + _fg(BORDER) + "┃ " + _fg(FG_DIM) + "[YOU]  " + msg.ts + R)
+                # User: simple right-leaning stripe, no box
+                u_pre = "  " + _fg(BORDER) + "┃ " + _fg(FG_DIM)
+                head = f"[you · {msg.ts}]"
+                lines.append(u_pre + head + R)
                 for ln in textwrap.wrap(msg.text, inner) or [msg.text]:
                     lines.append("  " + _fg(BORDER) + "┃ " + _fg(FG_HI) + ln + R)
                 lines.append("")
@@ -359,12 +371,13 @@ class Renderer:
                 else:
                     hdr_col = B(PURPLE)
                     
-                lines.append("  " + _fg(BORDER) + "┃ " + hdr_col + label + "  " + _fg(COMMENT) + msg.ts + R)
+                a_pre = "  " + _fg(BORDER) + "┃ "
+                lines.append(a_pre + hdr_col + label + R + "  " + _fg(COMMENT) + msg.ts + R)
                 raw_lines = msg.text.split("\n") if msg.text else [""]
                 
                 in_code = False
                 code_w = min(inner - 2, 92)
-                lpre = "  " + _fg(BORDER) + "┃ "
+                lpre = a_pre
                 
                 for ln in raw_lines:
                     if ln.startswith("```"):
@@ -392,14 +405,21 @@ class Renderer:
                         lvl = len(ln) - len(ln.lstrip("#"))
                         col =[BLUE, CYAN, TEAL, FG_HI, FG, FG_DIM][min(lvl - 1, 5)]
                         lines.append(lpre) # Extra padding above headers
-                        lines.append(lpre + _fg(col) + _bold() + ln.lstrip("# ") + R)
+                        txt = ln.lstrip("# ")
+                        lines.append(lpre + _fg(col) + _bold() + txt + R)
                         
-                    elif ln.startswith("> "): lines.append(lpre + _fg(MUTED) + "▍" + _italic() + _fg(FG_DIM) + ln[2:] + R)
-                    elif re.match(r"^[-*•] ", ln): lines.append(lpre + _fg(PURPLE) + " 󰍡" + _fg(FG) + " " + ln[2:] + R)
-                    elif ln.strip() == "": lines.append(lpre)
+                    elif ln.startswith("> "):
+                        body = ln[2:]
+                        lines.append(lpre + _fg(MUTED) + "▍ " + _italic() + _fg(FG_DIM) + body + R)
+                    elif re.match(r"^[-*•] ", ln):
+                        body = ln[2:]
+                        lines.append(lpre + _fg(PURPLE) + "• " + _fg(FG) + body + R)
+                    elif ln.strip() == "":
+                        lines.append(lpre)
                     else:
                         rendered = self._inline(ln)
-                        if len(_strip_ansi(ln)) <= inner: lines.append(lpre + rendered + R)
+                        if len(_strip_ansi(ln)) <= inner:
+                            lines.append(lpre + rendered + R)
                         else:
                             for wl in (textwrap.wrap(_strip_ansi(ln), inner) or [ln]):
                                 lines.append(lpre + _fg(FG) + wl + R)
@@ -457,17 +477,73 @@ class Renderer:
             stat_str = f" {pname} · {model} · ~{toks:,}tk{mode} "
             stat_colored = _fg(FG_DIM) + f"{pname}" + R + _fg(COMMENT) + f" · {model} · ~{toks:,}tk{mode}"
 
-        # Clean top status line (no borders, just floating right-aligned text)
-        top_w = max(0, chat_w - len(stat_str) - 2)
-        top = _move(rows - 1, 1) + _bg(BG) + _erase_line() + " " * top_w + stat_colored + " " + R
+        # Council agent rail (animated) in status when active
+        if tui.current_model == "council" and getattr(tui, "agents", None):
+            names_plain = []
+            rail_segments = []
+            for ag in tui.agents:
+                if ag.st == "spin":
+                    ico = SPINNER_FRAMES[ag.frame % len(SPINNER_FRAMES)]
+                    col = CYAN if ag.lead else FG_DIM
+                elif ag.st == "ok":
+                    ico = "✓"
+                    col = GREEN
+                else:
+                    ico = "✕"
+                    col = RED
+                nm = ag.name.split()[0][:6]
+                names_plain.append(nm)
+                rail_segments.append(_fg(col) + ico + " " + nm + R)
+            stat_str = " Council " + " ".join(names_plain) + mode
+            stat_colored = (
+                _fg(COMMENT)
+                + "Council "
+                + _fg(FG_DIM)
+                + " | "
+                + _fg(FG)
+                + "  ".join(rail_segments)
+                + R
+            )
 
-        # Sleek glowing prompt chevron
-        sym = _fg(BLUE) + _bold() + "❯ " + R if not tui.busy else _fg(CYAN) + "⠋ " + R
+        # Top line: hint on the left, model/status on the right
+        hint_plain = "hint: /help · Tab for commands"
+        hint_colored = (
+            _fg(MUTED)
+            + "hint: "
+            + _fg(CYAN)
+            + "/help"
+            + _fg(MUTED)
+            + " · "
+            + _fg(BLUE)
+            + "Tab"
+            + _fg(MUTED)
+            + " for commands"
+            + R
+        )
+
+        hint_len = _visible_len(hint_plain)
+        stat_len = _visible_len(stat_str)
+        total_needed = hint_len + stat_len + 4
+
+        if total_needed <= chat_w:
+            space_between = max(1, chat_w - hint_len - stat_len - 2)
+            gap = min(space_between, 16)
+            top_line = " " + hint_colored + " " * gap + stat_colored
+        else:
+            # If the terminal is very narrow, fall back to just right-aligned status
+            top_w = max(0, chat_w - stat_len - 2)
+            top_line = " " * top_w + stat_colored + " "
+
+        top = _move(rows - 1, 1) + _bg(BG) + _erase_line() + top_line + R
+
+        # Sleek glowing prompt chevron with animated spinner when busy
         if tui.busy:
-            # Overwrite the static spinner with the animated one in the draw loop natively
-            pass # handled by caller/spinner logic natively, we just set color
-
-        hint = _fg(MUTED) + _italic() + " generating…" + R if tui.busy else ""
+            frame = int(time.time() * 12) % len(SPINNER_FRAMES)
+            sym = _fg(CYAN) + SPINNER_FRAMES[frame] + " " + R
+            hint = _fg(MUTED) + _italic() + " thinking…" + R
+        else:
+            sym = _fg(BLUE) + _bold() + "❯ " + R
+            hint = ""
 
         txt = tui.buf
         disp_w = chat_w - 7
@@ -498,20 +574,20 @@ class Renderer:
         else:
             local_sel = -1
             
-        out = [_move(top, left) + _bg(BG_POP) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
+        out = [_move(top, left) + _bg(BG) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
         
         # Header (shows CWD)
         cwd = tui.browser_cwd
         if len(cwd) > pop_w - 6: cwd = "..." + cwd[-(pop_w - 9):]
         pad = max(0, pop_w - 4 - len(cwd))
-        out.append(_move(top + 1, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + B(PURPLE) + cwd + " " * pad + _fg(BORDER) + " │" + R)
-        out.append(_move(top + 2, left) + _bg(BG_POP) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
+        out.append(_move(top + 1, left) + _bg(BG) + _fg(BORDER) + "│ " + B(PURPLE) + cwd + " " * pad + _fg(BORDER) + " │" + R)
+        out.append(_move(top + 2, left) + _bg(BG) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
         
         row = top + 3
         for i, item in enumerate(disp_items):
             itype, iname, ipath = item
             is_sel = (i == local_sel)
-            bg_ = _bg(BG_HL) if is_sel else _bg(BG_POP)
+            bg_ = _bg(BG_HL) if is_sel else _bg(BG)
             
             if iname == "..":
                 icon = "󰜄"; color = _fg(MUTED); name_color = _fg(FG_HI) if is_sel else _fg(FG)
@@ -520,65 +596,131 @@ class Renderer:
             else:
                 icon = "󰈔"; color = _fg(FG_DIM); name_color = _fg(FG_HI) if is_sel else _fg(MUTED)
                 
-            disp_name = iname[:pop_w - 8]
+            disp_name = iname[:pop_w - 10]
             sp = max(0, pop_w - 4 - len(disp_name) - 2)
-            out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + bg_ + color + icon + " " + name_color + disp_name + " " * sp + R + _bg(BG_POP) + _fg(BORDER) + " │" + R)
+            pointer = "› " if is_sel else "  "
+            out.append(
+                _move(row, left)
+                + _bg(BG)
+                + _fg(BORDER)
+                + "│ "
+                + bg_
+                + color
+                + icon
+                + " "
+                + name_color
+                + pointer
+                + disp_name
+                + " " * max(0, sp - 2)
+                + R
+                + _bg(BG)
+                + _fg(BORDER)
+                + " │"
+                + R
+            )
             row += 1
             
         # Empty space padding if list is short
         while row < top + pop_h - 1:
-            out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + " " * (pop_w - 4) + " │" + R)
+            out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "│ " + " " * (pop_w - 4) + " │" + R)
             row += 1
             
-        out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
+        out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
         row += 1
         bot_txt = "Esc Close · ↑↓ Move · Enter/→ Open/Inject · ← Back"
-        out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + _fg(COMMENT) + bot_txt + " " * max(0, pop_w - 4 - len(bot_txt)) + _fg(BORDER) + " │" + R)
+        out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "│ " + _fg(COMMENT) + bot_txt + " " * max(0, pop_w - 4 - len(bot_txt)) + _fg(BORDER) + " │" + R)
         row += 1
-        out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
+        out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
         
         return "".join(out)
 
     def _slash_popup(self, rows, cols):
         hits = self.tui.slash_hits; sel = self.tui.slash_sel; pop_w = min(56, cols - 4)
         n = min(len(hits), 10); top = rows - 2 - n - 2; left = max(2, (cols - pop_w) // 2)
-        out =[_move(top, left) + _bg(BG_DARK) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
+        out =[_move(top, left) + _bg(BG) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
         for i, (cmd, desc) in enumerate(hits[:10]):
-            bg_ = _bg(BG_HL) if i == sel else _bg(BG_DARK); cc = _fg(CYAN) + _bold() if i == sel else _fg(BLUE)
-            dc = _fg(FG) if i == sel else _fg(MUTED)
+            is_sel = (i == sel)
+            bg_ = _bg(BG_HL) if is_sel else _bg(BG)
+            cc = _fg(CYAN) + _bold() if is_sel else _fg(BLUE)
+            dc = _fg(FG) if is_sel else _fg(MUTED)
             d_cmd = f"{cmd[:15]:<16}"
-            d_desc = desc[:max(0, pop_w - 22)]
-            pad2 = max(0, pop_w - 20 - len(d_desc))
-            out.append(_move(top + 1 + i, left) + _bg(BG_DARK) + _fg(BORDER) + "│ " + bg_ + cc + d_cmd + R + bg_ + dc + d_desc + " " * pad2 + R + _bg(BG_DARK) + _fg(BORDER) + " │" + R)
-        out.append(_move(top + 1 + n, left) + _bg(BG_DARK) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
+            d_desc = desc[:max(0, pop_w - 24)]
+            pad2 = max(0, pop_w - 22 - len(d_desc))
+            pointer = "› " if is_sel else "  "
+            out.append(
+                _move(top + 1 + i, left)
+                + _bg(BG)
+                + _fg(BORDER)
+                + "│ "
+                + bg_
+                + cc
+                + pointer
+                + d_cmd
+                + R
+                + bg_
+                + dc
+                + d_desc
+                + " " * pad2
+                + R
+                + _bg(BG)
+                + _fg(BORDER)
+                + " │"
+                + R
+            )
+        out.append(_move(top + 1 + n, left) + _bg(BG) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
         return "".join(out)
 
     def _picker_popup(self, rows, cols):
-        items = self.tui.picker_items; sel = self.tui.picker_sel; pop_w = 46
+        items = self.tui.picker_items; sel = self.tui.picker_sel
+        pop_w = min(64, cols - 4)
         left = max(2, (cols - pop_w) // 2); top = max(2, (rows - len(items) - 5) // 2)
-        out =[_move(top, left) + _bg(BG_POP) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
+        out =[_move(top, left) + _bg(BG) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
         tp = max(0, pop_w - 2 - 20)
-        out.append(_move(top + 1, left) + _bg(BG_POP) + _fg(BORDER) + "│" + B(PURPLE) + " Model / Provider   " + " " * tp + _fg(BORDER) + "│" + R)
-        out.append(_move(top + 2, left) + _bg(BG_POP) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
+        out.append(_move(top + 1, left) + _bg(BG) + _fg(BORDER) + "│" + B(PURPLE) + " Model / Provider   " + " " * tp + _fg(BORDER) + "│" + R)
+        out.append(_move(top + 2, left) + _bg(BG) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
         row = top + 3
         for i, (kind, value, label) in enumerate(items):
             if kind == "header":
                 lbl = label[:pop_w - 6]
                 sp = max(0, pop_w - 4 - len(lbl))
-                out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + B(COMMENT) + lbl + " " * sp + _fg(BORDER) + " │" + R)
+                out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "│ " + B(COMMENT) + lbl + " " * sp + _fg(BORDER) + " │" + R)
             else:
-                is_sel = (i == sel); dot = "●" if is_sel else "○"; bg_ = _bg(BG_HL) if is_sel else _bg(BG_POP)
-                lc = B(CYAN) if is_sel else _fg(FG_DIM); vcol = PROV_COL.get(value, FG) if kind == "provider" else FG
-                lbl = label[:pop_w - 8]
-                pp = max(0, pop_w - 4 - len(f"{dot} {lbl}"))
-                out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + bg_ + lc + dot + " " + _fg(vcol if is_sel else FG_DIM) + lbl + " " * pp + R + _bg(BG_POP) + _fg(BORDER) + " │" + R)
+                is_sel = (i == sel)
+                dot = "●" if is_sel else "○"
+                bg_ = _bg(BG_HL) if is_sel else _bg(BG)
+                lc = B(CYAN) if is_sel else _fg(FG_DIM)
+                vcol = PROV_COL.get(value, FG) if kind == "provider" else FG
+                # leave space for pointer, dot, and padding
+                lbl = label[: pop_w - 12]
+                text_block = f"{dot} {lbl}"
+                pp = max(0, pop_w - 6 - len(text_block))
+                pointer = "› " if is_sel else "  "
+                out.append(
+                    _move(row, left)
+                    + _bg(BG)
+                    + _fg(BORDER)
+                    + "│ "
+                    + bg_
+                    + lc
+                    + pointer
+                    + dot
+                    + " "
+                    + _fg(vcol if is_sel else FG_DIM)
+                    + lbl
+                    + " " * pp
+                    + R
+                    + _bg(BG)
+                    + _fg(BORDER)
+                    + " │"
+                    + R
+                )
             row += 1
-        out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
+        out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
         row += 1
         bot_txt = "Esc Close · ↑↓ Move · Enter Mount"
-        out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + _fg(COMMENT) + bot_txt + " " * max(0, pop_w - 4 - len(bot_txt)) + _fg(BORDER) + " │" + R)
+        out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "│ " + _fg(COMMENT) + bot_txt + " " * max(0, pop_w - 4 - len(bot_txt)) + _fg(BORDER) + " │" + R)
         row += 1
-        out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
+        out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
         return "".join(out)
 
     def _notification_bar(self, rows, cols):
@@ -586,7 +728,7 @@ class Renderer:
         pop_w = min(len(msg) + 6, cols - 4)
         left = max(1, cols - pop_w - 2)
         disp_msg = msg[:max(0, pop_w - 6)]
-        return _move(rows - 3, left) + _bg(BG_POP) + _fg(CYAN) + " ╭─ " + _fg(FG_HI) + disp_msg + _fg(CYAN) + " ─╮" + R
+        return _move(rows - 3, left) + _bg(BG) + _fg(CYAN) + " ╭─ " + _fg(FG_HI) + disp_msg + _fg(CYAN) + " ─╮" + R
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1089,7 +1231,11 @@ def bg_task(func):
 @registry.register("/clear", "Clear conversation")
 def cmd_clear(tui: LumiTUI, arg: str):
     tui.memory.clear(); tui.store.clear(); tui.agents.clear()
-    tui.last_msg = tui.last_reply = tui.prev_reply = None; tui.turns = 0; tui.set_busy(False); tui._sys("Chat cleared.")
+    tui.last_msg = tui.last_reply = tui.prev_reply = None
+    tui.turns = 0
+    tui.set_busy(False)
+    # Show a subtle toast but keep history visually empty so the splash header returns
+    tui._notify("Chat cleared.")
 
 @registry.register("/browse", "󰉋 Visual file tree explorer — navigate & inject files")
 def cmd_browse(tui: LumiTUI, arg: str):
