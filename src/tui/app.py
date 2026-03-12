@@ -324,7 +324,7 @@ class Renderer:
         inner = max(30, width - 6)
         if not msgs:
             logo = [
-                "  ▝▜▄     Lumi CLI v0.3",
+                "  ▝▜▄     Lumi CLI v0.3.3",
                 "    ▝▜▄",
                 "   ▗▟▀    Logged in with API",
                 "  ▝▀      Lumi Vessel mode /mode"
