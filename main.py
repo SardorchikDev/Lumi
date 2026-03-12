@@ -44,7 +44,10 @@ from src.utils.markdown import render as md_render
 from src.utils.export import export_md
 from src.utils.themes import get_theme, list_themes, save_theme_name, load_theme_name
 from src.utils.history import setup as history_setup, save as history_save
-from src.utils.intelligence import detect_emotion, emotion_hint, detect_topic, should_search, is_complex_coding_task, needs_plan_first
+from src.utils.intelligence import (detect_emotion, emotion_hint, detect_topic, should_search,
+                                  is_complex_coding_task, needs_plan_first,
+                                  classify_request)
+from src.memory.longterm import get_related_episodes, auto_summarize_and_save
 from src.utils.autoremember import auto_extract_facts
 
 # ── System prompt builder (unified) ──────────────────────────
@@ -821,7 +824,7 @@ def stream_and_render(client, messages: list, model: str, name: str = "Lumi") ->
 
         # council_ask handles agents, spinner, debate, refinement — just stream it
         gen = _ca(messages, user_q, show_individual=False, stream=True,
-                  debate=True, refine=True)
+                  debate=True, refine=True, client=client)
 
         print_lumi_label(name + f"  {DG}[council]{R}")
         raw_reply = ""
@@ -2130,6 +2133,9 @@ def main():
         except (KeyboardInterrupt, EOFError):
             history_save()
             ok(f"Saved → {save(memory.get())}")
+            # Summarize session on exit
+            if client and memory.get():
+                auto_summarize_and_save(memory.get(), client, current_model)
             ok("Goodbye!", "◆", BL)
             sys.exit(0)
 
@@ -2141,6 +2147,9 @@ def main():
         if cmd in ("/quit", "/exit"):
             history_save()
             ok(f"Saved → {save(memory.get())}")
+            # Summarize session on exit
+            if client and memory.get():
+                auto_summarize_and_save(memory.get(), client, current_model)
             ok("Goodbye!", "◆", BL)
             break
 
@@ -2649,25 +2658,76 @@ def main():
         if cmd and cmd.startswith("/"):
             fail(f"Unknown command: {cmd}  —  type /help"); continue
 
-        # Sync system_prompt from ref (for /lang updates)
-        system_prompt = system_prompt_ref[0]
+        # ── Intelligence Layer ────────────────────────────────
+        # Use a real model for classification if currently in council mode
+        _cls_model = current_model if current_model != "council" else "gemini-2.0-flash-lite"
+        classification = classify_request(user_input, client, _cls_model)
 
-        # ── Dynamic coding mode injection ────────────────────
-        # Detect if this is a coding or file-generation task and
-        # inject the full elite coding system prompt automatically.
-        _is_code  = is_complex_coding_task(user_input) or is_coding_task(user_input)
-        _is_files = is_file_generation_task(user_input)
-        if _is_code or _is_files:
-            # Rebuild system prompt with coding/file modes on
-            _enhanced = make_system_prompt(persona,
+        # 1. Active Learning: Clarification
+        if classification.get("needs_clarification"):
+            clarify_q = silent_call(client,
+                f"The user said: '{user_input}'. This is ambiguous. Ask a single, direct clarifying question.",
+                _cls_model, max_tokens=50)
+            if clarify_q:
+                info(clarify_q)
+                continue  # Go to next loop iteration to get user's answer
+
+        # 2. Episodic Memory
+        # Use a temporary client for embeddings if main one is not set up
+        _emb_client = client or (get_client() if get_provider() else None)
+        related_episodes = get_related_episodes(user_input, _emb_client) if _emb_client else []
+        
+        # 3. Dynamic System Prompt
+        _is_code = classification.get("intent") in ("coding", "debug") or is_complex_coding_task(user_input)
+        _is_files = "fs" in classification.get("tools", []) or is_file_generation_task(user_input)
+        
+        system_prompt = make_system_prompt(persona,
                                            override=get_persona_override(),
                                            coding_mode=_is_code,
                                            file_mode=_is_files)
-            # Preserve any /lang suffix
-            if "[LANGUAGE LEARNING" in system_prompt:
-                _lang_suffix = "[LANGUAGE LEARNING" + system_prompt.split("[LANGUAGE LEARNING")[1]
-                _enhanced += "\n\n" + _lang_suffix
-            system_prompt = _enhanced
+        
+        # Inject MCP context if needed
+        if "mcp" in classification.get("tools", []):
+            from src.tools.mcp import get_tool_context
+            mcp_context = get_tool_context()
+            if mcp_context:
+                system_prompt += "\n\n" + mcp_context
+        
+        if related_episodes:
+            system_prompt += "\n\n## Related past conversations\n" + "\n".join(f"- {s}" for s in related_episodes)
+
+        # 4. Auto web search
+        augmented = user_input
+        if "search" in classification.get("tools", []) and should_search(user_input):
+            sp = Spinner("searching"); sp.start()
+            try:
+                results_text = search(user_input, fetch_top=True)
+                if results_text and not results_text.startswith("[No"):
+                    augmented = (
+                        f"{user_input}\n\n[Web search results]:\n{results_text}\n"
+                        "[Use these results to inform your answer.]"
+                    )
+                    print(f"\n  {CY}◆{R}  {GR}Found web results{R}")
+            except Exception:
+                pass
+            finally:
+                sp.stop()
+
+        # 5. Emotion Hint
+        emotion_hint_str = emotion_hint(classification.get("emotion", "neutral"))
+        if emotion_hint_str:
+            augmented = emotion_hint_str + augmented
+        
+        log_mood(classification.get("emotion"), turns)
+        if turns > 0 and turns % 20 == 0:
+            mood_msg = check_mood_pattern()
+            if mood_msg: info(mood_msg)
+
+        # Sync system_prompt from ref (for /lang updates)
+        system_prompt = system_prompt_ref[0]
+
+
+
 
         # ── Plan-first for complex multi-file tasks ───────────
         if needs_plan_first(user_input) and _is_files:
@@ -2733,48 +2793,7 @@ def main():
                 fail("Couldn\'t generate a file plan. Try being more specific, e.g: \'create a folder called myapp with index.html and style.css\'")
             continue
 
-        # ── Emotion detection ─────────────────────────────────
-        emotion = detect_emotion(user_input)
-        hint    = emotion_hint(emotion) if emotion else ""
-        log_mood(emotion, turns)
-        # Periodic mood check-in
-        if turns > 0 and turns % 20 == 0:
-            mood_msg = check_mood_pattern()
-            if mood_msg: info(mood_msg)
 
-        # ── Topic tracking ────────────────────────────────────
-        topic = detect_topic(user_input)
-        if topic and topic != current_topic:
-            current_topic = topic
-
-        # ── Auto web search ───────────────────────────────────
-        augmented = user_input
-        if should_search(user_input):
-            sp = Spinner("searching"); sp.start()
-            try:
-                results_text = search(user_input, fetch_top=True)
-            except Exception:
-                results_text = ""
-            sp.stop()
-            if results_text and not results_text.startswith("[No"):
-                augmented = (
-                    f"{user_input}\n\n[Web search results:]\n{results_text}\n"
-                    "[Use the above to inform your answer. Cite sources where relevant.]"
-                )
-                print(f"\n  {CY}◆{R}  {GR}Found web results{R}")
-
-        # ── Response mode prefix ──────────────────────────────
-        if response_mode == "short":
-            augmented += "\n\n[Reply concisely — 2-3 sentences max.]"
-        elif response_mode == "detailed":
-            augmented += "\n\n[Reply in detail — be thorough and comprehensive.]"
-        elif response_mode == "bullets":
-            augmented += "\n\n[Reply using bullet points only.]"
-        response_mode = None
-
-        # ── Inject emotion hint ───────────────────────────────
-        if hint:
-            augmented = hint + augmented
 
         # ── Context compression (when > 15 turns) ──────────
         if len(memory.get()) > 15 and turns % 10 == 0 and turns > 0:

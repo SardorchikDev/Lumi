@@ -20,6 +20,7 @@ import threading
 import time
 
 from openai import OpenAI
+from src.utils.intelligence import classify_request
 
 # ── ANSI ──────────────────────────────────────────────────────────────────────
 R  = "\033[0m"
@@ -740,7 +741,9 @@ def council_ask(messages: list, user_question: str,
                 debate: bool = True,
                 refine: bool = True,
                 silent: bool = False,
-                agent_callback=None):
+                agent_callback=None,
+                client=None,
+                model: str = "gemini-2.0-flash-lite"):
     """
     Full overpowered council call.
 
@@ -761,8 +764,38 @@ def council_ask(messages: list, user_question: str,
             "GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, MISTRAL_API_KEY, HF_TOKEN"
         )
 
-    task_type = classify_task(user_question)
-    lead_id   = LEAD_AGENTS.get(task_type, "gemini")
+    # ── Classification & Routing ──────────────────────────────────────────────
+    task_type = "general"
+    routing   = []
+
+    if client:
+        try:
+            cls = classify_request(user_question, client, model)
+            raw_intent = cls.get("intent", "general")
+            # Map LLM intent to internal task types
+            intent_map = {
+                "coding":   TASK_CODE,
+                "debug":    TASK_DEBUG,
+                "creative": TASK_CREATIVE,
+                "analysis": TASK_ANALYSIS,
+                "search":   TASK_FACTUAL,
+                "chat":     TASK_GENERAL,
+            }
+            task_type = intent_map.get(raw_intent, TASK_GENERAL)
+            routing   = cls.get("routing", [])
+        except Exception:
+            task_type = classify_task(user_question)
+    else:
+        task_type = classify_task(user_question)
+
+    # Filter agents if routing is specific
+    if routing:
+        # always keep reasoning as anchor
+        filtered = [a for a in available if a["role"] in routing or a["role"] == "reasoning"]
+        if filtered:
+            available = filtered
+
+    lead_id = LEAD_AGENTS.get(task_type, "gemini")
 
     results: dict = {}
     errors:  dict = {}
