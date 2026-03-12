@@ -6,3 +6,6 @@ data/conversations/
 .DS_Store
 .venv/
 venv/
+data/memory/
+.gemini/
+gha-creds-*.json
