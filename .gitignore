@@ -4,9 +4,9 @@ __pycache__/
 models/weights/
 data/conversations/
 data/memory/
+data/sessions/
 .DS_Store
 .venv/
 venv/
-data/memory/
 .gemini/
 gha-creds-*.json
