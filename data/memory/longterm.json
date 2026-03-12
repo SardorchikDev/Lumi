@@ -1,6 +1,14 @@
 {
   "facts": [
-    "The user is interested in CLI and TUI."
+    "The user is interested in CLI and TUI.",
+    "The user has developed uxwm - unified x11 window manager.",
+    "The user wrote uxwm fully in c.",
+    "The user uses linux.",
+    "The user does not like developed trash from big tech.",
+    "The user builds everything on their own.",
+    "The user is 14 years old.",
+    "The user's name is Sardor.",
+    "The user wants to create a TUI."
   ],
   "persona_override": {}
 }

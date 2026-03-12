@@ -1,0 +1,18 @@
+{
+  "name": "session-20260312_131538",
+  "date": "2026-03-12 13:15",
+  "messages": [
+    {
+      "role": "system",
+      "content": "[SYSTEM NOTE: I was temporarily put to sleep while the user used the 'opencode' CLI. The session transcript was saved to opencode_logs.txt. I should warmly welcome them back and ask if they want me to review the new code or read the logs.]"
+    },
+    {
+      "role": "user",
+      "content": "(I have returned from using opencode. Greet me and mention opencode_logs.txt.)"
+    },
+    {
+      "role": "assistant",
+      "content": "hey, welcome back! how was your time with opencode? i see you've got some new stuff in opencode_logs.txt - wanna walk me through what you did or should i take a peek at the logs myself?"
+    }
+  ]
+}

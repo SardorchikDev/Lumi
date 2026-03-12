@@ -302,13 +302,14 @@ class Renderer:
 
         w(self._input_area(rows, cols, chat_w))
 
+        if getattr(self.tui, "browser_visible", False): w(self._browser_popup(rows, cols))
         if self.tui.slash_visible and self.tui.slash_hits: w(self._slash_popup(rows, cols))
         if self.tui.picker_visible and self.tui.picker_items: w(self._picker_popup(rows, cols))
         if self.tui.notification: w(self._notification_bar(rows, cols))
 
         disp_w = chat_w - 7
         scroll = max(0, self.tui.cur_pos - disp_w + 1)
-        cur_col = 6 + (self.tui.cur_pos - scroll) 
+        cur_col = 5 + (self.tui.cur_pos - scroll) 
         
         # Keep inside matrix range so automatic Line feeds don't kill buffer UI natively!
         w(_move(rows, min(cur_col, cols - 1)))
@@ -323,10 +324,10 @@ class Renderer:
         inner = max(30, width - 6)
         if not msgs:
             logo = [
-                "  ▝▜▄     Lumi CLI v0.33.0",
+                "  ▝▜▄     Lumi CLI v0.3",
                 "    ▝▜▄",
                 "   ▗▟▀    Logged in with API",
-                "  ▝▀      Lumi Code Assist for individuals /mode"
+                "  ▝▀      Lumi Vessel mode /mode"
             ]
             for l in logo:
                 lines.append(" " + B(BLUE) + l + R)
@@ -477,6 +478,67 @@ class Renderer:
 
         return top + bot
 
+    def _browser_popup(self, rows, cols):
+        tui = getattr(self, "tui", None)
+        if not tui: return ""
+        
+        items = tui.browser_items; sel = tui.browser_sel
+        pop_w = min(60, cols - 6); pop_h = min(20, rows - 6)
+        left = max(2, (cols - pop_w) // 2); top = max(2, (rows - pop_h) // 2)
+        
+        # Display window
+        disp_items = []
+        if items:
+            total = len(items)
+            start = max(0, min(sel - pop_h // 2, total - pop_h + 2))
+            disp_items = items[start:start + pop_h - 2]
+            
+            # Recalculate local selection index
+            local_sel = sel - start
+        else:
+            local_sel = -1
+            
+        out = [_move(top, left) + _bg(BG_POP) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
+        
+        # Header (shows CWD)
+        cwd = tui.browser_cwd
+        if len(cwd) > pop_w - 6: cwd = "..." + cwd[-(pop_w - 9):]
+        pad = max(0, pop_w - 4 - len(cwd))
+        out.append(_move(top + 1, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + B(PURPLE) + cwd + " " * pad + _fg(BORDER) + " │" + R)
+        out.append(_move(top + 2, left) + _bg(BG_POP) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
+        
+        row = top + 3
+        for i, item in enumerate(disp_items):
+            itype, iname, ipath = item
+            is_sel = (i == local_sel)
+            bg_ = _bg(BG_HL) if is_sel else _bg(BG_POP)
+            
+            if iname == "..":
+                icon = "󰜄"; color = _fg(MUTED); name_color = _fg(FG_HI) if is_sel else _fg(FG)
+            elif itype == "dir":
+                icon = "󰉋"; color = _fg(BLUE); name_color = _fg(FG_HI) if is_sel else _fg(FG)
+            else:
+                icon = "󰈔"; color = _fg(FG_DIM); name_color = _fg(FG_HI) if is_sel else _fg(MUTED)
+                
+            disp_name = iname[:pop_w - 8]
+            sp = max(0, pop_w - 4 - len(disp_name) - 2)
+            out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + bg_ + color + icon + " " + name_color + disp_name + " " * sp + R + _bg(BG_POP) + _fg(BORDER) + " │" + R)
+            row += 1
+            
+        # Empty space padding if list is short
+        while row < top + pop_h - 1:
+            out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + " " * (pop_w - 4) + " │" + R)
+            row += 1
+            
+        out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
+        row += 1
+        bot_txt = "Esc Close · ↑↓ Move · Enter/→ Open/Inject · ← Back"
+        out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "│ " + _fg(COMMENT) + bot_txt + " " * max(0, pop_w - 4 - len(bot_txt)) + _fg(BORDER) + " │" + R)
+        row += 1
+        out.append(_move(row, left) + _bg(BG_POP) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
+        
+        return "".join(out)
+
     def _slash_popup(self, rows, cols):
         hits = self.tui.slash_hits; sel = self.tui.slash_sel; pop_w = min(56, cols - 4)
         n = min(len(hits), 10); top = rows - 2 - n - 2; left = max(2, (cols - pop_w) // 2)
@@ -555,6 +617,12 @@ class LumiTUI:
         self.original_termios = None
         self.pane_active = False
         self.pane_lines_output = []
+        
+        # ── Browser Mode ──────────────────────────────────────────────────────
+        self.browser_visible = False
+        self.browser_cwd = os.getcwd()
+        self.browser_items = []
+        self.browser_sel = 0
 
     def _make_system_prompt(self, coding_mode=False, file_mode=False):
         return build_system_prompt({**self.persona, **self.persona_override}, build_memory_block(), coding_mode, file_mode)
@@ -571,6 +639,45 @@ class LumiTUI:
             self.redraw()
         t = threading.Timer(duration, _clear); t.daemon = True; t.start()
         self._notif_timer = t
+
+    def _refresh_browser(self):
+        try:
+            entries = list(os.scandir(self.browser_cwd))
+            dirs = sorted([e for e in entries if e.is_dir()], key=lambda e: e.name.lower())
+            files = sorted([e for e in entries if e.is_file()], key=lambda e: e.name.lower())
+            
+            self.browser_items = []
+            if self.browser_cwd != "/":
+                self.browser_items.append(("dir", "..", os.path.dirname(self.browser_cwd)))
+                
+            for d in dirs: self.browser_items.append(("dir", d.name, d.path))
+            for f in files: self.browser_items.append(("file", f.name, f.path))
+            self.browser_sel = max(0, min(self.browser_sel, len(self.browser_items) - 1))
+        except Exception as e:
+            self._err(f"Browser error: {e}")
+            self.browser_items = []
+
+    def _browser_select(self):
+        if not self.browser_items: return
+        sel = self.browser_sel
+        if sel < 0 or sel >= len(self.browser_items): return
+        itype, iname, ipath = self.browser_items[sel]
+        
+        if itype == "dir":
+            # Navigate into the directory
+            self.browser_cwd = ipath
+            self.browser_sel = 0
+            self._refresh_browser()
+            self.redraw()
+        else:
+            # File selected — inject into context, close the browser
+            self.browser_visible = False
+            self._notify(f"󰈔 Loaded: {iname}")
+            threading.Thread(
+                target=self._execute_command,
+                args=("/file", ipath),
+                daemon=True
+            ).start()
 
     def _capture(self, fn, *args, **kwargs):
         buf = io.StringIO(); result = None
@@ -717,6 +824,7 @@ class LumiTUI:
     def _handle_key(self, key):
         if not key: return
         if key == "ESC":
+            if getattr(self, "browser_visible", False): self.browser_visible = False; self.redraw(); return
             if self.slash_visible: self.slash_visible = False
             elif self.picker_visible: self.picker_visible = False
             return
@@ -736,6 +844,8 @@ class LumiTUI:
         if key == "CTRL_U": self.buf = ""; self.cur_pos = 0; self.slash_visible = False; return
 
         if key == "UP":
+            if getattr(self, "browser_visible", False):
+                self.browser_sel = max(0, self.browser_sel - 1); self.redraw(); return
             if self.slash_visible: self.slash_sel = max(0, self.slash_sel - 1)
             elif self.picker_visible:
                 new = self.picker_sel - 1
@@ -745,6 +855,8 @@ class LumiTUI:
             else: self._hist_nav(-1)
             return
         if key == "DOWN":
+            if getattr(self, "browser_visible", False):
+                self.browser_sel = min(len(self.browser_items) - 1, self.browser_sel + 1); self.redraw(); return
             if self.slash_visible: self.slash_sel = min(len(self.slash_hits) - 1, self.slash_sel + 1)
             elif self.picker_visible:
                 new = self.picker_sel + 1
@@ -763,6 +875,7 @@ class LumiTUI:
             return
 
         if key == "ENTER":
+            if getattr(self, "browser_visible", False): self._browser_select(); return
             if self.picker_visible: self._confirm_picker(); return
             if self.slash_visible and self.slash_hits:
                 cmd = self.slash_hits[self.slash_sel][0]
@@ -778,6 +891,11 @@ class LumiTUI:
             return
 
         if key == "BACKSPACE":
+            if getattr(self, "browser_visible", False):
+                parent = os.path.dirname(self.browser_cwd)
+                if parent != self.browser_cwd:
+                    self.browser_sel = 0; self.browser_cwd = parent; self._refresh_browser(); self.redraw()
+                return
             if self.cur_pos > 0:
                 self.buf = self.buf[:self.cur_pos - 1] + self.buf[self.cur_pos:]; self.cur_pos -= 1
             self._update_slash(); return
@@ -800,8 +918,16 @@ class LumiTUI:
             while i > 0 and self.buf[i - 1] == " ": i -= 1
             while i > 0 and self.buf[i - 1] != " ": i -= 1
             self.cur_pos = i; return
-        if key == "LEFT": self.cur_pos = max(0, self.cur_pos - 1); return
-        if key == "RIGHT": self.cur_pos = min(len(self.buf), self.cur_pos + 1); return
+        if key == "LEFT":
+            if getattr(self, "browser_visible", False):
+                parent = os.path.dirname(self.browser_cwd)
+                if parent != self.browser_cwd:
+                    self.browser_sel = 0; self.browser_cwd = parent; self._refresh_browser(); self.redraw()
+                return
+            self.cur_pos = max(0, self.cur_pos - 1); return
+        if key == "RIGHT":
+            if getattr(self, "browser_visible", False): self._browser_select(); return
+            self.cur_pos = min(len(self.buf), self.cur_pos + 1); return
         if key == "HOME": self.cur_pos = 0; return
         if key == "END": self.cur_pos = len(self.buf); return
 
@@ -965,6 +1091,38 @@ def cmd_clear(tui: LumiTUI, arg: str):
     tui.memory.clear(); tui.store.clear(); tui.agents.clear()
     tui.last_msg = tui.last_reply = tui.prev_reply = None; tui.turns = 0; tui.set_busy(False); tui._sys("Chat cleared.")
 
+@registry.register("/browse", "󰉋 Visual file tree explorer — navigate & inject files")
+def cmd_browse(tui: LumiTUI, arg: str):
+    tui.browser_cwd = os.path.abspath(arg.strip()) if arg.strip() else os.getcwd()
+    tui.browser_sel = 0
+    tui._refresh_browser()
+    tui.browser_visible = True
+    tui.redraw()
+
+@registry.register("/file", "󰈔 Load a file into AI context: /file path/to/file")
+def cmd_file(tui: LumiTUI, arg: str):
+    if not arg.strip():
+        tui._sys("Usage: /file <path>  — e.g. /file src/main.py")
+        return
+    path = Path(arg.strip()).expanduser()
+    if not path.exists():
+        tui._err(f"File not found: {path}")
+        return
+    if not path.is_file():
+        tui._err(f"Not a file: {path}  (use /browse to explore directories)")
+        return
+    try:
+        content = path.read_text(errors="replace")
+        rel = str(path)
+        line_count = content.count("\n") + 1
+        # Inject into memory as a user-facing system note
+        tui._sys(f"󰈔 Loaded `{rel}` ({line_count} lines) into context")
+        # Also push into the conversation memory so the LLM can see it
+        snippet = f"<file path=\"{rel}\">\n{content}\n</file>"
+        tui.memory.add("user", snippet)
+    except Exception as e:
+        tui._err(f"Failed to read {path}: {e}")
+
 @registry.register("/council", "All agents run together")
 def cmd_council(tui: LumiTUI, arg: str): tui.current_model = "council"; tui._sys("⚡ Council mode — all agents in parallel")
 
@@ -1101,44 +1259,346 @@ def cmd_types(tui: LumiTUI, arg: str):
     raw = tui._tui_stream(build_messages(tui.system_prompt, tui.memory.get()), tui.current_model, f"◆ {tui.name}  [Statically Type Analysis Typing routine...]")
     tui.memory._history[-1] = {"role": "user", "content": "Applied Code PEP Typings Map Refactor Run!"}; tui.memory.add("assistant", raw); tui.last_reply = raw; tui.turns += 1; tui.set_busy(False)
 
-@registry.register("/multi", "Enable/disable newlines with Enter Key!")
+@registry.register("/multi", "Toggle multiline input mode")
 def cmd_multi(tui: LumiTUI, arg: str):
     tui.multiline = not tui.multiline
-    tui._notify(f"Multiline {'ON (Enter -> newline | Ctrl+D -> Send)' if tui.multiline else 'OFF (Standard Default Event Hook Terminal Send Enabled)'}")
+    tui._notify(f"Multiline {'ON — Enter=newline, Ctrl+D=submit' if tui.multiline else 'OFF'}")
 
-@registry.register("/remember", "Vector knowledge text file append tool format.")
+@registry.register("/remember", "Save a fact to long-term memory")
 def cmd_rem(tui: LumiTUI, arg: str):
-    if not arg: tui._err("Invalid Context Fact Vector Mapping Argument Provided Format Fail!."); return
+    if not arg: tui._err("Usage: /remember <fact>"); return
     n = add_fact(arg.strip()); tui.system_prompt = tui._make_system_prompt()
-    tui._notify(f"Vector File Cache Mem: Loaded / Validated Index: #{n}")
+    tui._notify(f"Remembered fact #{n}")
 
-@registry.register("/memory", "Echo Cache Core State Data Store Array Vectors Matrix Layout Memory Nodes.")
+@registry.register("/memory", "Show all stored long-term facts")
 def cmd_mem(tui: LumiTUI, arg: str):
-    f = get_facts(); lines =["System Node Context Files Mapping Core: ", ""]
-    if f: 
-        for i, val in enumerate(f, 1): lines.append(f" ╰►[{i}]. {val}")
+    f = get_facts()
+    if f:
+        lines = ["Long-term memory:"] + [f"  {i}. {val}" for i, val in enumerate(f, 1)]
         tui._sys("\n".join(lines))
-    else: tui._sys("Core Context Vector Memory Map Clean Array (Empty!) Load Node data explicitly[/remember x] or activate dynamic agent map routing memory plugin!")
+    else: tui._sys("No facts stored. Use /remember <fact>")
 
-@registry.register("/forget", "Drop vector Node Id list target mapping data base files.")
+@registry.register("/forget", "Remove a fact by number: /forget 3")
 def cmd_forg(tui: LumiTUI, arg: str):
-    f = get_facts(); lines = ["Database Vector Unmap Protocol Menu:", ""]
-    if not f: tui._err("Nil Array Database Map Zero. Target fail missing parameters / Vector Database Nodes Count: 0!"); return
-    for i, val in enumerate(f, 1): lines.append(f" ╰►[{i}]. {val}")
-    tui._sys("\n".join(lines) + "\nCommand Syntax Use Mapping Number to Del Format Vector Store Ex: /forget 1")
+    f = get_facts()
+    if not f: tui._err("No facts to forget"); return
+    lines = ["Facts:"] + [f"  {i}. {val}" for i, val in enumerate(f, 1)]
+    tui._sys("\n".join(lines) + "\n  Use: /forget <number>")
 
-@registry.register("/short", "Short form strict!")
-def cmd_short(tui: LumiTUI, arg: str): tui.response_mode = "short"; tui._notify("Mode Short Response Mapped Enabled")
-@registry.register("/detailed", "Detailed output mapping logic form set target protocol")
-def cmd_detailed(tui: LumiTUI, arg: str): tui.response_mode = "detailed"; tui._notify("Mode Strict Large Analysis Mapped Enabled Protocol Detail Setting = Max Load")
-@registry.register("/bullets", "List arrays syntax list elements strict formatting only mapped.")
-def cmd_bullets(tui: LumiTUI, arg: str): tui.response_mode = "bullets"; tui._notify("Formatting Arrays Mode Settings Bullet Vectors ONLY mapping state format settings flag true mode trigger load event hooks active hooks lists set to TRUE variables logic matrix updated via System Prompts Protocol Commands Tools Call")
+@registry.register("/short", "Next reply: be concise")
+def cmd_short(tui: LumiTUI, arg: str): tui.response_mode = "short"; tui._notify("Mode: concise")
+@registry.register("/detailed", "Next reply: be comprehensive")
+def cmd_detailed(tui: LumiTUI, arg: str): tui.response_mode = "detailed"; tui._notify("Mode: detailed")
+@registry.register("/bullets", "Next reply: bullet points only")
+def cmd_bullets(tui: LumiTUI, arg: str): tui.response_mode = "bullets"; tui._notify("Mode: bullets")
 
-@registry.register("/help", "List Core Internal Tool Sets Maps List Command Manual Data Display Terminal Standard Read Me Files Context Load Print Statement Render Event GUI Logic Format Render")
+# ── New utility commands ──────────────────────────────────────────────────────
+
+@registry.register("/compact", "Toggle compact display mode")
+def cmd_compact(tui: LumiTUI, arg: str): tui._compact = not tui._compact; tui._sys(f"Compact {'on' if tui._compact else 'off'}")
+
+@registry.register("/tokens", "Show estimated token usage")
+def cmd_tokens(tui: LumiTUI, arg: str):
+    msgs = tui.memory.get()
+    total = sum(max(1, int(len(m["content"].split()) * 1.35)) for m in msgs)
+    tui._sys(f"Estimated tokens: ~{total:,}  ({len(msgs)} messages)")
+
+@registry.register("/context", "Show context window breakdown")
+def cmd_context(tui: LumiTUI, arg: str):
+    msgs = tui.memory.get()
+    sys_t = sum(max(1, int(len(m["content"].split()) * 1.35)) for m in msgs if m["role"] == "system")
+    usr_t = sum(max(1, int(len(m["content"].split()) * 1.35)) for m in msgs if m["role"] == "user")
+    ast_t = sum(max(1, int(len(m["content"].split()) * 1.35)) for m in msgs if m["role"] == "assistant")
+    tui._sys(f"Context breakdown:\n  System: ~{sys_t:,}tk\n  User:   ~{usr_t:,}tk\n  AI:     ~{ast_t:,}tk\n  Total:  ~{sys_t + usr_t + ast_t:,}tk")
+
+@registry.register("/export", "Export chat as Markdown file")
+def cmd_export(tui: LumiTUI, arg: str):
+    msgs = tui.store.snapshot()
+    if not msgs: tui._sys("Nothing to export"); return
+    fname = arg.strip() or f"lumi_chat_{int(time.time())}.md"
+    lines = ["# Lumi Chat Export\n"]
+    for m in msgs:
+        if m.role == "user": lines.append(f"**You** ({m.ts}):\n{m.text}\n")
+        elif m.role in ("assistant",): lines.append(f"**Lumi** ({m.ts}):\n{m.text}\n")
+        elif m.role == "system": lines.append(f"*System: {m.text}*\n")
+    Path(fname).write_text("\n".join(lines)); tui._sys(f"Exported to {fname}")
+
+@registry.register("/copy", "Copy last AI reply to clipboard")
+def cmd_copy(tui: LumiTUI, arg: str):
+    if not tui.last_reply: tui._err("No reply to copy"); return
+    try:
+        subprocess.run(["xclip", "-selection", "clipboard"], input=tui.last_reply.encode(), check=True)
+        tui._sys("Copied to clipboard")
+    except Exception:
+        try:
+            subprocess.run(["xsel", "--clipboard", "--input"], input=tui.last_reply.encode(), check=True)
+            tui._sys("Copied to clipboard")
+        except Exception: tui._err("Install xclip or xsel for clipboard support")
+
+@registry.register("/paste", "Paste clipboard as message")
+def cmd_paste(tui: LumiTUI, arg: str):
+    try:
+        r = subprocess.run(["xclip", "-selection", "clipboard", "-o"], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip(): tui.buf = r.stdout.strip(); tui.cur_pos = len(tui.buf)
+        else: tui._err("Clipboard empty")
+    except Exception:
+        try:
+            r = subprocess.run(["xsel", "--clipboard", "--output"], capture_output=True, text=True)
+            if r.returncode == 0 and r.stdout.strip(): tui.buf = r.stdout.strip(); tui.cur_pos = len(tui.buf)
+            else: tui._err("Clipboard empty")
+        except Exception: tui._err("Install xclip or xsel")
+
+@registry.register("/diff", "Diff current vs previous AI reply")
+def cmd_diff(tui: LumiTUI, arg: str):
+    if not tui.last_reply or not tui.prev_reply: tui._err("Need 2+ replies for diff"); return
+    import difflib
+    d = difflib.unified_diff(tui.prev_reply.splitlines(), tui.last_reply.splitlines(), lineterm="", fromfile="previous", tofile="current")
+    tui._sys("\n".join(d) or "No differences found")
+
+@registry.register("/persona", "Change persona: /persona tone=formal")
+def cmd_persona(tui: LumiTUI, arg: str):
+    if not arg or arg.strip() == "reset":
+        tui.persona_override = {}; tui.system_prompt = tui._make_system_prompt(); tui._sys("Persona reset"); return
+    if "=" in arg:
+        k, v = arg.split("=", 1); tui.persona_override[k.strip()] = v.strip()
+        tui.system_prompt = tui._make_system_prompt(); tui._sys(f"Persona: {k.strip()} = {v.strip()}")
+    else: tui._err("Usage: /persona key=value  or  /persona reset")
+
+@registry.register("/sys", "Show current system prompt")
+def cmd_sys(tui: LumiTUI, arg: str): tui._sys(f"System prompt ({len(tui.system_prompt)} chars):\n{tui.system_prompt[:500]}...")
+
+@registry.register("/sessions", "List saved sessions")
+def cmd_sessions(tui: LumiTUI, arg: str):
+    sdir = Path("data/sessions")
+    if not sdir.exists(): tui._sys("No sessions saved yet"); return
+    files = sorted(sdir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not files: tui._sys("No sessions saved yet"); return
+    lines = ["Saved sessions:"] + [f"  {f.stem}" for f in files[:20]]
+    tui._sys("\n".join(lines))
+
+@registry.register("/edit", "AI-rewrite a file: /edit src/main.py")
+def cmd_edit(tui: LumiTUI, arg: str):
+    if not arg.strip(): tui._err("Usage: /edit <filepath>"); return
+    path = Path(arg.strip()).expanduser()
+    if not path.is_file(): tui._err(f"Not a file: {path}"); return
+    content = path.read_text(errors="replace")
+    def _go():
+        tui.set_busy(True)
+        prompt = f"Rewrite and improve this file. Return ONLY the new file content:\n\n```\n{content}\n```"
+        msgs = [{"role": "system", "content": tui.system_prompt}, {"role": "user", "content": prompt}]
+        reply = tui._tui_stream(msgs, tui.current_model, f"editing {path.name}")
+        tui.last_reply = reply; tui.set_busy(False)
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/run", "Execute last code block from AI reply")
+def cmd_run(tui: LumiTUI, arg: str):
+    if not tui.last_reply: tui._err("No reply with code to run"); return
+    blocks = re.findall(r"```(?:\w+)?\n(.*?)```", tui.last_reply, re.DOTALL)
+    if not blocks: tui._err("No code block found"); return
+    code = blocks[-1].strip()
+    def _go():
+        tui.set_busy(True)
+        try:
+            r = subprocess.run(["python3", "-c", code], capture_output=True, text=True, timeout=30)
+            out = r.stdout.strip() or r.stderr.strip() or "(no output)"
+            tui._sys(f"Exit {r.returncode}:\n{out[:2000]}")
+        except subprocess.TimeoutExpired: tui._err("Execution timed out (30s)")
+        except Exception as e: tui._err(str(e))
+        tui.set_busy(False)
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/image", "Vision: describe or query image")
+def cmd_image(tui: LumiTUI, arg: str):
+    if not arg.strip(): tui._err("Usage: /image <path> [question]"); return
+    tui._sys("Vision requires multimodal model — use Gemini provider")
+
+@registry.register("/data", "Analyze CSV/JSON: /data stats.csv")
+def cmd_data(tui: LumiTUI, arg: str):
+    if not arg.strip(): tui._err("Usage: /data <file.csv|file.json>"); return
+    path = Path(arg.strip()).expanduser()
+    if not path.is_file(): tui._err(f"Not found: {path}"); return
+    content = path.read_text(errors="replace")[:8000]
+    def _go():
+        tui.set_busy(True)
+        prompt = f"Analyze this data ({path.name}). Give summary stats, patterns, insights:\n\n```\n{content}\n```"
+        msgs = [{"role": "system", "content": tui.system_prompt}, {"role": "user", "content": prompt}]
+        reply = tui._tui_stream(msgs, tui.current_model, f"analyzing {path.name}")
+        tui.last_reply = reply; tui.set_busy(False)
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/agent", "Autonomous multi-step agent")
+def cmd_agent(tui: LumiTUI, arg: str):
+    if not arg.strip(): tui._err("Usage: /agent <task>"); return
+    tui._sys(f"Agent: {arg.strip()}\nUse /godmode for full autonomous execution")
+
+@registry.register("/draft", "Draft email, Slack msg, or text")
+def cmd_draft(tui: LumiTUI, arg: str):
+    if not arg.strip(): tui._err("Usage: /draft <what to write>"); return
+    def _go():
+        tui.set_busy(True)
+        prompt = f"Draft a professional message. Be clear and concise:\n\n{arg}"
+        msgs = [{"role": "system", "content": tui.system_prompt}, {"role": "user", "content": prompt}]
+        reply = tui._tui_stream(msgs, tui.current_model, "drafting")
+        tui.last_reply = reply; tui.set_busy(False)
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/todo", "Todo list: /todo add|list|done|rm")
+def cmd_todo(tui: LumiTUI, arg: str):
+    todo_file = Path("data/todos.json")
+    todo_file.parent.mkdir(parents=True, exist_ok=True)
+    try: todos = json.loads(todo_file.read_text()) if todo_file.exists() else []
+    except Exception: todos = []
+    parts = arg.strip().split(None, 1) if arg.strip() else ["list"]
+    cmd = parts[0].lower(); rest = parts[1] if len(parts) > 1 else ""
+    if cmd == "add" and rest:
+        todos.append({"text": rest, "done": False}); todo_file.write_text(json.dumps(todos))
+        tui._sys(f"Added: {rest}")
+    elif cmd == "list":
+        if not todos: tui._sys("No todos — /todo add <task>"); return
+        lines = ["Todos:"] + [f"  {'✓' if t['done'] else '○'} {i+1}. {t['text']}" for i, t in enumerate(todos)]
+        tui._sys("\n".join(lines))
+    elif cmd == "done" and rest.isdigit():
+        idx = int(rest) - 1
+        if 0 <= idx < len(todos): todos[idx]["done"] = True; todo_file.write_text(json.dumps(todos)); tui._sys(f"Done: {todos[idx]['text']}")
+        else: tui._err("Invalid todo number")
+    elif cmd == "rm" and rest.isdigit():
+        idx = int(rest) - 1
+        if 0 <= idx < len(todos): removed = todos.pop(idx); todo_file.write_text(json.dumps(todos)); tui._sys(f"Removed: {removed['text']}")
+        else: tui._err("Invalid todo number")
+    else: tui._sys("Usage: /todo add|list|done|rm")
+
+@registry.register("/note", "Notes: /note add|list|search")
+def cmd_note(tui: LumiTUI, arg: str):
+    note_file = Path("data/notes.json")
+    note_file.parent.mkdir(parents=True, exist_ok=True)
+    try: notes = json.loads(note_file.read_text()) if note_file.exists() else []
+    except Exception: notes = []
+    parts = arg.strip().split(None, 1) if arg.strip() else ["list"]
+    cmd = parts[0].lower(); rest = parts[1] if len(parts) > 1 else ""
+    if cmd == "add" and rest:
+        notes.append({"text": rest, "ts": time.strftime("%Y-%m-%d %H:%M")}); note_file.write_text(json.dumps(notes))
+        tui._sys(f"Note saved ({len(notes)} total)")
+    elif cmd == "list":
+        if not notes: tui._sys("No notes — /note add <text>"); return
+        lines = ["Notes:"] + [f"  {i+1}. [{n['ts']}] {n['text'][:80]}" for i, n in enumerate(notes[-20:])]
+        tui._sys("\n".join(lines))
+    elif cmd == "search" and rest:
+        hits = [n for n in notes if rest.lower() in n["text"].lower()]
+        if hits: tui._sys("\n".join([f"  [{n['ts']}] {n['text'][:80]}" for n in hits]))
+        else: tui._sys("No matching notes")
+    else: tui._sys("Usage: /note add|list|search <query>")
+
+@registry.register("/weather", "Current weather: /weather <location>")
+def cmd_weather(tui: LumiTUI, arg: str):
+    loc = arg.strip() or "auto"
+    try:
+        url = f"https://wttr.in/{loc}?format=%l:+%C+%t+%w+%h"
+        with urllib.request.urlopen(url, timeout=5) as r: tui._sys(r.read().decode().strip())
+    except Exception: tui._err("Weather fetch failed")
+
+@registry.register("/timer", "Countdown timer: /timer 5m")
+def cmd_timer(tui: LumiTUI, arg: str):
+    if not arg.strip(): tui._err("Usage: /timer 25m or /timer 90s"); return
+    unit = arg.strip()[-1]; num = arg.strip()[:-1]
+    if not num.isdigit(): tui._err("Usage: /timer 25m or /timer 90s"); return
+    secs = int(num) * (60 if unit == "m" else 1)
+    tui._sys(f"Timer set: {secs}s")
+    def _tick():
+        time.sleep(secs); tui._notify(f"Timer done! ({arg.strip()})", 10)
+    threading.Thread(target=_tick, daemon=True).start()
+
+@registry.register("/plugins", "List loaded plugins")
+def cmd_plugins(tui: LumiTUI, arg: str):
+    if not tui._loaded_plugins: tui._sys("No plugins loaded. Drop .py files in ~/Lumi/plugins/"); return
+    tui._sys("Loaded plugins:\n" + "\n".join(f"  {p}" for p in tui._loaded_plugins))
+
+@registry.register("/comment", "Add inline comments to file")
+def cmd_comment(tui: LumiTUI, arg: str):
+    if not arg.strip(): tui._err("Usage: /comment <filepath>"); return
+    path = Path(arg.strip()).expanduser()
+    if not path.is_file(): tui._err(f"Not found: {path}"); return
+    content = path.read_text(errors="replace")
+    def _go():
+        tui.set_busy(True)
+        prompt = f"Add clear inline comments to this code. Return ONLY the commented code:\n\n```\n{content}\n```"
+        msgs = [{"role": "system", "content": tui.system_prompt}, {"role": "user", "content": prompt}]
+        reply = tui._tui_stream(msgs, tui.current_model, f"commenting {path.name}")
+        tui.last_reply = reply; tui.set_busy(False)
+    threading.Thread(target=_go, daemon=True).start()
+
+@registry.register("/git", "Git: /git status|log|diff|commit|push|pull|branch")
+def cmd_git(tui: LumiTUI, arg: str):
+    sub = arg.strip().split()[0] if arg.strip() else "status"
+    cmd_map = {"status": ["git", "status", "-sb"], "log": ["git", "log", "--oneline", "--graph", "-15"],
+               "diff": ["git", "diff", "--stat"], "branch": ["git", "branch", "-a"],
+               "push": ["git", "push"], "pull": ["git", "pull"]}
+    if sub == "commit":
+        diff = subprocess.run(["git", "diff", "--cached", "--stat"], capture_output=True, text=True).stdout
+        if not diff.strip(): diff = subprocess.run(["git", "diff", "--stat"], capture_output=True, text=True).stdout
+        if not diff.strip(): tui._err("No changes to commit"); return
+        def _go():
+            tui.set_busy(True)
+            prompt = f"Generate a concise commit message for:\n{diff}\nReturn ONLY the message."
+            msgs = [{"role": "system", "content": tui.system_prompt}, {"role": "user", "content": prompt}]
+            reply = tui._tui_stream(msgs, tui.current_model, "git commit")
+            tui.last_reply = reply; tui.set_busy(False)
+        threading.Thread(target=_go, daemon=True).start(); return
+    if sub == "commit-confirm":
+        subprocess.run(["git", "add", "-A"], capture_output=True, text=True)
+        if tui.last_reply:
+            msg = tui.last_reply.strip().strip("`").strip()
+            r = subprocess.run(["git", "commit", "-m", msg], capture_output=True, text=True)
+            tui._sys(r.stdout.strip() or r.stderr.strip()); return
+        tui._err("Run /git commit first"); return
+    if sub in cmd_map:
+        r = subprocess.run(cmd_map[sub], capture_output=True, text=True)
+        tui._sys(r.stdout.strip() or r.stderr.strip() or "(no output)")
+    else: tui._sys("Usage: /git status|log|diff|commit|commit-confirm|push|pull|branch")
+
+@registry.register("/pdf", "Load PDF text into context")
+def cmd_pdf(tui: LumiTUI, arg: str):
+    if not arg.strip(): tui._err("Usage: /pdf <path.pdf>"); return
+    tui._sys("PDF loading requires PyPDF2 — pip install PyPDF2")
+
+@registry.register("/project", "Load entire project into context")
+def cmd_project(tui: LumiTUI, arg: str):
+    target = Path(arg.strip() or ".").expanduser()
+    if not target.is_dir(): tui._err(f"Not a directory: {target}"); return
+    exts = {".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".md", ".toml", ".yaml", ".yml", ".json", ".sh"}
+    files = [f for f in target.rglob("*") if f.is_file() and f.suffix in exts and ".git" not in str(f) and "node_modules" not in str(f)][:30]
+    if not files: tui._sys("No recognizable source files found"); return
+    content_parts = []
+    for f in files:
+        try: content_parts.append(f"<file path=\"{f}\">\n{f.read_text(errors='replace')[:3000]}\n</file>")
+        except Exception: pass
+    tui.memory.add("user", "\n\n".join(content_parts))
+    tui._sys(f"Loaded {len(files)} files from {target} into context")
+
+# ── Help (redesigned) ────────────────────────────────────────────────────────
+
+HELP_CATEGORIES = {
+    "💬 Chat": ["/clear", "/retry", "/redo", "/undo", "/more", "/rewrite", "/tl;dr", "/summarize", "/translate", "/short", "/detailed", "/bullets", "/multi"],
+    "🔧 Code": ["/fix", "/debug", "/explain", "/review", "/improve", "/optimize", "/security", "/refactor", "/test", "/docs", "/types", "/comment", "/run", "/edit"],
+    "📁 Files": ["/file", "/browse", "/find", "/grep", "/tree", "/project"],
+    "🔀 Git": ["/git", "/pr", "/changelog", "/standup", "/readme"],
+    "🌐 Web": ["/search", "/web", "/image", "/data"],
+    "🧠 Memory": ["/remember", "/memory", "/forget", "/save", "/load", "/sessions", "/export", "/tokens", "/context"],
+    "🛠️ Tools": ["/shell", "/scaffold", "/lint", "/fmt", "/todo", "/note", "/draft", "/weather", "/timer", "/copy", "/paste", "/diff", "/pdf"],
+    "⚙️ System": ["/model", "/council", "/mode", "/offline", "/godmode", "/pane", "/apply", "/index", "/rag", "/voice", "/persona", "/sys", "/plugins", "/compact", "/help", "/exit"],
+}
+
+@registry.register("/help", "Show all commands organized by category")
 def cmd_help(tui: LumiTUI, arg: str):
-    lines =["╭─ Internal Map Sub Command Execution Vector Triggers ─────────────────╮", "│"]
-    for c, data in registry.commands.items(): lines.append(f"│  {c:<22} ─ {data['desc'][:68]}")
-    lines +=["│", "├─ Local Unix Command Standard Native Event Hotkey Mapped Shortcuts ─┤", "│  Ctrl+N        Menu Array LLMs Providers Select Tool Options List Node Graphic Visual User Component Modal Picker Selector Option Prompt Array Matrix Map Tool Config Editor Set", "│  Ctrl+L        Clear Active Token Stream LLMs Cache Terminal Print Data Delete Destroy Reload Clear Memory Vector Reset Restart Buffer Clear Tui Terminal", "│  Ctrl+R        Reparse Reload Regenerate Data Recompute Recache Trigger Retry", "│  Tab           Command Map Array Native String Complete Append Cursor Matrix Cursor Data Fill Native", "╰──────────────────────────────────────────────────────────────────╯"]
+    lines = []
+    for cat, cmds in HELP_CATEGORIES.items():
+        lines.append(f"\n  {cat}")
+        for c in cmds:
+            data = registry.commands.get(c)
+            if data:
+                desc = data["desc"][:52]
+                lines.append(f"    {c:<16} {desc}")
+    lines.append(f"\n  {len(registry.commands)} commands available. Tab to autocomplete.")
+    lines.append(f"\n  Shortcuts: Ctrl+N=model picker | Ctrl+L=clear | Ctrl+R=retry | Tab=complete")
     tui._sys("\n".join(lines))
 
 # ── Batch 2 Commands ──────────────────────────────────────────────────────────────

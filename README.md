@@ -17,17 +17,32 @@ An unapologetically native, high-performance, and feature-rich AI agent built ex
 
 Most AI coding tools try to pull you out of the terminal. Lumi pulls the AI *into* it. 
 
-### Lumi vs Cursor / IDE Extensions 
-* **The Problem:** IDE extensions like Copilot and Cursor lock you into their editors. They abstract away the shell, making system-level tasks, deployment pipelines, and raw Git workflows clumsy.
-* **The Lumi Advantage:** Lumi is a first-class citizen of the UNIX ecosystem. It runs alongside your `vim`, `tmux`, and `ssh` sessions. It can run shell commands, parse `pytest` output live, execute `ruff` in the background, and seamlessly integrate into existing pipelines. You don't leave your terminal.
+### Comparison Table
 
-### Lumi vs Aider
-* **The Problem:** Aider is fantastic, but its UI is extremely basic (a linear chat log). It doesn't support interactive previews for diffs, and its agentic loops can't easily be paused or visualized in parallel.
-* **The Lumi Advantage:** Lumi features a **Rich Minimalist TUI** built entirely in pure Python (no `rich` or `curses` wrappers required). You get beautifully rendered Tokyo Night colors, syntax-highlighted code blocks, interactive `[y/N]` Live Diff patching (`/apply`), and split-screen **Terminal Panes** (`/pane`) for live execution tracking. You can even run Aider *inside* Lumi using Subprocess Handoff.
+| Feature | **Lumi AI** | **Aider** | **Cursor** | **Copilot** | **Gemini Code** | **Claude CLI** |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Native TUI UI** | ✅ (Tokyo Night) | ✅ (Basic) | ❌ (GUI) | ❌ (IDE Only) | ❌ (Cloud) | ✅ (Terminal) |
+| **Zero Core Deps** | ✅ (Pure Python) | ❌ (Heavy) | ❌ (Electron) | ❌ (IDE Plugin) | ❌ | ❌ (Node/NPM) |
+| **Local RAG** | ✅ (FTS5) | ❌ | ✅ | ❌ | ❌ | ✅ |
+| **CLI Handoff** | ✅ (`/mode`) | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **Voice Dev** | ✅ (`/voice`) | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **God Mode** | ✅ | ✅ | ❌ | ❌ | ❌ | ✅ |
+| **Performance** | 🚀 Extreme | ⚖️ Moderate | 🐢 Heavy | ⚖️ Moderate | ⚖️ Enterprise | ⚖️ Moderate |
 
-### Lumi vs SWE-Agent / OpenDevin
-* **The Problem:** These are massive, heavy frameworks running through Docker containers with complex web UI overheads.
-* **The Lumi Advantage:** Lumi is insanely lightweight. A single `python3 main.py` triggers an ultra-fast, raw `tty.setraw` loop. Zero Docker containers required (unless you ask Lumi to build one for you via `/godmode`).
+### Lumi vs The Rest
+*   **vs Cursor / Copilot:** Lumi doesn't lock you into a proprietary editor. It lives in your terminal alongside your existing `tmux`/`ssh`/`vim` workflow.
+*   **vs Aider / Claude CLI:** Lumi is a **Rich TUI**, not just a scrolling chat. You get side-panes, visual file trees, and interactive diff patching in a zero-dependency Python runtime. No Node.js required.
+*   **vs Gemini Code Assist:** Lumi gives you raw local control and maximum LLM context (8k+ output tokens) without the enterprise latency or "Cloud Shell" complexity.
+
+---
+
+## 🆕 Latest Updates (v0.3.3)
+
+*   **󰉋 Visual File Tree (`/browse`):** Navigate directories and inject files into context with a Nerd Font-styled explorer.
+*   **󰚩 Tokyo Night Overhaul:** Full 24-bit color fidelity with a professional Tokyo Night Storm aesthetic.
+*   **🛠️ 50+ New Developer Commands:** Added `/git`, `/todo`, `/note`, `/copy`, `/diff`, `/export`, and many more for a complete dev lifecycle.
+*   **⚡ Expanded Context Limits:** Hardcoded output limits raised to 8,192 tokens for massive, un-interrupted file generation.
+*   **󰈔 Native /file Command:** Instant file ingestion into AI context with automatic memory mapping.
 
 ---
 
