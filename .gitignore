@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 models/weights/
 data/conversations/
+data/memory/
 .DS_Store
 .venv/
 venv/
