@@ -3,7 +3,7 @@
 # ◆ Lumi AI 
 **The Ultimate Terminal Development Environment**
 
-An unapologetically native, high-performance, and feature-rich AI agent built exclusively for the CLI. No heavy Electron apps, no proprietary GUI wrappers, no telemetry. Just raw ANSI, extreme speed, and unprecedented agentic autonomy.
+An unapologetically native, high-performance, and feature-rich AI agent built exclusively for the CLI. No heavy Electron apps, no proprietary GUI wrappers, no telemetry. Just raw ANSI, extreme spaeed, and unprecedented agentic autonomy.
 
 [![Python Version](https://img.shields.io/badge/Python-3.10+-blue?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-0%20packages-success?style=for-the-badge)](https://github.com/SardorchikDev/Lumi)
