@@ -1,25 +1,29 @@
 """Long-term memory — persists facts and episodic summaries."""
 
+from __future__ import annotations
+
 import json
 import pathlib
 import pickle
+from typing import Any
+
 import numpy as np
 
 # ── Fact Memory (JSON) ────────────────────────────────────────────────────────
 MEMORY_FILE = pathlib.Path("data/memory/longterm.json")
 
-def _load() -> dict:
+def _load() -> dict[str, Any]:
     MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     if MEMORY_FILE.exists():
         try: return json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
         except Exception: pass
     return {"facts": [], "persona_override": {}}
 
-def _save(data: dict):
+def _save(data: dict[str, Any]) -> None:
     MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     MEMORY_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
-def get_facts() -> list:
+def get_facts() -> list[str]:
     return _load().get("facts", [])
 
 def add_fact(fact: str) -> int:
@@ -37,7 +41,7 @@ def remove_fact(idx: int) -> bool:
         return True
     return False
 
-def clear_facts():
+def clear_facts() -> None:
     data = _load()
     data["facts"] = []
     _save(data)
@@ -51,15 +55,15 @@ def build_memory_block() -> str:
     return "\n".join(lines)
 
 # ── Persona Override ──────────────────────────────────────────────────────────
-def get_persona_override() -> dict:
+def get_persona_override() -> dict[str, Any]:
     return _load().get("persona_override", {})
 
-def set_persona_override(override: dict):
+def set_persona_override(override: dict[str, Any]) -> None:
     data = _load()
     data["persona_override"] = override
     _save(data)
 
-def clear_persona_override():
+def clear_persona_override() -> None:
     data = _load()
     data.pop("persona_override", None)
     _save(data)
@@ -67,19 +71,19 @@ def clear_persona_override():
 # ── Episodic Memory (Vector Search) ───────────────────────────────────────────
 EPISODIC_DB_PATH = pathlib.Path.home() / "Lumi" / "data" / "memory" / "episodes.pkl"
 
-def get_related_episodes(query: str, client, limit=3) -> list[str]:
+def get_related_episodes(query: str, client: Any, limit: int = 3) -> list[str]:
     """Find summaries of past conversations related to the query."""
     if not EPISODIC_DB_PATH.exists() or not client:
         return []
-    
-    from src.tools.rag import get_embedding, cosine_similarity
-    
+
+    from src.tools.rag import cosine_similarity, get_embedding
+
     q_emb = get_embedding(query, client)
     if not q_emb:
         return []
-    
+
     q_vec = np.array(q_emb, dtype=np.float32)
-    
+
     try:
         with open(EPISODIC_DB_PATH, "rb") as f:
             episodes = pickle.load(f)  # format: {summary_text: vector}
@@ -90,21 +94,21 @@ def get_related_episodes(query: str, client, limit=3) -> list[str]:
     for summary, vec in episodes.items():
         score = cosine_similarity(q_vec, vec)
         scores.append((score, summary))
-        
+
     scores.sort(key=lambda x: x[0], reverse=True)
     return [summary for score, summary in scores[:limit]]
 
-def save_episode(summary: str, vector: np.ndarray):
+def save_episode(summary: str, vector: np.ndarray) -> None:
     """Save a new session summary and its vector."""
     EPISODIC_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(EPISODIC_DB_PATH, "rb") as f:
             episodes = pickle.load(f)
-    except (IOError, EOFError):
+    except (OSError, EOFError):
         episodes = {}
-        
+
     episodes[summary] = vector
-    
+
     with open(EPISODIC_DB_PATH, "wb") as f:
         pickle.dump(episodes, f)
 
@@ -115,7 +119,7 @@ Conversation History:
 
 One-paragraph summary:"""
 
-def auto_summarize_and_save(history: list, client, model: str):
+def auto_summarize_and_save(history: list[dict[str, str]], client: Any, model: str) -> None:
     """Generate a summary, get its embedding, and save it."""
     if len(history) < 6: # Don't summarize very short chats
         return
@@ -126,7 +130,7 @@ def auto_summarize_and_save(history: list, client, model: str):
     try:
         history_str = "\n".join([f"{m['role']}: {m['content'][:200]}" for m in history])
         prompt = SUMMARIZE_PROMPT.format(history=history_str)
-        
+
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -134,10 +138,10 @@ def auto_summarize_and_save(history: list, client, model: str):
             temperature=0.2,
         )
         summary = resp.choices[0].message.content.strip()
-        
+
         if not summary:
             return
-            
+
         # 2. Get Embedding
         # Use a separate client for embeddings if needed, or reuse
         emb_client = get_embedding_client()
@@ -148,8 +152,8 @@ def auto_summarize_and_save(history: list, client, model: str):
         if vector:
             # 3. Save
             save_episode(summary, np.array(vector, dtype=np.float32))
-            print(f"\n  [memory] Saved session summary.")
-            
+            print("\n  [memory] Saved session summary.")
+
     except Exception as e:
         print(f"\n  [memory] Failed to save session summary: {e}")
 

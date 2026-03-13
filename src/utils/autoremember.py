@@ -3,8 +3,7 @@ Auto-extract memorable facts from conversation and save to long-term memory.
 Uses a small AI call — only runs every N turns to avoid spam.
 """
 
-from src.memory.longterm import get_facts, add_fact
-
+from src.memory.longterm import add_fact, get_facts
 
 EXTRACT_PROMPT = """You are a memory assistant. Read this conversation excerpt and extract any personal facts about the USER (not the assistant) worth remembering long-term.
 

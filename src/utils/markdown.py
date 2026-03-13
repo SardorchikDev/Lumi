@@ -1,6 +1,7 @@
 """Terminal markdown renderer with syntax-highlighted code blocks."""
 
 import re
+
 from src.utils.highlight import render_code_block
 
 R   = "\033[0m"

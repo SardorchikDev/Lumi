@@ -2,7 +2,8 @@
 Lumi notes system — timestamped notes with search.
 Saved to data/memory/notes.json
 """
-import json, os
+import json
+import os
 from datetime import datetime
 
 NOTES_PATH = os.path.join(os.path.dirname(__file__), "../../data/memory/notes.json")

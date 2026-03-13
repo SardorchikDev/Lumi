@@ -1,8 +1,9 @@
 import os
-import sqlite3
 import pickle
-import numpy as np
+import sqlite3
 from pathlib import Path
+
+import numpy as np
 from openai import OpenAI
 
 # Local RAG using SQLite FTS5 (Keywords) + Numpy (Vectors)
@@ -39,23 +40,23 @@ def build_index(repo_path="."):
     c = conn.cursor()
     c.execute("DROP TABLE IF EXISTS search_index")
     c.execute("CREATE VIRTUAL TABLE search_index USING fts5(filepath, content)")
-    
+
     vectors = {}  # {filepath: np.array}
     client = get_embedding_client()
-    
+
     count = 0
     skipped = 0
-    
+
     print(f"  Indexing {repo_path}...", end="", flush=True)
 
     for root, dirs, files in os.walk(repo_path):
         if any(ignore in root for ignore in ['.git', '__pycache__', 'node_modules', 'venv', '.venv', '.idea', '.vscode']):
             continue
-            
+
         for file in files:
             if not file.endswith(('.py', '.md', '.txt', '.js', '.html', '.css', '.sh', '.json', '.yaml', '.yml', '.ts', '.rs', '.go')):
                 continue
-                
+
             filepath = os.path.join(root, file)
             try:
                 content = Path(filepath).read_text(encoding='utf-8')
@@ -64,27 +65,27 @@ def build_index(repo_path="."):
 
                 # 1. SQLite FTS
                 c.execute("INSERT INTO search_index (filepath, content) VALUES (?, ?)", (filepath, content))
-                
+
                 # 2. Vector Embedding (only if client available)
                 if client and len(content) < 50000:  # skip huge files
                     emb = get_embedding(content, client)
                     if emb:
                         vectors[filepath] = np.array(emb, dtype=np.float32)
-                
+
                 count += 1
                 if count % 10 == 0:
                     print(".", end="", flush=True)
             except Exception:
                 skipped += 1
-                
+
     conn.commit()
     conn.close()
-    
+
     # Save vectors
     if vectors:
         with open(VEC_PATH, "wb") as f:
             pickle.dump(vectors, f)
-            
+
     print(f" Done. ({count} indexed, {skipped} skipped)")
     return count
 
@@ -99,7 +100,7 @@ def search_index(query, limit=5, hybrid=True):
     Returns list of (filepath, content).
     """
     results = {}  # {filepath: (score, content)}
-    
+
     # 1. Keyword Search (SQLite FTS)
     if os.path.exists(DB_PATH):
         try:
@@ -121,18 +122,18 @@ def search_index(query, limit=5, hybrid=True):
             q_emb = get_embedding(query, client)
             if q_emb:
                 q_vec = np.array(q_emb, dtype=np.float32)
-                
+
                 try:
                     with open(VEC_PATH, "rb") as f:
                         vectors = pickle.load(f)
-                        
+
                     # Calculate all similarities
                     # (In a real app, use Faiss or Annoy for speed, but loop is fine for <10k)
                     vec_scores = []
                     for fp, vec in vectors.items():
                         score = cosine_similarity(q_vec, vec)
                         vec_scores.append((score, fp))
-                    
+
                     # Top K vector matches
                     vec_scores.sort(key=lambda x: x[0], reverse=True)
                     for score, fp in vec_scores[:limit]:
@@ -150,7 +151,7 @@ def search_index(query, limit=5, hybrid=True):
                             # Boost existing keyword match
                             old_score, content = results[fp]
                             results[fp] = (old_score + score, content)
-                            
+
                 except Exception:
                     pass
 

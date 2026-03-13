@@ -2,7 +2,10 @@
 Lumi extra tools — weather, clipboard, PDF, image analysis, project loader.
 All use stdlib or lightweight deps only.
 """
-import os, subprocess, shutil, json
+import json
+import os
+import shutil
+import subprocess
 
 # ── Weather (wttr.in — no API key needed) ─────────────────────
 

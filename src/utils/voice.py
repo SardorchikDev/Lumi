@@ -3,7 +3,10 @@ Lumi voice utilities.
 - Input:  record mic → transcribe via Groq Whisper (free)
 - Output: system TTS (espeak / say / pyttsx3 fallback)
 """
-import os, subprocess, tempfile
+import os
+import subprocess
+import tempfile
+
 
 def _has_cmd(cmd: str) -> bool:
     import shutil

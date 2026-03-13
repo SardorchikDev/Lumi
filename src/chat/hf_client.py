@@ -7,10 +7,11 @@ Add any/all keys to .env — Lumi will let you pick the provider at runtime:
   HF_TOKEN=hf_...              https://huggingface.co/settings/tokens
 """
 
+import json
 import os
 import time
-import json
 import urllib.request
+
 from openai import OpenAI
 
 # ── Model lists ───────────────────────────────────────────────────────────────
@@ -301,7 +302,8 @@ OLLAMA_BASE = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 def _fetch_ollama_models() -> list:
     """Fetch models from local Ollama instance."""
     try:
-        import urllib.request, json
+        import json
+        import urllib.request
         with urllib.request.urlopen(f"{OLLAMA_BASE}/api/tags", timeout=2) as r:
             data = json.loads(r.read())
         return [m["name"] for m in data.get("models", [])]
@@ -334,7 +336,7 @@ def get_provider() -> str:
     if os.getenv("VERCEL_API_KEY"):         return "vercel"
     if os.getenv("CLOUDFLARE_API_KEY") and os.getenv("CLOUDFLARE_ACCOUNT_ID"): return "cloudflare"
     if _has_ollama():                    return "ollama"
-    raise EnvironmentError(
+    raise OSError(
         "No API key found in .env\n"
         "  GEMINI_API_KEY=...      https://aistudio.google.com/apikey\n"
         "  GROQ_API_KEY=...        https://console.groq.com\n"

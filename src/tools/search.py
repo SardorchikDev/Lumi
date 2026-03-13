@@ -3,13 +3,12 @@ Lumi web search — DuckDuckGo + page content fetching.
 No API key needed.
 """
 
-import re
-import urllib.request
-import urllib.parse
-import urllib.error
-import json
-import sys
 import html
+import re
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 
 DEBUG = "--debug" in sys.argv
 

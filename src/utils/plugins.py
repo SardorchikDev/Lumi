@@ -16,11 +16,9 @@ Example plugin (~/Lumi/plugins/greet.py):
         return None
 """
 
-import os
-import sys
 import importlib.util
 import pathlib
-from typing import Callable
+from collections.abc import Callable
 
 PLUGIN_DIR = pathlib.Path.home() / "Lumi" / "plugins"
 
