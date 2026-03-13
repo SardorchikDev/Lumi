@@ -2343,75 +2343,218 @@ def cmd_summarize(tui: LumiTUI, arg: str):
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
 
-@registry.register("/mode", "/mode <cli_name>  Handoff control to an external CLI tool")
+@registry.register("/mode", "/mode [cli]  Launch an AI coding CLI (claude, codex, gemini, opencode, aider, goose, qwen, plandex, kilo, amp, continue)")
 def cmd_mode(tui: LumiTUI, arg: str):
-    target = arg.strip().lower()
-    allowed = ["opencode", "gemini", "qwen"]
+    # ── Registry of all known AI CLI tools ────────────────────────────────────
+    # Each entry: binary, display name, description, install command(s)
+    CLI_REGISTRY = {
+        "claude": {
+            "binary":   "claude",
+            "name":     "Claude Code",
+            "maker":    "Anthropic",
+            "desc":     "Repo-aware agentic coding — edits, refactors, git workflows",
+            "install":  "npm install -g @anthropic-ai/claude-code",
+            "install2": "curl -fsSL https://claude.ai/install.sh | bash",
+        },
+        "codex": {
+            "binary":   "codex",
+            "name":     "Codex CLI",
+            "maker":    "OpenAI",
+            "desc":     "Local agentic coding with o4-mini / GPT-5, sandboxed execution",
+            "install":  "npm install -g @openai/codex",
+        },
+        "gemini": {
+            "binary":   "gemini",
+            "name":     "Gemini CLI",
+            "maker":    "Google",
+            "desc":     "Free tier, Gemini 2.5 Pro, repo-aware, MCP support",
+            "install":  "npm install -g @google/gemini-cli",
+        },
+        "opencode": {
+            "binary":   "opencode",
+            "name":     "OpenCode",
+            "maker":    "SST",
+            "desc":     "75+ providers, LSP integration, multi-session, privacy-first",
+            "install":  "npm install -g opencode-ai",
+            "install2": "curl -fsSL https://opencode.ai/install | bash",
+        },
+        "aider": {
+            "binary":   "aider",
+            "name":     "Aider",
+            "maker":    "Paul Gauthier",
+            "desc":     "Git-first pair programmer, auto-commits, 130+ languages",
+            "install":  "pip install aider-chat --break-system-packages",
+            "install2": "pipx install aider-chat",
+        },
+        "goose": {
+            "binary":   "goose",
+            "name":     "Goose",
+            "maker":    "Block (Square)",
+            "desc":     "Fully autonomous agent — execute, debug, deploy; MCP native",
+            "install":  "curl -fsSL https://github.com/block/goose/releases/latest/download/install.sh | bash",
+        },
+        "qwen": {
+            "binary":   "qwen",
+            "name":     "Qwen Code",
+            "maker":    "Alibaba",
+            "desc":     "Qwen3-Coder optimised, 1k free req/day via OAuth, 480B MoE",
+            "install":  'bash -c "$(curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen.sh)"',
+        },
+        "plandex": {
+            "binary":   "plandex",
+            "name":     "Plandex",
+            "maker":    "Plandex",
+            "desc":     "Plan-first agent, 2M token context, multi-file structured tasks",
+            "install":  "curl -sL https://plandex.ai/install.sh | bash",
+        },
+        "kilo": {
+            "binary":   "kilo",
+            "name":     "Kilo Code",
+            "maker":    "Kilo-Org",
+            "desc":     "500+ models, Architect/Debug/Orchestrator modes, Agent Skills, MCP native",
+            "install":  "npm install -g @kilocode/cli",
+        },
+        "amp": {
+            "binary":   "amp",
+            "name":     "Amp",
+            "maker":    "Sourcegraph",
+            "desc":     "Unconstrained token usage, subagents, thread sharing, GPT-5 Oracle mode",
+            "install":  "npm install -g @sourcegraph/amp",
+            "install2": "curl -fsSL https://ampcode.com/install.sh | bash",
+        },
+        "continue": {
+            "binary":   "cn",
+            "name":     "Continue CLI",
+            "maker":    "Continue.dev",
+            "desc":     "Session history, resume tasks, headless/CI mode, any model via config",
+            "install":  "npm install -g @continuedev/cli",
+        },
+    }
 
-    if target not in allowed:
-        tui._err(f"Invalid CLI tool: '{target}'. Must be one of: {', '.join(allowed)}")
+    # ── Helper: detect installed tools ────────────────────────────────────────
+    def _installed(entry: dict) -> bool:
+        return shutil.which(entry["binary"]) is not None
+
+    # ── No arg → show status table ─────────────────────────────────────────────
+    target = arg.strip().lower()
+
+    if not target:
+        lines = ["◆  AI CLI Launcher — available tools:\n"]
+        for key, e in CLI_REGISTRY.items():
+            status = "✓ installed" if _installed(e) else "✗ not found"
+            mark   = "●" if _installed(e) else "○"
+            lines.append(f"  {mark} /mode {key:<12} {e['name']:<16} [{e['maker']}]  {status}")
+        lines.append("\n  Usage: /mode <name>  — suspends Lumi, launches the CLI, returns when you exit")
+        lines.append("  If not installed, Lumi will show the install command.")
+        tui._sys("\n".join(lines))
+        tui.redraw()
         return
+
+    # ── Validate ───────────────────────────────────────────────────────────────
+    if target not in CLI_REGISTRY:
+        names = ", ".join(CLI_REGISTRY.keys())
+        tui._err(f"Unknown CLI: '{target}'. Choose from: {names}")
+        return
+
+    entry = CLI_REGISTRY[target]
+
+    # ── Not installed → show install hints ────────────────────────────────────
+    if not _installed(entry):
+        install_hint = f"  $ {entry['install']}"
+        if "install2" in entry:
+            install_hint += f"\n  $ {entry['install2']}  (alternative)"
+        tui._sys(
+            f"◆  {entry['name']} is not installed.\n\n"
+            f"  Install with:\n{install_hint}\n\n"
+            f"  After installing, run /mode {target} again."
+        )
+        tui.redraw()
+        return
+
+    # ── PTY handoff ────────────────────────────────────────────────────────────
+    binary   = entry["binary"]
+    log_file = f".{binary}_raw.log"
+    dest_file = f"{binary}_session.txt"
 
     def _handoff():
         tui.set_busy(True)
-        # Phase 1: TUI Suspension
+        tui._sys(f"◆  Launching {entry['name']}… Lumi will resume when you exit.")
+        tui.redraw()
+        time.sleep(0.3)  # let the sys message render
+
+        # Phase 1 — suspend TUI, restore normal terminal
         sys.stdout.write("\033[?1049l\033[?25h")
         sys.stdout.flush()
-        if hasattr(tui, 'original_termios') and tui.original_termios:
-            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, tui.original_termios)
+        if hasattr(tui, "original_termios") and tui.original_termios:
+            try:
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, tui.original_termios)
+            except Exception:
+                pass
 
-        log_file = f".{target}_raw.log"
-        dest_file = f"{target}_logs.txt"
+        print(f"\n  ◆ Entering {entry['name']} — exit normally to return to Lumi\n")
 
-        # Phase 2: Execution & PTY Recording
+        # Phase 2 — run inside `script` for transcript capture
         try:
-            subprocess.run(f"script -q -c '{target}' {log_file}", shell=True)
+            subprocess.run(
+                f"script -q -c '{binary}' {log_file}",
+                shell=True,
+                env={**os.environ},   # pass full env (API keys etc.)
+            )
         except Exception:
             pass
 
-        # Phase 3: Log Processing
+        # Phase 3 — clean & save transcript
         if os.path.exists(log_file):
             try:
-                raw_text = Path(log_file).read_text(errors="replace")
-                clean_text = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b.', '', raw_text)
-                clean_text = re.sub(r'\r\n|\r', '\n', clean_text)
-
-                header = f"==== VESSEL SESSION: {target.upper()} | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ====\n"
+                raw = Path(log_file).read_text(errors="replace")
+                clean = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b.', '', raw)
+                clean = re.sub(r'\r\n|\r', '\n', clean).strip()
+                header = (
+                    f"==== {entry['name'].upper()} SESSION | "
+                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ====\n"
+                )
                 with open(dest_file, "a", encoding="utf-8") as f:
-                    f.write(header + clean_text + "\n\n")
+                    f.write(header + clean + "\n\n")
                 os.remove(log_file)
             except Exception:
                 pass
 
-        # Phase 4: TUI Restoration
-        tty.setraw(sys.stdin.fileno())
+        # Phase 4 — restore Lumi TUI
+        try:
+            tty.setraw(sys.stdin.fileno())
+        except Exception:
+            pass
         sys.stdout.write("\033[?1049h\033[?25l\033[J")
         sys.stdout.flush()
         tui.redraw()
 
-        # Phase 5: Memory Injection & Auto-Trigger
-        sys_msg = f"[SYSTEM NOTE: I was temporarily put to sleep while the user used the '{target}' CLI. The session transcript was saved to {dest_file}. I should warmly welcome them back and ask if they want me to review the new code or read the logs.]"
+        # Phase 5 — inject context & welcome back
+        transcript_note = (
+            f" The session transcript was saved to '{dest_file}'."
+            if os.path.exists(dest_file) else ""
+        )
+        sys_msg = (
+            f"[SYSTEM NOTE: The user just returned from a {entry['name']} CLI session.{transcript_note} "
+            f"Warmly welcome them back. If a transcript exists, offer to review it for context, bugs, or next steps.]"
+        )
         tui.memory.add("system", sys_msg)
 
-        user_msg = f"(I have returned from using {target}. Greet me and mention {dest_file}.)"
+        user_msg = f"(I have returned from {entry['name']}. Greet me back and mention {dest_file} if it exists.)"
         tui.store.add(Msg("user", user_msg))
         tui.memory.add("user", user_msg)
 
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-
-        def _stream_response():
+        def _stream_welcome():
+            msgs = build_messages(tui.system_prompt, tui.memory.get())
             raw = tui._tui_stream(msgs, tui.current_model)
-            if len(tui.memory._history) > 0:
-                tui.memory._history[-1] = {"role": "user", "content": user_msg}
             tui.memory.add("assistant", raw)
             tui.last_reply = raw
             tui.turns += 1
             tui.set_busy(False)
             tui.redraw()
 
-        threading.Thread(target=_stream_response, daemon=True).start()
+        threading.Thread(target=_stream_welcome, daemon=True).start()
 
-    _handoff()
+    threading.Thread(target=_handoff, daemon=True).start()
 
 @registry.register("/offline", "Enter air-gapped privacy mode via Ollama")
 def cmd_offline(tui: LumiTUI, arg: str):

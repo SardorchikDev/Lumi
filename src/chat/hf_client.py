@@ -224,6 +224,78 @@ def _cloudflare_base_url() -> str:
     return f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
 
 
+# Vercel AI Gateway — $5 free credits/month, 100+ models, no markup fee
+# Base: https://ai-gateway.vercel.sh/v1
+# Models use provider/model-name format: "openai/gpt-4o", "anthropic/claude-sonnet-4.6"
+# Env var: VERCEL_API_KEY
+VERCEL_MODELS = [
+    # ── OpenAI ───────────────────────────────────────────────────────────────
+    "openai/gpt-4.1",                         # GPT-4.1 — flagship reasoning + code
+    "openai/gpt-4.1-mini",                    # GPT-4.1 Mini — fast, cheap
+    "openai/gpt-4o",                          # GPT-4o — multimodal
+    "openai/gpt-4o-mini",                     # GPT-4o Mini — fastest OpenAI
+    "openai/o3",                              # o3 — deep reasoning
+    "openai/o4-mini",                         # o4-mini — fast reasoning
+    "openai/gpt-5",                           # GPT-5 — latest
+    # ── Anthropic ────────────────────────────────────────────────────────────
+    "anthropic/claude-sonnet-4-5",            # Claude Sonnet 4.5 — best balance
+    "anthropic/claude-opus-4",                # Claude Opus 4 — most capable
+    "anthropic/claude-haiku-3-5",             # Claude Haiku 3.5 — fastest
+    # ── Google ───────────────────────────────────────────────────────────────
+    "google/gemini-2.5-pro",                  # Gemini 2.5 Pro — 1M context
+    "google/gemini-2.5-flash",                # Gemini 2.5 Flash — fast + smart
+    "google/gemini-2.0-flash",                # Gemini 2.0 Flash — stable
+    # ── Meta ─────────────────────────────────────────────────────────────────
+    "meta/llama-3.3-70b-instruct",            # Llama 3.3 70B — best open
+    "meta/llama-3.1-8b-instruct",             # Llama 3.1 8B — lightweight
+    # ── xAI ──────────────────────────────────────────────────────────────────
+    "xai/grok-3",                             # Grok 3 — strong reasoning
+    "xai/grok-3-mini",                        # Grok 3 Mini — fast
+    # ── Mistral ──────────────────────────────────────────────────────────────
+    "mistral/mistral-large-latest",           # Mistral Large
+    "mistral/codestral-latest",               # Codestral — coding specialist
+    # ── DeepSeek ─────────────────────────────────────────────────────────────
+    "deepseek/deepseek-r1",                   # DeepSeek R1 — open-source reasoning
+    "deepseek/deepseek-v3",                   # DeepSeek V3 — strong general
+]
+
+# Patterns to skip when live-fetching Vercel model list (non-text modalities)
+_VERCEL_SKIP = (
+    "embed", "embedding", "tts", "whisper", "dall-e", "image",
+    "flux", "stable-diffusion", "audio", "rerank", "moderation",
+)
+
+def _fetch_vercel_models() -> list:
+    """Fetch available models from Vercel AI Gateway live API."""
+    try:
+        key = os.getenv("VERCEL_API_KEY", "")
+        req = urllib.request.Request(
+            "https://ai-gateway.vercel.sh/v1/models",
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        with urllib.request.urlopen(req, timeout=6) as r:
+            data = json.loads(r.read())
+        live = [
+            m.get("id", "")
+            for m in data.get("data", [])
+            if isinstance(m, dict) and m.get("id")
+        ]
+        # Filter out non-text models
+        live = [
+            m for m in live
+            if not any(s in m.lower() for s in _VERCEL_SKIP)
+        ]
+        if not live:
+            return VERCEL_MODELS[:]
+        # Keep curated order first, then any new models from live API
+        curated_set = set(VERCEL_MODELS)
+        ordered = [m for m in VERCEL_MODELS if m in set(live)]
+        extras  = [m for m in live if m not in curated_set]
+        return ordered + extras
+    except Exception:
+        return VERCEL_MODELS[:]
+
+
 OLLAMA_BASE = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 def _fetch_ollama_models() -> list:
@@ -259,6 +331,7 @@ def get_provider() -> str:
     if os.getenv("MISTRAL_API_KEY"):     return "mistral"
     if os.getenv("GITHUB_API_KEY"):      return "github"
     if os.getenv("COHERE_API_KEY"):      return "cohere"
+    if os.getenv("VERCEL_API_KEY"):         return "vercel"
     if os.getenv("CLOUDFLARE_API_KEY") and os.getenv("CLOUDFLARE_ACCOUNT_ID"): return "cloudflare"
     if _has_ollama():                    return "ollama"
     raise EnvironmentError(
@@ -271,7 +344,8 @@ def get_provider() -> str:
         "  GITHUB_API_KEY=...      https://github.com/settings/tokens\n"
         "  COHERE_API_KEY=...      https://dashboard.cohere.com/api-keys\n"
         "  CLOUDFLARE_API_KEY=...  https://dash.cloudflare.com/profile/api-tokens\n"
-        "  CLOUDFLARE_ACCOUNT_ID=... https://dash.cloudflare.com (right sidebar)"
+        "  CLOUDFLARE_ACCOUNT_ID=... https://dash.cloudflare.com (right sidebar)\n"
+        "  VERCEL_API_KEY=...      https://vercel.com/dashboard -> AI -> API Keys"
     )
 
 
@@ -291,6 +365,7 @@ def get_available_providers() -> list:
     if os.getenv("HF_TOKEN"):            providers.append("huggingface")
     if os.getenv("GITHUB_API_KEY"):      providers.append("github")
     if os.getenv("COHERE_API_KEY"):      providers.append("cohere")
+    if os.getenv("VERCEL_API_KEY"):         providers.append("vercel")
     if os.getenv("CLOUDFLARE_API_KEY") and os.getenv("CLOUDFLARE_ACCOUNT_ID"): providers.append("cloudflare")
     if _has_ollama():                    providers.append("ollama")
     return providers
@@ -332,6 +407,11 @@ def _make_client(provider: str) -> OpenAI:
             base_url=_cloudflare_base_url(),
             api_key=os.getenv("CLOUDFLARE_API_KEY"),
         )
+    if provider == "vercel":
+        return OpenAI(
+            base_url="https://ai-gateway.vercel.sh/v1",
+            api_key=os.getenv("VERCEL_API_KEY"),
+        )
     if provider == "ollama":
         return OpenAI(
             base_url=f"{OLLAMA_BASE}/v1",
@@ -371,6 +451,8 @@ def get_models(provider: str = None) -> list:
         models = COHERE_MODELS[:]
     elif p == "cloudflare":
         models = CLOUDFLARE_MODELS[:]
+    elif p == "vercel":
+        models = _fetch_vercel_models()
     elif p == "ollama":
         models = _fetch_ollama_models()
     else:
