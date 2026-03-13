@@ -36,15 +36,32 @@ INSTALL_DIR="$HOME/Lumi"
 BIN_DIR="$HOME/.local/bin"
 REPO="https://github.com/SardorchikDev/lumi"
 
+# ── Parse flags ──────────────────────────────────────────────
+DEV_MODE=false
+for arg in "$@"; do
+    case "$arg" in
+        --dev)  DEV_MODE=true ;;
+    esac
+done
+
+if $DEV_MODE; then
+    info "Dev mode enabled — will install ruff, pytest, and pre-commit hooks"
+fi
+
 # ── Check dependencies ────────────────────────────────────────
 step "Checking dependencies"
 
-command -v python3 >/dev/null 2>&1 || fail "python3 not found — install Python 3.9+ first"
+command -v python3 >/dev/null 2>&1 || fail "python3 not found — install Python 3.10+ first"
 command -v git     >/dev/null 2>&1 || fail "git not found — install git first"
 command -v pip3    >/dev/null 2>&1 || command -v pip >/dev/null 2>&1 || fail "pip not found"
 
 PYTHON=$(command -v python3)
 PY_VER=$($PYTHON -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+PY_MAJOR=$($PYTHON -c "import sys; print(sys.version_info.major)")
+PY_MINOR=$($PYTHON -c "import sys; print(sys.version_info.minor)")
+if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }; then
+    fail "Python 3.10+ required (found $PY_VER)"
+fi
 ok "Python $PY_VER found"
 ok "git found"
 
@@ -77,12 +94,23 @@ fi
 source "$INSTALL_DIR/venv/bin/activate"
 ok "venv activated"
 
-# ── Install requirements ──────────────────────────────────────
+# ── Install dependencies ─────────────────────────────────────
 step "Installing dependencies"
 
 pip install --quiet --upgrade pip
-pip install --quiet -r "$INSTALL_DIR/requirements.txt"
-ok "All packages installed"
+
+if [ -f "$INSTALL_DIR/pyproject.toml" ]; then
+    if $DEV_MODE; then
+        pip install --quiet -e "$INSTALL_DIR[dev]"
+        ok "All packages installed (including dev tools: ruff, pytest, pre-commit)"
+    else
+        pip install --quiet -e "$INSTALL_DIR"
+        ok "All packages installed"
+    fi
+else
+    pip install --quiet -r "$INSTALL_DIR/requirements.txt"
+    ok "All packages installed (legacy requirements.txt)"
+fi
 
 # ── Create .env if not exists ─────────────────────────────────
 step "Setting up .env"
@@ -101,6 +129,18 @@ ENVEOF
     ok ".env created — add your API keys before running lumi"
 else
     ok ".env already exists — keeping your keys"
+fi
+
+# ── Set up pre-commit hooks (dev mode) ───────────────────────
+if $DEV_MODE; then
+    step "Setting up pre-commit hooks"
+    if command -v pre-commit >/dev/null 2>&1; then
+        cd "$INSTALL_DIR"
+        pre-commit install --quiet
+        ok "Pre-commit hooks installed"
+    else
+        warn "pre-commit not found in PATH — run 'pre-commit install' manually after activating venv"
+    fi
 fi
 
 # ── Create lumi launcher ──────────────────────────────────────
@@ -187,6 +227,10 @@ echo ""
 echo -e "  ${DG}3.${R}  Launch Lumi from anywhere:"
 echo -e "      ${PU}lumi${R}"
 echo ""
+if ! $DEV_MODE; then
+    echo -e "  ${DG}Tip:${R}  Re-run with ${PU}--dev${R} to install dev tools (ruff, pytest, pre-commit)"
+    echo ""
+fi
 echo -e "  ${DG}Free API keys:${R}"
 echo -e "   ${DG}Gemini  →  aistudio.google.com/apikey${R}"
 echo -e "   ${DG}Groq    →  console.groq.com${R}"

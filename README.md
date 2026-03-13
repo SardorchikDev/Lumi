@@ -211,6 +211,9 @@ pre-commit install
 
 ```bash
 chmod +x install.sh && ./install.sh
+
+# For developers (includes ruff, pytest, pre-commit hooks):
+./install.sh --dev
 ```
 
 **Shell alias** (add to `~/.bashrc`, `~/.zshrc`, or `~/.config/fish/config.fish`):
