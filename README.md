@@ -16,9 +16,11 @@
 *No Electron. No GUI wrappers. No telemetry. Just raw ANSI, extreme speed, and unprecedented agentic autonomy.*
 
 [![Python](https://img.shields.io/badge/Python-3.10+-blue?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
-[![Zero Core Deps](https://img.shields.io/badge/Core_Dependencies-0-success?style=for-the-badge)](https://github.com/SardorchikDev/Lumi)
+[![CI](https://img.shields.io/github/actions/workflow/status/SardorchikDev/Lumi/ci.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/SardorchikDev/Lumi/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-bb9af7?style=for-the-badge)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/Version-0.3.3-7aa2f7?style=for-the-badge)](https://github.com/SardorchikDev/Lumi)
+[![Tests](https://img.shields.io/badge/Tests-182_passing-success?style=for-the-badge)](https://github.com/SardorchikDev/Lumi/actions/workflows/ci.yml)
+[![Ruff](https://img.shields.io/badge/Linted_with-Ruff-30173d?style=for-the-badge&logo=ruff)](https://docs.astral.sh/ruff/)
 
 </div>
 
@@ -49,6 +51,8 @@
 13. [Project Context (LUMI.md)](#-project-context-lumimd)
 14. [Plugin System](#-plugin-system)
 15. [File Structure](#-file-structure)
+16. [Development](#-development)
+17. [Contributing](#-contributing)
 
 ---
 
@@ -101,11 +105,33 @@ Most AI coding tools try to pull you out of the terminal. Lumi pulls the AI *int
 ```
 ~/Lumi/
 ├── main.py                       ← CLI entry point + interactive loop
+├── pyproject.toml                ← Project metadata, dependencies, ruff & pytest config
 ├── lumi_system_instructions.md   ← Core system prompt
 ├── LUMI.md                       ← Per-project context (auto-loaded)
 ├── .env                          ← API keys
-├── requirements.txt
+├── requirements.txt              ← Legacy dependency list
 ├── install.sh
+├── .pre-commit-config.yaml       ← Ruff + standard pre-commit hooks
+├── CONTRIBUTING.md               ← Developer guide
+│
+├── .github/workflows/
+│   └── ci.yml                    ← Lint (ruff) + Test (pytest, Python 3.10 & 3.12)
+│
+├── tests/                        ← 182 unit tests (pytest)
+│   ├── test_short_term_memory.py
+│   ├── test_longterm_memory.py
+│   ├── test_conversation_store.py
+│   ├── test_prompts_builder.py
+│   ├── test_intelligence.py
+│   ├── test_agent.py
+│   ├── test_council.py
+│   ├── test_themes.py
+│   ├── test_web.py
+│   ├── test_markdown.py
+│   ├── test_highlight.py
+│   ├── test_filesystem.py
+│   ├── test_export.py
+│   └── test_log.py
 │
 └── src/
     ├── tui/
@@ -123,12 +149,12 @@ Most AI coding tools try to pull you out of the terminal. Lumi pulls the AI *int
     │                               + refinement loop
     │
     ├── memory/
-    │   ├── short_term.py         ← Rolling window, max 20 turns
-    │   ├── longterm.py           ← Persistent facts + persona overrides
-    │   └── conversation_store.py ← Named session save/load
+    │   ├── short_term.py         ← Rolling window, max 20 turns (typed)
+    │   ├── longterm.py           ← Persistent facts + persona overrides (typed)
+    │   └── conversation_store.py ← Named session save/load (typed)
     │
     ├── prompts/
-    │   └── builder.py            ← System prompt builder, task classifier
+    │   └── builder.py            ← System prompt builder, task classifier (typed)
     │
     ├── tools/
     │   ├── search.py             ← Web search + top-page fetch
@@ -137,6 +163,7 @@ Most AI coding tools try to pull you out of the terminal. Lumi pulls the AI *int
     └── utils/
         ├── intelligence.py       ← Emotion detection, topic detection,
         │                           auto-search trigger logic
+        ├── log.py                ← Centralized logging (opt-in)
         ├── web.py                ← URL fetcher
         ├── filesystem.py         ← File plan generator + writer
         ├── autoremember.py       ← Silent background fact extraction
@@ -167,8 +194,17 @@ python3 -m venv venv
 source venv/bin/activate        # bash/zsh
 source venv/bin/activate.fish   # fish shell
 
-# Install dependencies (optional plugins and providers)
+# Install dependencies
 pip install -r requirements.txt
+
+# Or install with pyproject.toml (recommended)
+pip install -e .
+
+# With dev tools (ruff, pytest, pre-commit)
+pip install -e ".[dev]"
+
+# Set up pre-commit hooks (recommended for contributors)
+pre-commit install
 ```
 
 **One-liner:**
@@ -776,18 +812,39 @@ List all loaded plugins: `/plugins`
 
 ```
 ~/Lumi/
-├── .env                          API keys
+├── .env                          API keys (not committed)
+├── pyproject.toml                Project config, deps, ruff & pytest settings
+├── .pre-commit-config.yaml       Pre-commit hooks (ruff + standard checks)
 ├── LUMI.md                       Project context (optional, per-directory)
+├── CONTRIBUTING.md               Developer guide
 ├── main.py                       CLI + TUI launcher
-├── requirements.txt
+├── requirements.txt              Legacy dependency list
 ├── install.sh
 ├── README.md
 │
+├── .github/workflows/
+│   └── ci.yml                    Lint + Test CI (Python 3.10 & 3.12)
+│
+├── tests/                        182 unit tests
+│   ├── test_short_term_memory.py  Memory system tests
+│   ├── test_longterm_memory.py
+│   ├── test_conversation_store.py
+│   ├── test_prompts_builder.py    Prompt builder tests
+│   ├── test_intelligence.py       Intelligence module tests
+│   ├── test_agent.py             Agent tests
+│   ├── test_council.py           Council tests
+│   ├── test_themes.py            Utility tests
+│   ├── test_web.py
+│   ├── test_markdown.py
+│   ├── test_highlight.py
+│   ├── test_filesystem.py
+│   ├── test_export.py
+│   └── test_log.py               Logging module tests
+│
 ├── src/
 │   ├── tui/
-│   │   └── app.py                Full TUI — 1,572 lines
-│   │                             Renderer, input engine, CommandRegistry,
-│   │                             Vessel Mode, all 50+ commands, Council sidebar
+│   │   └── app.py                Full TUI — renderer, input engine,
+│   │                             CommandRegistry, Vessel Mode, 50+ commands
 │   ├── chat/
 │   │   └── hf_client.py          Multi-provider unified client
 │   ├── agents/
@@ -795,7 +852,7 @@ List all loaded plugins: `/plugins`
 │   │   └── council.py            8-agent council with debate loop
 │   ├── memory/
 │   │   ├── short_term.py         Rolling window + background compression
-│   │   ├── longterm.py           Persistent facts + persona overrides
+│   │   ├── longterm.py           Persistent facts + persona + episodic memory
 │   │   └── conversation_store.py Named session save/load
 │   ├── prompts/
 │   │   └── builder.py            System prompt builder + task classifier
@@ -804,6 +861,7 @@ List all loaded plugins: `/plugins`
 │   │   └── mcp.py                MCP server manager
 │   └── utils/
 │       ├── intelligence.py       Emotion + topic detection, search triggers
+│       ├── log.py                Centralized logging module
 │       ├── web.py                URL fetcher
 │       ├── filesystem.py         File plan generator + writer
 │       ├── autoremember.py       Silent background fact extraction
@@ -834,6 +892,87 @@ Lumi is built with zero external UI libraries. Every border, gradient, spinner, 
 **Complete visual control.** Tokyo Night isn't a theme applied to someone else's widgets. Every `_fg(PURPLE)`, `_bg(BG_DARK)`, and `_bold()` is a deliberate placement in the render loop. The code block borders, the Council sidebar spinner, the Vessel Mode red `λ` — all of it is exactly where it is because that's where the code puts it.
 
 **The TUI and CLI are the same program.** `main.py` and `src/tui/app.py` import identical modules. Every feature available interactively is available in the TUI. Nothing is stripped down, nothing is shimmed.
+
+---
+
+## 🛠️ Development
+
+Lumi uses modern Python tooling for development:
+
+### Quick Setup
+
+```bash
+git clone https://github.com/SardorchikDev/Lumi.git ~/Lumi
+cd ~/Lumi
+python3 -m venv venv && source venv/bin/activate
+pip install -e ".[dev]"    # installs ruff, pytest, pre-commit
+pre-commit install         # enables git hooks
+```
+
+### Running Tests
+
+```bash
+pytest                     # run all 182 tests
+pytest tests/ -v           # verbose output
+pytest -k "memory"         # run only memory-related tests
+pytest -m "not slow"       # skip slow tests
+pytest --cov=src           # with coverage report
+```
+
+### Linting & Formatting
+
+```bash
+ruff check .               # lint (errors only)
+ruff check . --fix         # auto-fix safe issues
+ruff format .              # format all files
+```
+
+Ruff is configured in `pyproject.toml` with rules for pycodestyle, pyflakes, isort, pyupgrade, flake8-bugbear, and more. Line length is 120 characters.
+
+### CI Pipeline
+
+Every push and PR to `main` triggers the CI workflow (`.github/workflows/ci.yml`):
+
+| Job | What it does |
+|-----|-------------|
+| **Lint** | `ruff check .` — must pass with zero errors |
+| **Test (3.10)** | `pytest tests/ -v` on Python 3.10 |
+| **Test (3.12)** | `pytest tests/ -v` on Python 3.12 |
+
+### Logging
+
+Lumi includes a centralized logging module (`src/utils/log.py`) that can be used in place of `print()` for error/debug output:
+
+```python
+from src.utils.log import get_logger
+log = get_logger(__name__)
+
+log.info("Provider switched to groq")
+log.warning("Rate limit approaching")
+log.error("Failed to connect to Ollama")
+```
+
+Configure via environment variables:
+- `LUMI_LOG_LEVEL` — `DEBUG`, `INFO`, `WARNING` (default), `ERROR`
+- `LUMI_LOG_FILE` — optional file path for log output
+
+### Type Hints
+
+Core modules (`src/memory/`, `src/prompts/builder.py`) use `from __future__ import annotations` and full type hints. New code should follow this pattern.
+
+---
+
+## 🤝 Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. The short version:
+
+1. Fork & clone
+2. Create a branch: `git checkout -b feat/my-feature`
+3. Install dev deps: `pip install -e ".[dev]" && pre-commit install`
+4. Make changes, add tests
+5. Run `ruff check .` and `pytest`
+6. Commit with [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, etc.
+7. Open a PR against `main`
 
 ---
 
