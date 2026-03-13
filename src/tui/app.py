@@ -289,45 +289,51 @@ class Renderer:
         w = buf.append
 
         w(_hide_cur())
-        w(_move(1, 1))
 
-        # Bottom 2 rows allocated specifically to rendering floating Prompt Frame exactly!
-        chat_rows = rows - 2 
+        # Row 1 = hint+status bar (top), row rows = prompt (bottom)
+        # Chat occupies rows 2 .. rows-1
+        chat_rows = rows - 2
+
+        # Draw top bar first
+        if not (self.tui.picker_visible or getattr(self.tui, "browser_visible", False)):
+            w(self._top_bar(rows, cols, chat_w))
+        else:
+            w(_move(1, 1) + _bg(BG) + _erase_line())
+
+        # Build and render chat area (rows 2..rows-1)
         chat_lines = self._build_chat_lines(chat_w)
-        
         total = len(chat_lines)
         offset = max(0, min(self.tui.scroll_offset, max(0, total - chat_rows)))
         end = total - offset
         start = max(0, end - chat_rows)
         chat_lines = chat_lines[start:end]
-        
+
         while len(chat_lines) < chat_rows:
             chat_lines.insert(0, "")
 
         for i in range(chat_rows):
-            w(_move(i + 1, 1))
+            w(_move(i + 2, 1))   # +2 because row 1 is the top bar
             cl = chat_lines[i] if i < len(chat_lines) else ""
-            
+
             if pane_active:
                 cl_stripped = _strip_ansi(cl)
                 pad = max(0, chat_w - len(cl_stripped))
                 cl_padded = cl + " " * pad
-                
+
                 pane_lines = getattr(self.tui, "pane_lines_output", [])
                 p_idx = i - chat_rows + len(pane_lines)
                 pane_line = pane_lines[p_idx] if p_idx >= 0 and p_idx < len(pane_lines) else ""
                 pane_line_padded = pane_line.ljust(pane_w)[:pane_w]
-                
+
                 w(_bg(BG) + cl_padded + _fg(BORDER) + "│" + _fg(FG) + pane_line_padded + _bg(BG))
             else:
                 w(_bg(BG) + _erase_line() + cl + _bg(BG))
 
-        # When large overlays are visible, don't draw the bottom hint/prompt to avoid ASCII overlap
+        # Prompt at bottom row
         if self.tui.picker_visible or getattr(self.tui, "browser_visible", False):
-            w(_move(rows - 1, 1) + _bg(BG) + _erase_line())
             w(_move(rows, 1) + _bg(BG) + _erase_line())
         else:
-            w(self._input_area(rows, cols, chat_w))
+            w(self._prompt_bar(rows, cols, chat_w))
 
         if getattr(self.tui, "browser_visible", False): w(self._browser_popup(rows, cols))
         if self.tui.slash_visible and self.tui.slash_hits: w(self._slash_popup(rows, cols))
@@ -350,52 +356,47 @@ class Renderer:
         lines =[]
         inner = max(30, width - 6)
         if not msgs:
-            ver = "v0.3.4"
+            ver = "v0.3.3"
 
-            # ── Braille ruby gem ─────────────────────────────────────────────
+            # ── Ant logo — top left, Tokyo Night colors ──────────────────────
+            #          ,
+            #         _o_
+            #    ._ ,'   `o'
+            # ----(_)      :       ^aNT
+            #     '  `.   .o
+            #          ~o~  `
+            #           '
             P  = _fg(PURPLE)
             C  = _fg(CYAN)
-            BL = _fg(BLUE)
-            T  = _fg(TEAL)
-
-            sprite = [
-                (C  + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R, 30),
-                (C  + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⠋⠙⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R, 30),
-                (C  + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣾⠃⠀⠀⠘⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R,  30),
-                (P  + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⠇⠀⠀⠀⠀⠸⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R, 30),
-                (P  + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠀⠀⠀⠀⠀⠀⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R, 30),
-                (P  + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠀⠀⠀⠀⠀⠀⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R, 30),
-                (BL + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢿⠀⠀⠀⠀⠀⠀⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R, 30),
-                (BL + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣤⣾⣶⠶⠶⠶⠶⣶⣷⣤⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R, 30),
-                (BL + "⠀⠀⠀⠀⠀⢀⣠⠶⠋⠉⠀⠀⢻⣆⠀⠀⣰⡟⠀⠀⠉⠙⠶⣄⡀⠀⠀⠀⠀⠀" + R, 30),
-                (T  + "⠀⠀⠀⠀⣴⠟⠁⠀⠀⠀⠀⠀⠀⠻⣦⣴⠟⠀⠀⠀⠀⠀⠀⠈⠻⣦⠀⠀⠀⠀" + R, 30),
-                (T  + "⠀⠀⢀⡾⠁⠀⠀⠀⠀⠀⠀⠀⢀⣴⠟⠻⣦⡀⠀⠀⠀⠀⠀⠀⠀⠈⢷⡀⠀⠀" + R, 30),
-                (T  + "⠀⢠⣿⠁⠀⠀⠀⠀⢀⣀⣤⠾⠛⠁⠀⠀⠈⠛⠷⣤⣀⡀⠀⠀⠀⠀⠈⣿⡄⠀" + R, 30),
-                (T  + "⠀⠘⠛⠓⠒⠒⠛⠛⠉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠛⠛⠒⠒⠚⠛⠃⠀" + R, 30),
+            DM = _fg(MUTED)
+            ant = [
+                (DM + "         ,"  + R,),
+                (C  + "        _o_" + R,),
+                (P  + "   ._ ," + C + "'" + P + "   " + C + "`o'" + R,),
+                (DM + "----" + P + "(_)" + DM + "      :" + C + "       ^aNT" + R,),
+                (P  + "    '  `" + DM + ".   .o" + R,),
+                (C  + "         ~o~  `" + R,),
+                (DM + "          '" + R,),
             ]
-            anchor_w = 30
+            # wordmark right of logo
+            word_row = 3   # row index to place "lumi" inline (0-based)
 
-            sub_vis = f"lumi  {ver}"
-            anchor_w = max(anchor_w, len(sub_vis))
-            cpad = max(0, (width - anchor_w) // 2)
-
-            chat_rows = _term_size()[0] - 4
-            top_pad = max(2, (chat_rows - len(sprite) - 4) // 2)
-            lines += [""] * top_pad
-
-            for row_str, row_w in sprite:
-                spad = (anchor_w - row_w) // 2
-                lines.append(" " * cpad + " " * spad + row_str)
+            lines.append("")  # one blank below the top bar
+            for i, row_tuple in enumerate(ant):
+                row_str = row_tuple[0]
+                if i == word_row:
+                    row_str = row_str  # already has ^aNT embedded
+                lines.append(" " + row_str)
 
             lines.append("")
-            wpad = (anchor_w - len(sub_vis)) // 2
             lines.append(
-                " " * cpad + " " * wpad +
-                B(FG_HI) + "lumi" + R +
+                " " * 4 + B(FG_HI) + "lumi" + R +
                 _fg(BORDER) + "  " + ver + R
             )
-
-            lines += [""] * max(0, chat_rows - len(lines) - 1)
+            lines.append("")
+            # fill rest with empty lines
+            chat_rows = _term_size()[0] - 4
+            lines += [""] * max(0, chat_rows - len(lines))
             return lines
 
         # Optional pinned agent plan panel (from /agent)
@@ -412,10 +413,10 @@ class Renderer:
 
         for msg in msgs:
             if msg.role == "user":
-                # Gemini-style: just indented text, no rail
-                lines.append("  " + _fg(FG_DIM) + "you  " + _fg(COMMENT) + msg.ts + R)
+                u_rail = _fg(BLUE) + "▎" + R
+                lines.append("  " + u_rail + " " + _fg(FG_DIM) + "you  " + _fg(COMMENT) + msg.ts + R)
                 for ln in textwrap.wrap(msg.text, inner) or [msg.text]:
-                    lines.append("  " + _fg(FG_HI) + ln + R)
+                    lines.append("  " + u_rail + " " + _fg(FG_HI) + ln + R)
                 lines.append("")
 
             elif msg.role in ("assistant", "streaming"):
@@ -438,10 +439,10 @@ class Renderer:
                     rail_col = PURPLE
                     hdr_col = B(PURPLE)
 
-                a_pre = "  "
-                # Header: minimal label + faint timestamp
+                a_rail = _fg(rail_col) + "▎" + R
+                a_pre  = "  " + a_rail + " "
                 lines.append(
-                    "  " +
+                    "  " + a_rail + " " +
                     hdr_col + label + R +
                     "  " + _fg(COMMENT) + msg.ts + R
                 )
@@ -525,13 +526,15 @@ class Renderer:
                 lines.append("")
 
             elif msg.role == "system":
+                sys_rail = _fg(TEAL) + "▎" + R
                 for sln in msg.text.split("\n"):
                     for wl in (textwrap.wrap(sln, inner) if sln.strip() else [""]):
-                        lines.append("  " + _fg(TEAL) + wl + R)
+                        lines.append("  " + sys_rail + " " + _fg(TEAL) + wl + R)
                 lines.append("")
 
             elif msg.role == "error":
-                lines.append("  " + _fg(RED) + "⚠  " + msg.text + R)
+                err_rail = _fg(RED) + "▎" + R
+                lines.append("  " + err_rail + " " + _fg(RED) + "⚠  " + msg.text + R)
                 lines.append("")
 
         return lines
@@ -557,7 +560,8 @@ class Renderer:
                 i += 1
         return out
 
-    def _input_area(self, rows, cols, chat_w):
+    def _stat_info(self, chat_w):
+        """Compute status string (plain + colored) for top bar."""
         tui = self.tui
         pname = PROV_NAME.get(tui.current_model if tui.current_model == "council" else get_provider(), get_provider())
         model = tui.current_model.split("/")[-1][:22]
@@ -566,68 +570,49 @@ class Renderer:
             tui._cached_tok_count = sum(_tok(m["content"]) for m in mem)
             tui._cached_tok_len = len(mem)
         toks = tui._cached_tok_count
-
         mode = f" {tui.response_mode}" if tui.response_mode else ""
 
         if tui.vessel_mode and tui.active_vessel:
-            stat_str = f" ⬡ VESSEL [{tui.active_vessel.upper()}] · ~{toks:,}tk{mode} "
+            stat_str   = f"⬡ VESSEL [{tui.active_vessel.upper()}] · ~{toks:,}tk{mode}"
             stat_colored = _fg(RED) + _bold() + f"⬡ VESSEL [{tui.active_vessel.upper()}]" + R + _fg(COMMENT) + f" · ~{toks:,}tk{mode}"
         else:
-            stat_str = f" {pname} · {model} · ~{toks:,}tk{mode} "
-            stat_colored = _fg(FG_DIM) + f"{pname}" + R + _fg(COMMENT) + f" · {model} · ~{toks:,}tk{mode}"
+            stat_str   = f"{pname} · {model} · ~{toks:,}tk{mode}"
+            stat_colored = _fg(FG_DIM) + pname + R + _fg(COMMENT) + f" · {model} · ~{toks:,}tk{mode}"
 
-        # Council agent rail (animated) in status when active
         if tui.current_model == "council" and getattr(tui, "agents", None):
-            names_plain = []
-            rail_segments = []
+            names_plain, rail_segments = [], []
             for ag in tui.agents:
-                if ag.st == "spin":
-                    ico = SPINNER_FRAMES[ag.frame % len(SPINNER_FRAMES)]
-                    col = CYAN if ag.lead else FG_DIM
-                elif ag.st == "ok":
-                    ico = "✓"
-                    col = GREEN
-                else:
-                    ico = "✕"
-                    col = RED
-                nm = ag.name.split()[0][:6]
+                ico = SPINNER_FRAMES[ag.frame % len(SPINNER_FRAMES)] if ag.st == "spin" else ("✓" if ag.st == "ok" else "✕")
+                col = (CYAN if ag.lead else FG_DIM) if ag.st == "spin" else (GREEN if ag.st == "ok" else RED)
+                nm  = ag.name.split()[0][:6]
                 names_plain.append(nm)
                 rail_segments.append(_fg(col) + ico + " " + nm + R)
-            stat_str = " Council " + " ".join(names_plain) + mode
-            stat_colored = (
-                _fg(COMMENT)
-                + "Council "
-                + _fg(FG_DIM)
-                + " | "
-                + _fg(FG)
-                + "  ".join(rail_segments)
-                + R
-            )
+            stat_str     = "Council " + " ".join(names_plain) + mode
+            stat_colored = _fg(COMMENT) + "Council " + _fg(FG_DIM) + " | " + _fg(FG) + "  ".join(rail_segments) + R
 
-        # Top line: hint on the left, model/status on the right
-        hint_plain = "  /help · Tab · Ctrl+R · Ctrl+Q"
-        hint_colored = (
-            _fg(BORDER) + "  " +
-            _fg(MUTED) + "/help · Tab · Ctrl+R · Ctrl+Q" +
-            R
-        )
+        return stat_str, stat_colored
+
+    def _top_bar(self, rows, cols, chat_w):
+        """Row 1: hint on left, model/status on right."""
+        stat_str, stat_colored = self._stat_info(chat_w)
+        hint_plain   = "  /help · Tab · Ctrl+R · Ctrl+Q"
+        hint_colored = _fg(BORDER) + "  " + _fg(MUTED) + "/help · Tab · Ctrl+R · Ctrl+Q" + R
 
         hint_len = _visible_len(hint_plain)
         stat_len = _visible_len(stat_str)
-        total_needed = hint_len + stat_len + 4
 
-        if total_needed <= chat_w:
-            space_between = max(1, chat_w - hint_len - stat_len - 2)
-            gap = min(space_between, 16)
+        if hint_len + stat_len + 4 <= chat_w:
+            gap      = min(max(1, chat_w - hint_len - stat_len - 2), 16)
             top_line = " " + hint_colored + " " * gap + stat_colored
         else:
-            # If the terminal is very narrow, fall back to just right-aligned status
-            top_w = max(0, chat_w - stat_len - 2)
-            top_line = " " * top_w + stat_colored + " "
+            top_w    = max(0, chat_w - stat_len - 2)
+            top_line = " " * top_w + stat_colored
 
-        top = _move(rows - 1, 1) + _bg(BG) + _erase_line() + top_line + R
+        return _move(1, 1) + _bg(BG) + _erase_line() + top_line + R
 
-        # Prompt chevron
+    def _prompt_bar(self, rows, cols, chat_w):
+        """Bottom row: spinner/chevron + input buffer."""
+        tui   = self.tui
         t_now = time.time()
         if tui.busy:
             frame = int(t_now * 10) % len(SPINNER_FRAMES)
@@ -637,14 +622,16 @@ class Renderer:
             sym  = _fg(BLUE) + _bold() + "❯ " + R
             hint = ""
 
-        txt = tui.buf
+        txt    = tui.buf
         disp_w = chat_w - 7
         scroll = max(0, tui.cur_pos - disp_w + 1)
-        shown = txt[scroll:scroll + disp_w]
+        shown  = txt[scroll:scroll + disp_w]
 
-        bot = _move(rows, 1) + _bg(BG) + _erase_line() + "  " + sym + _fg(FG_HI) + shown + hint + R
+        return _move(rows, 1) + _bg(BG) + _erase_line() + "  " + sym + _fg(FG_HI) + shown + hint + R
 
-        return top + bot
+    # kept for any external callers; delegates to the two new methods
+    def _input_area(self, rows, cols, chat_w):
+        return self._top_bar(rows, cols, chat_w) + self._prompt_bar(rows, cols, chat_w)
 
     def _browser_popup(self, rows, cols):
         tui = getattr(self, "tui", None)
