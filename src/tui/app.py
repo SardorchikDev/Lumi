@@ -6,12 +6,10 @@
 from __future__ import annotations
 
 import concurrent.futures
-import functools
 import io
 import json
 import logging
 import os
-import queue
 import re
 import select
 import shutil
@@ -43,35 +41,52 @@ ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT))
 
 from dotenv import load_dotenv
+
 load_dotenv(dotenv_path=ROOT / ".env")
 
 # ── CLI Modules ──────────────────────────────────────────────────────────────
+from src.agents.council import LEAD_AGENTS, _get_available_agents, classify_task, council_ask
 from src.chat.hf_client import (
-    get_client, get_models, get_provider, set_provider, get_available_providers,
-)
-from src.memory.short_term import ShortTermMemory
-from src.memory.longterm import (
-    get_facts, add_fact, remove_fact, clear_facts, build_memory_block,
-    get_persona_override, set_persona_override, clear_persona_override,
+    get_available_providers,
+    get_client,
+    get_models,
+    get_provider,
+    set_provider,
 )
 from src.memory.conversation_store import (
-    save as session_save, load_latest, load_by_name, list_sessions, delete_session,
+    load_by_name,
+    load_latest,
 )
+from src.memory.conversation_store import (
+    save as session_save,
+)
+from src.memory.longterm import (
+    add_fact,
+    build_memory_block,
+    get_facts,
+    get_persona_override,
+)
+from src.memory.short_term import ShortTermMemory
 from src.prompts.builder import (
-    load_persona, build_system_prompt, build_messages,
-    is_coding_task, is_file_generation_task,
+    build_messages,
+    build_system_prompt,
+    is_coding_task,
+    is_file_generation_task,
+    load_persona,
 )
-from src.agents.council import council_ask, _get_available_agents, LEAD_AGENTS, classify_task
 from src.tools.search import search, search_display
-from src.utils.web import fetch_url
-from src.utils.plugins import load_plugins, get_commands, dispatch as plugin_dispatch
-from src.utils.intelligence import (
-    detect_emotion, emotion_hint, detect_topic,
-    should_search, is_complex_coding_task, needs_plan_first,
-)
 from src.utils.autoremember import auto_extract_facts
-from src.utils.export import export_md
-from src.utils.filesystem import is_create_request, generate_file_plan, write_file_plan, format_creation_summary
+from src.utils.filesystem import generate_file_plan, is_create_request
+from src.utils.intelligence import (
+    detect_emotion,
+    emotion_hint,
+    is_complex_coding_task,
+    needs_plan_first,
+    should_search,
+)
+from src.utils.plugins import dispatch as plugin_dispatch
+from src.utils.plugins import load_plugins
+from src.utils.web import fetch_url
 
 try:
     from src.utils.tools import clipboard_get, clipboard_set, get_weather, load_project, read_pdf
@@ -254,7 +269,7 @@ class Store:
     def set_text(self, idx, text):
         with self._lock: self._data[idx].text = text
     def finalize(self, idx):
-        with self._lock: 
+        with self._lock:
             if self._data[idx].role == "streaming": self._data[idx].role = "assistant"
     def clear(self):
         with self._lock: self._data.clear()
@@ -342,12 +357,12 @@ class Renderer:
 
         disp_w = chat_w - 7
         scroll = max(0, self.tui.cur_pos - disp_w + 1)
-        cur_col = 5 + (self.tui.cur_pos - scroll) 
-        
+        cur_col = 5 + (self.tui.cur_pos - scroll)
+
         # Keep inside matrix range so automatic Line feeds don't kill buffer UI natively!
         w(_move(rows, min(cur_col, cols - 1)))
         w(_show_cur())
-        
+
         sys.stdout.write("".join(buf))
         sys.stdout.flush()
 
@@ -447,11 +462,11 @@ class Renderer:
                     "  " + _fg(COMMENT) + msg.ts + R
                 )
                 raw_lines = msg.text.split("\n") if msg.text else [""]
-                
+
                 in_code = False
                 code_w = min(inner - 2, 92)
                 lpre = a_pre
-                
+
                 for ln in raw_lines:
                     if ln.startswith("```"):
                         if not in_code:
@@ -474,7 +489,7 @@ class Renderer:
                                 lpre + _fg(BORDER) + "╰" + bar_fill + "╯" + R
                             )
                         continue
-                        
+
                     if in_code:
                         _code_lineno[0] += 1
                         lineno_str = _fg(BORDER) + f"{_code_lineno[0]:>3} " + R
@@ -488,7 +503,7 @@ class Renderer:
                             )
                             lineno_str = _fg(BORDER) + "    " + R  # continuation lines no number
                         continue
-                        
+
                     # Standard Markdown Formatting inside AI Bubbles
                     if re.match(r"^#{1,6} ", ln):
                         lvl = len(ln) - len(ln.lstrip("#"))
@@ -496,7 +511,7 @@ class Renderer:
                         lines.append(lpre) # Extra padding above headers
                         txt = ln.lstrip("# ")
                         lines.append(lpre + _fg(col) + _bold() + txt + R)
-                        
+
                     elif ln.startswith("> "):
                         body = ln[2:]
                         lines.append(lpre + _fg(TEAL) + "▍" + _italic() + _fg(FG_DIM) + " " + body + R)
@@ -519,10 +534,10 @@ class Renderer:
                         else:
                             for wl in (textwrap.wrap(_strip_ansi(ln), inner) or [ln]):
                                 lines.append(lpre + _fg(FG) + wl + R)
-                                
+
                 if in_code: lines.append(lpre + _bg(BG_DARK) + _fg(RED) + "[STREAM PAUSED]" + " " * (code_w - 15) + R)
                 if cursor: lines[-1] += cursor
-                    
+
                 lines.append("")
 
             elif msg.role == "system":
@@ -636,45 +651,45 @@ class Renderer:
     def _browser_popup(self, rows, cols):
         tui = getattr(self, "tui", None)
         if not tui: return ""
-        
+
         items = tui.browser_items; sel = tui.browser_sel
         pop_w = min(60, cols - 6); pop_h = min(20, rows - 6)
         left = max(2, (cols - pop_w) // 2); top = max(2, (rows - pop_h) // 2)
-        
+
         # Display window
         disp_items = []
         if items:
             total = len(items)
             start = max(0, min(sel - pop_h // 2, total - pop_h + 2))
             disp_items = items[start:start + pop_h - 2]
-            
+
             # Recalculate local selection index
             local_sel = sel - start
         else:
             local_sel = -1
-            
+
         out = [_move(top, left) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
-        
+
         # Header (shows CWD)
         cwd = tui.browser_cwd
         if len(cwd) > pop_w - 6: cwd = "..." + cwd[-(pop_w - 9):]
         pad = max(0, pop_w - 4 - len(cwd))
         out.append(_move(top + 1, left) + _fg(BORDER) + "│ " + _fg(BLUE) + cwd + " " * pad + _fg(BORDER) + " │" + R)
         out.append(_move(top + 2, left) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
-        
+
         row = top + 3
         for i, item in enumerate(disp_items):
             itype, iname, ipath = item
             is_sel = (i == local_sel)
             bg_ = _bg(BG_HL) if is_sel else _bg(BG)
-            
+
             if iname == "..":
                 icon = "󰜄"; color = _fg(MUTED); name_color = _fg(FG_HI) if is_sel else _fg(FG)
             elif itype == "dir":
                 icon = "󰉋"; color = _fg(BLUE); name_color = _fg(FG_HI) if is_sel else _fg(FG)
             else:
                 icon = "󰈔"; color = _fg(FG_DIM); name_color = _fg(FG_HI) if is_sel else _fg(MUTED)
-                
+
             disp_name = iname[:pop_w - 10]
             sp = max(0, pop_w - 4 - len(disp_name) - 2)
             pointer = "› " if is_sel else "  "
@@ -689,19 +704,19 @@ class Renderer:
                 + _fg(BORDER) + " │" + R
             )
             row += 1
-            
+
         # Empty space padding if list is short
         while row < top + pop_h - 1:
             out.append(_move(row, left) + _fg(BORDER) + "│ " + " " * (pop_w - 4) + " │" + R)
             row += 1
-            
+
         out.append(_move(row, left) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
         row += 1
         bot_txt = "Esc Close  ·  ↑↓ Move  ·  Enter/→ Open  ·  ← Back"
         out.append(_move(row, left) + _fg(BORDER) + "│ " + _fg(COMMENT) + bot_txt + " " * max(0, pop_w - 4 - len(bot_txt)) + _fg(BORDER) + " │" + R)
         row += 1
         out.append(_move(row, left) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
-        
+
         return "".join(out)
 
     def _slash_popup(self, rows, cols):
@@ -830,7 +845,7 @@ class LumiTUI:
         self.original_termios = None
         self.pane_active = False
         self.pane_lines_output = []
-        
+
         # ── Browser Mode ──────────────────────────────────────────────────────
         self.browser_visible = False
         self.browser_cwd = os.getcwd()
@@ -842,7 +857,7 @@ class LumiTUI:
 
     def _sys(self, text): self.store.add(Msg("system", text))
     def _err(self, text): self.store.add(Msg("error", str(text)))
-    
+
     def _notify(self, msg, duration=2.5):
         with self._state_lock: self.notification = msg
         self.redraw()
@@ -858,11 +873,11 @@ class LumiTUI:
             entries = list(os.scandir(self.browser_cwd))
             dirs = sorted([e for e in entries if e.is_dir()], key=lambda e: e.name.lower())
             files = sorted([e for e in entries if e.is_file()], key=lambda e: e.name.lower())
-            
+
             self.browser_items = []
             if self.browser_cwd != "/":
                 self.browser_items.append(("dir", "..", os.path.dirname(self.browser_cwd)))
-                
+
             for d in dirs: self.browser_items.append(("dir", d.name, d.path))
             for f in files: self.browser_items.append(("file", f.name, f.path))
             self.browser_sel = max(0, min(self.browser_sel, len(self.browser_items) - 1))
@@ -875,7 +890,7 @@ class LumiTUI:
         sel = self.browser_sel
         if sel < 0 or sel >= len(self.browser_items): return
         itype, iname, ipath = self.browser_items[sel]
-        
+
         if itype == "dir":
             # Navigate into the directory
             self.browser_cwd = ipath
@@ -904,7 +919,7 @@ class LumiTUI:
     def set_busy(self, status):
         with self._state_lock: self.busy = status
         self.redraw()
-    
+
     def redraw(self): self.renderer.draw()
 
     # ── Inference / Generators  ─────────────────────────────────────────────
@@ -926,7 +941,7 @@ class LumiTUI:
         avail = _get_available_agents()
         user_q = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
         lead_id = LEAD_AGENTS.get(classify_task(user_q), "gemini")
-        
+
         with self._state_lock: self.agents = [AgentState(a["id"], a["name"], a["id"] == lead_id) for a in avail]
 
         def _cb(aid, ok, conf, t):
@@ -939,7 +954,7 @@ class LumiTUI:
             while self.busy:
                 for ag in self.agents: ag.frame = frame
                 self.redraw(); frame = (frame + 1) % len(SPINNER_FRAMES); time.sleep(0.08)
-                
+
         threading.Thread(target=_spin, daemon=True).start()
 
         full = refined = ""
@@ -1230,7 +1245,7 @@ class LumiTUI:
 
         emotion = detect_emotion(user_input); augmented = user_input
         if emotion: hint = emotion_hint(emotion); augmented = (hint + augmented) if hint else augmented
-        
+
         if self.response_mode == "short": augmented += "\n\n[Reply concisely — 2-3 sentences max.]"
         elif self.response_mode == "detailed": augmented += "\n\n[Reply in detail — be thorough and comprehensive.]"
         elif self.response_mode == "bullets": augmented += "\n\n[Reply using bullet points only.]"
@@ -1284,7 +1299,7 @@ class LumiTUI:
         raw_reply = self._tui_stream(messages, self.current_model)
         self.memory._history[-1] = {"role": "user", "content": user_input}
         self.memory.add("assistant", raw_reply)
-        
+
         self.prev_reply = self.last_reply; self.last_reply = raw_reply
         self.turns += 1; self.set_busy(False)
 
@@ -1314,7 +1329,7 @@ class LumiTUI:
         lines = [f"File plan → {home}"]; lines.append(f"  📁 {root}/") if root and root != "." else None
         for f in files: lines.append(f"  📄 {f.get('path', '')}")
         lines.append(""); lines.append("Type 'yes' to create, anything else to cancel.")
-        
+
         self._sys("\n".join(lines)); self.set_busy(False); self._pending_file_plan = (plan, home)
 
     def _do_retry(self):
@@ -1324,7 +1339,7 @@ class LumiTUI:
                 text = m["content"]; self.memory._history = self.memory._history[:-2] if len(self.memory._history) >= 2 else[]
                 self.turns = max(0, self.turns - 1); self.set_busy(True)
                 self.store.add(Msg("user", text)); self.memory.add("user", text)
-                
+
                 msgs = build_messages(self.system_prompt, self.memory.get())
                 raw = self._tui_stream(msgs, self.current_model)
                 self.memory._history[-1] = {"role": "user", "content": text}; self.memory.add("assistant", raw)
@@ -1374,7 +1389,7 @@ class LumiTUI:
 # ══════════════════════════════════════════════════════════════════════════════
 def bg_task(func):
     """Decorator that runs a command in the TUI's thread pool instead of spawning bare threads."""
-    def wrapper(tui: "LumiTUI", arg: str):
+    def wrapper(tui: LumiTUI, arg: str):
         tui._task_executor.submit(func, tui, arg)
     return wrapper
 
@@ -2089,7 +2104,7 @@ def cmd_help(tui: LumiTUI, arg: str):
                 desc = data["desc"][:52]
                 lines.append(f"    {c:<16} {desc}")
     lines.append(f"\n  {len(registry.commands)} commands available. Tab to autocomplete.")
-    lines.append(f"\n  Shortcuts: Ctrl+N=model picker | Ctrl+L=clear | Ctrl+R=retry | Tab=complete")
+    lines.append("\n  Shortcuts: Ctrl+N=model picker | Ctrl+L=clear | Ctrl+R=retry | Tab=complete")
     tui._sys("\n".join(lines))
 
 # ── Batch 2 Commands ──────────────────────────────────────────────────────────────
@@ -2710,11 +2725,11 @@ def cmd_offline(tui: LumiTUI, arg: str):
         if not models:
             tui._err("Ollama is not running or no models found! Ensure ollama is active.")
             return
-        
+
         set_provider("ollama")
         tui.client = get_client()
         tui.current_model = models[0]
-        
+
         tui._sys(f"◆  [OFFLINE] Privacy Mode ON. Cloud disconnected. Local: {tui.current_model}")
         tui._notify(f"Offline Mode: {tui.current_model}")
     except Exception as e:
@@ -2727,7 +2742,7 @@ def cmd_godmode(tui: LumiTUI, arg: str):
     def _go():
         tui.set_busy(True)
         tui._sys(f"◆  Entering God Mode. Objective: {arg}")
-        
+
         prompt = (f"GOD MODE OBJECTIVE: {arg}\n"
                   "You act autonomously. Respond STRICTLY in one of three formats:\n\n"
                   "To run a shell command:\n"
@@ -2739,9 +2754,9 @@ def cmd_godmode(tui: LumiTUI, arg: str):
                   "To finish the task successfully:\n"
                   "[DONE]\n\n"
                   "Only do ONE action per message. The system will reply with feedback.")
-        
+
         tui.memory.add("user", prompt)
-        
+
         loop = 0
         while getattr(tui, "_running", True) and loop < 15:
             loop += 1
@@ -2750,14 +2765,14 @@ def cmd_godmode(tui: LumiTUI, arg: str):
             tui.memory.add("assistant", raw)
             tui.last_reply = raw
             tui.turns += 1
-            
+
             if "[DONE]" in raw:
                 tui._sys("◆  God Mode successfully completed the objective.")
                 break
-                
+
             cmd_match = re.search(r'\[CMD\]\s*(.+)', raw)
             edit_match = re.search(r'\[EDIT\]\s*([^ \n]+)\n(.*?)(?:\[ENDEDIT\]|$)', raw, re.DOTALL)
-            
+
             feedback = ""
             if cmd_match:
                 command = cmd_match.group(1).strip()
@@ -2779,13 +2794,13 @@ def cmd_godmode(tui: LumiTUI, arg: str):
                     feedback = f"Write failed: {e}"
             else:
                 feedback = "No valid [CMD], [EDIT], or [DONE] block found. Format must be exact. Only one action allowed. Do not output markdown code blocks around commands."
-            
+
             tui.memory.add("user", f"System Feedback:\n{feedback}")
             tui.redraw()  # no sleep — just loop immediately
-            
+
         tui.set_busy(False)
         tui.redraw()
-        
+
     threading.Thread(target=_go, daemon=True).start()
 
 @registry.register("/pane", "Launch a command in a side pane")
@@ -2794,10 +2809,10 @@ def cmd_pane(tui: LumiTUI, arg: str):
         tui.pane_active = False
         tui.redraw()
         return
-        
+
     tui.pane_active = True
     tui.pane_lines_output = []
-    
+
     def _read_pane():
         proc = subprocess.Popen(arg, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         for line in iter(proc.stdout.readline, ""):
@@ -2808,7 +2823,7 @@ def cmd_pane(tui: LumiTUI, arg: str):
             if len(tui.pane_lines_output) > 100:
                 tui.pane_lines_output = tui.pane_lines_output[-100:]
             tui.redraw()
-            
+
     threading.Thread(target=_read_pane, daemon=True).start()
     tui.redraw()
 
@@ -2817,37 +2832,37 @@ def cmd_apply(tui: LumiTUI, arg: str):
     if not tui.last_reply:
         tui._err("No LLM reply to apply.")
         return
-        
+
     # Find markdown code blocks
     blocks = re.findall(r'```[a-zA-Z]*\n(.*?)```', tui.last_reply, re.DOTALL)
     if not blocks:
         tui._err("No markdown code blocks found in the last reply.")
         return
-        
+
     target_file = arg.strip()
     if not target_file:
         tui._err("Usage: /apply <filename>")
         return
-        
+
     code = blocks[0].strip() # Take the first code block
-    
+
     # Temporarily exit TUI to use blocking shell input
     sys.stdout.write("\033[?1049l\033[?25h")
     sys.stdout.flush()
     if hasattr(tui, 'original_termios') and tui.original_termios:
         termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, tui.original_termios)
-        
+
     print(f"\n\033[1;36m=== PROPOSED CHANGE FOR {target_file} ===\033[0m\n")
     print(code[:1000] + ("...\n[TRUNCATED]" if len(code) > 1000 else ""))
     print(f"\n\033[1;33mApply this code to {target_file}? [y/N]\033[0m ", end="")
     sys.stdout.flush()
-    
+
     try:
         ans = input().strip().lower()
     except Exception:
         log.debug("apply input failed")
         ans = "n"
-       
+
     if ans == "y":
         try:
             Path(target_file).parent.mkdir(parents=True, exist_ok=True)
@@ -2857,7 +2872,7 @@ def cmd_apply(tui: LumiTUI, arg: str):
             tui._err(f"Failed to write {target_file}: {e}")
     else:
         tui._sys(f"◆  Skipped applying to {target_file}")
-        
+
     # Restore TUI
     tty.setraw(sys.stdin.fileno())
     sys.stdout.write("\033[?1049h\033[?25l\033[J")
@@ -2883,7 +2898,7 @@ def cmd_rag(tui: LumiTUI, arg: str):
     if not arg:
         tui._err("Usage: /rag <question>")
         return
-        
+
     tui.set_busy(True)
     try:
         from src.tools.rag import search_index
@@ -2892,14 +2907,14 @@ def cmd_rag(tui: LumiTUI, arg: str):
             tui._err("No results found or index not built. Run /index first.")
             tui.set_busy(False)
             return
-            
+
         context = "Here are the top relevant files from the local index:\n\n"
         for filepath, content in results:
             context += f"--- {filepath} ---\n{content}\n\n"
-            
+
         prompt = f"{context}\n\nBased on the codebase above, answer this: {arg}"
         tui.memory.add("user", prompt)
-        
+
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [RAG]")
         tui.memory._history[-1] = {"role": "user", "content": f"/rag {arg}"}
@@ -2920,7 +2935,7 @@ def cmd_voice(tui: LumiTUI, arg: str):
         audio_file = record_audio(duration=5)
         tui._sys("◆  Transcribing...")
         text = transcribe_audio_hf(audio_file)
-        
+
         # Inject the transcribed text directly into the user's input buffer
         tui.buf = text
         tui.cur_pos = len(text)

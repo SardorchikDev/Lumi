@@ -1,13 +1,16 @@
 """Builds the system prompt and message list sent to the model."""
 
+from __future__ import annotations
+
 import json
 import pathlib
 import re
+from typing import Any
 
 PERSONA_PATH = pathlib.Path("data/personas/default.json")
 
 
-def load_persona() -> dict:
+def load_persona() -> dict[str, Any]:
     if PERSONA_PATH.exists():
         return json.loads(PERSONA_PATH.read_text())
     return {
@@ -165,7 +168,7 @@ When asked to create a website, app, or project with multiple files:
 """
 
 
-def build_system_prompt(persona: dict, memory_block: str = "",
+def build_system_prompt(persona: dict[str, Any], memory_block: str = "",
                         coding_mode: bool = False,
                         file_mode: bool = False) -> str:
     name    = persona.get("name",    "Lumi")
@@ -229,17 +232,16 @@ def is_file_generation_task(text: str) -> bool:
     return any(re.search(p, t) for p in FILE_KEYWORDS)
 
 
-def build_messages(system_prompt: str, history: list) -> list:
+def build_messages(system_prompt: str, history: list[dict[str, str]]) -> list[dict[str, str]]:
     return [{"role": "system", "content": system_prompt}] + history
 
 
-def make_system_prompt(persona: dict, memory_override: dict = None,
+def make_system_prompt(persona: dict[str, Any], memory_override: dict[str, Any] | None = None,
                        coding_mode: bool = False, file_mode: bool = False) -> str:
     """Convenience wrapper used by main.py."""
     from src.memory.longterm import build_memory_block
     memory_block = build_memory_block()
     if memory_override:
-        from src.memory.longterm import get_facts
         extra = "\n".join(f"- {k}: {v}" for k, v in memory_override.items())
         memory_block = extra + "\n" + memory_block if memory_block else extra
     return build_system_prompt(persona, memory_block, coding_mode, file_mode)

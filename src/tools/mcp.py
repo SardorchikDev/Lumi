@@ -17,12 +17,11 @@ Usage in Lumi:
   /mcp remove <name>     — remove a server
 """
 
-import os
 import json
+import os
+import pathlib
 import subprocess
 import threading
-import pathlib
-from typing import Optional
 
 CONFIG_PATH = pathlib.Path.home() / "Lumi" / "mcp.json"
 
@@ -149,7 +148,7 @@ class MCPSession:
 _sessions: dict[str, MCPSession] = {}
 
 
-def get_session(name: str) -> Optional[MCPSession]:
+def get_session(name: str) -> MCPSession | None:
     if name in _sessions:
         return _sessions[name]
     servers = list_servers()
@@ -193,7 +192,7 @@ def get_tool_context() -> str:
 
 # ── Natural language tool dispatch ────────────────────────────────────────────
 
-def try_mcp_call(tool_ref: str, args_json: str = "") -> Optional[str]:
+def try_mcp_call(tool_ref: str, args_json: str = "") -> str | None:
     """
     Call mcp:<server>/<tool> with optional JSON args.
     Returns result string or None if not found.

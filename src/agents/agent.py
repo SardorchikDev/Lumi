@@ -4,12 +4,10 @@ Lumi Agent Mode — autonomous multi-step task execution.
 Give Lumi a goal → it plans steps → executes them → asks confirmation on risky ones.
 """
 
-import os
-import sys
 import json
-import subprocess
+import os
 import re
-
+import subprocess
 
 R  = "\033[0m"
 B  = "\033[1m"

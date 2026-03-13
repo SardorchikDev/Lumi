@@ -1,54 +1,82 @@
 """Lumi CLI — smarter chatbot."""
 
 from dotenv import load_dotenv
+
 load_dotenv()
 
-import os
-import sys
-import pathlib
+import difflib
+import itertools
 import json
+import os
+import pathlib
 import shutil
+import subprocess
+import sys
 import textwrap
 import threading
-import subprocess
-import difflib
-import shlex
-import select
 import time
-import itertools
-import webbrowser
 import urllib.parse
+import webbrowser
 from datetime import datetime
 
-from src.chat.hf_client import get_client, get_models, get_provider, set_provider, get_available_providers
-from src.utils.todo  import todo_add, todo_list, todo_done, todo_remove, todo_clear_done
-from src.utils.notes import note_add, note_list, note_search, note_remove, notes_to_markdown
-from src.utils.tools import (get_weather, clipboard_get, clipboard_set, read_pdf,
-                              take_screenshot, encode_image_base64, load_project, analyze_data_file)
-from src.utils.voice import record_audio, transcribe_groq, speak
-from src.utils.filesystem import is_create_request, generate_file_plan, write_file_plan, format_creation_summary
-
-from src.memory.short_term import ShortTermMemory
+from src.agents.council import council_ask
+from src.chat.hf_client import get_available_providers, get_client, get_models, get_provider, set_provider
+from src.memory.conversation_store import list_sessions, load_by_name, load_latest, save
 from src.memory.longterm import (
-    get_facts, add_fact, remove_fact, clear_facts, build_memory_block,
-    get_persona_override, set_persona_override, clear_persona_override,
+    add_fact,
+    auto_summarize_and_save,
+    build_memory_block,
+    clear_facts,
+    clear_persona_override,
+    get_facts,
+    get_persona_override,
+    get_related_episodes,
+    remove_fact,
+    set_persona_override,
 )
-from src.memory.conversation_store import save, load_latest, load_by_name, list_sessions, delete_session
-from src.utils.web import fetch_url
-from src.utils.plugins import load_plugins, get_commands, dispatch as plugin_dispatch
-from src.tools.mcp import list_servers as mcp_list, add_server as mcp_add, remove_server as mcp_remove, get_session as mcp_session, stop_all as mcp_stop
-from src.prompts.builder import load_persona, build_system_prompt, build_messages, is_coding_task, is_file_generation_task
-from src.agents.council import council_ask, AGENTS as COUNCIL_AGENTS
+from src.memory.short_term import ShortTermMemory
+from src.prompts.builder import (
+    build_messages,
+    build_system_prompt,
+    is_file_generation_task,
+    load_persona,
+)
+from src.tools.mcp import add_server as mcp_add
+from src.tools.mcp import get_session as mcp_session
+from src.tools.mcp import list_servers as mcp_list
+from src.tools.mcp import remove_server as mcp_remove
 from src.tools.search import search, search_display
-from src.utils.markdown import render as md_render
-from src.utils.export import export_md
-from src.utils.themes import get_theme, list_themes, save_theme_name, load_theme_name
-from src.utils.history import setup as history_setup, save as history_save
-from src.utils.intelligence import (detect_emotion, emotion_hint, detect_topic, should_search,
-                                  is_complex_coding_task, needs_plan_first,
-                                  classify_request)
-from src.memory.longterm import get_related_episodes, auto_summarize_and_save
 from src.utils.autoremember import auto_extract_facts
+from src.utils.export import export_md
+from src.utils.filesystem import format_creation_summary, generate_file_plan, is_create_request, write_file_plan
+from src.utils.history import save as history_save
+from src.utils.history import setup as history_setup
+from src.utils.intelligence import (
+    classify_request,
+    emotion_hint,
+    is_complex_coding_task,
+    needs_plan_first,
+    should_search,
+)
+from src.utils.markdown import render as md_render
+from src.utils.notes import note_add, note_list, note_remove, note_search, notes_to_markdown
+from src.utils.plugins import dispatch as plugin_dispatch
+from src.utils.plugins import get_commands, load_plugins
+from src.utils.themes import get_theme, list_themes, load_theme_name, save_theme_name
+from src.utils.todo import todo_add, todo_clear_done, todo_done, todo_list, todo_remove
+from src.utils.tools import (
+    analyze_data_file,
+    clipboard_get,
+    clipboard_set,
+    encode_image_base64,
+    get_weather,
+    load_project,
+    read_pdf,
+    take_screenshot,
+)
+from src.utils.voice import record_audio, speak, transcribe_groq
+from src.utils.web import fetch_url
+
 
 # ── System prompt builder (unified) ──────────────────────────
 def make_system_prompt(persona: dict, override: dict = None,
@@ -408,7 +436,7 @@ def pick_model(cur_model: str) -> tuple:
 
     # Council mode — no model to pick, just confirm
     if chosen_provider == "council":
-        from src.agents.council import _get_available_agents as _cag, AGENTS as _CA
+        from src.agents.council import _get_available_agents as _cag
         active_agents = _cag()
         names = "  ·  ".join(a["name"] for a in active_agents)
         print(f"\n  {PU}⚡ Council mode{R}  {DG}{names}{R}\n")
@@ -515,7 +543,7 @@ def pick_model(cur_model: str) -> tuple:
         frag    = raw.lower()
         matches = [m for m in models if frag in m.lower()]
         if len(matches) == 1:   return matches[0], chosen_provider
-        elif len(matches) > 1:  warn(f"Ambiguous."); return default_model, chosen_provider
+        elif len(matches) > 1:  warn("Ambiguous."); return default_model, chosen_provider
         else:                   warn(f"No model matching '{raw}'."); return default_model, chosen_provider
     except (KeyboardInterrupt, EOFError):
         pass
@@ -637,7 +665,8 @@ def cmd_image(args: str, client, model: str, memory, system_prompt: str, name: s
     if not os.path.exists(path):
         fail(f"File not found: {path}"); return
     try:
-        import base64, mimetypes
+        import base64
+        import mimetypes
         mime = mimetypes.guess_type(path)[0] or "image/jpeg"
         with open(path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode()
@@ -815,9 +844,10 @@ def stream_and_render(client, messages: list, model: str, name: str = "Lumi") ->
             (m["content"] for m in reversed(messages) if m["role"] == "user"), ""
         )
         from src.agents.council import (
-            council_ask as _ca,
             _get_available_agents as _gav,
-            format_council_stats as _fcs,
+        )
+        from src.agents.council import (
+            council_ask as _ca,
         )
         avail = _gav()
         print(f"\n  {DG}council  {GR}{len(avail)} agents  {DG}→  asking in parallel...{R}\n")
@@ -1055,7 +1085,8 @@ def cmd_review(target: str, client, model: str, memory, system_prompt: str, name
 
 # ── /find ─────────────────────────────────────────────────────
 def cmd_find(keyword: str):
-    import json, pathlib
+    import json
+    import pathlib
     d = pathlib.Path("data/conversations")
     if not d.exists(): warn("No saved sessions."); return
     hits = []
@@ -1169,7 +1200,7 @@ def cmd_run(last_reply: str):
     # Find first fenced code block
     m = re.search(r"```(?:python|bash|sh|javascript|js|node)?\n(.*?)```", last_reply, re.DOTALL)
     if not m:
-        warn("No code block found in last reply."); return
+        warn("No code block found in last reply."); return None
     code = m.group(1).strip()
     lang = re.search(r"```(\w+)", last_reply)
     lang = lang.group(1).lower() if lang else "python"
@@ -1194,7 +1225,7 @@ def cmd_run(last_reply: str):
                 capture_output=True, text=True, timeout=15
             )
         else:
-            warn(f"Can't run {lang} yet. Supported: python, bash, javascript"); return
+            warn(f"Can't run {lang} yet. Supported: python, bash, javascript"); return None
 
         if result.stdout:
             for line in result.stdout.splitlines():
@@ -1544,7 +1575,6 @@ def cmd_screenshot(client, model: str, memory, system_prompt: str, name: str):
     except (KeyboardInterrupt, EOFError):
         return
     try:
-        import base64 as _b64
         from openai import OpenAI as _OAI
         img_b64 = encode_image_base64(path)
         vision_client = _OAI(
@@ -2210,7 +2240,7 @@ def main():
                 user_input = last_msg
                 if feedback:
                     user_input = f"{last_msg}\n\n[My previous response wasn't quite right because: {feedback}. Please try again with that in mind.]"
-                info(f"Retrying...")
+                info("Retrying...")
                 memory._history = memory._history[:-2] if len(memory._history) >= 2 else []
                 turns = max(0, turns - 1)
             else: warn("Nothing to retry."); continue
@@ -2448,7 +2478,7 @@ def main():
                         print(f"  {PU}{c:<20}{R}  {GR}{d}{R}")
                     print()
                 else:
-                    info(f"No plugins loaded.  Drop .py files in ~/Lumi/plugins/")
+                    info("No plugins loaded.  Drop .py files in ~/Lumi/plugins/")
             continue
 
         if cmd == "/lumi.md":
@@ -2461,9 +2491,9 @@ def main():
                     warn("No LUMI.md in current directory")
             elif sub == "create":
                 if pathlib.Path("LUMI.md").exists():
-                    warn("LUMI.md already exists"); 
+                    warn("LUMI.md already exists")
                 else:
-                    template = f"""# Project Context
+                    template = """# Project Context
 
 ## Stack
 <!-- e.g. Python 3.11, FastAPI, PostgreSQL -->
@@ -2676,23 +2706,23 @@ def main():
         # Use a temporary client for embeddings if main one is not set up
         _emb_client = client or (get_client() if get_provider() else None)
         related_episodes = get_related_episodes(user_input, _emb_client) if _emb_client else []
-        
+
         # 3. Dynamic System Prompt
         _is_code = classification.get("intent") in ("coding", "debug") or is_complex_coding_task(user_input)
         _is_files = "fs" in classification.get("tools", []) or is_file_generation_task(user_input)
-        
+
         system_prompt = make_system_prompt(persona,
                                            override=get_persona_override(),
                                            coding_mode=_is_code,
                                            file_mode=_is_files)
-        
+
         # Inject MCP context if needed
         if "mcp" in classification.get("tools", []):
             from src.tools.mcp import get_tool_context
             mcp_context = get_tool_context()
             if mcp_context:
                 system_prompt += "\n\n" + mcp_context
-        
+
         if related_episodes:
             system_prompt += "\n\n## Related past conversations\n" + "\n".join(f"- {s}" for s in related_episodes)
 
@@ -2717,7 +2747,7 @@ def main():
         emotion_hint_str = emotion_hint(classification.get("emotion", "neutral"))
         if emotion_hint_str:
             augmented = emotion_hint_str + augmented
-        
+
         log_mood(classification.get("emotion"), turns)
         if turns > 0 and turns % 20 == 0:
             mood_msg = check_mood_pattern()

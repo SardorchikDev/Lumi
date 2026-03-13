@@ -6,7 +6,6 @@ Falls back to regex heuristics if the API is unavailable or for simple checks.
 
 import json
 import re
-import sys
 
 # ── Regex Heuristics (Fallback & Fast Checks) ─────────────────────────────────
 
@@ -148,7 +147,7 @@ def classify_request(text: str, client, model: str) -> dict:
         if raw.startswith("```"):
             raw = re.sub(r"^```json\n?|^```\n?", "", raw)
             raw = re.sub(r"\n?```$", "", raw)
-        
+
         data = json.loads(raw)
         return data
     except Exception:
@@ -161,7 +160,7 @@ def _fallback_classification(text: str) -> dict:
     elif should_search(text): intent = "search"
     elif detect_topic(text) == "creative": intent = "creative"
     elif "debug" in text.lower() or "fix" in text.lower(): intent = "debug"
-    
+
     return {
         "intent": intent,
         "emotion": _detect_emotion_regex(text) or "neutral",

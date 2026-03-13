@@ -2,7 +2,8 @@
 Lumi todo system — persistent task tracker.
 Saved to data/memory/todos.json
 """
-import json, os
+import json
+import os
 from datetime import datetime
 
 TODO_PATH = os.path.join(os.path.dirname(__file__), "../../data/memory/todos.json")

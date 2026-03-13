@@ -1,0 +1,132 @@
+[project]
+name = "lumi-ai"
+version = "0.3.3"
+description = "The Ultimate Terminal AI Development Environment"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Sardor Sodiqov", email = "sardorchikdev@gmail.com"},
+]
+keywords = ["ai", "terminal", "tui", "chatbot", "cli", "llm"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Terminals",
+]
+
+dependencies = [
+    "huggingface_hub>=0.20.0",
+    "python-dotenv>=1.0.0",
+    "openai>=1.10.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+pdf = [
+    "pdfplumber>=0.10.0",
+    "pdfminer.six>=20221105",
+]
+voice = [
+    "pyttsx3>=2.90",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.4.0",
+    "pre-commit>=3.6.0",
+]
+all = [
+    "lumi-ai[pdf,voice,dev]",
+]
+
+[project.urls]
+Homepage = "https://github.com/SardorchikDev/Lumi"
+Repository = "https://github.com/SardorchikDev/Lumi"
+Issues = "https://github.com/SardorchikDev/Lumi/issues"
+
+[project.scripts]
+lumi = "main:main"
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# ── Ruff Configuration ───────────────────────────────────────────────────────
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "T20",   # flake8-print (detect print statements — informational)
+    "RET",   # flake8-return
+    "PIE",   # flake8-pie
+    "C4",    # flake8-comprehensions
+]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "T201",   # print() usage — this is a CLI app, prints are intentional
+    "E741",   # ambiguous variable name (l, O, I) — used in ANSI color constants
+    "N802",   # function name should be lowercase — W() is intentional
+    "N806",   # variable in function should be lowercase — ANSI constants
+    "N816",   # mixed case variable — ANSI color names like GN, RE, YE
+    "E701",   # multiple statements on one line (colon) — existing code convention
+    "E702",   # multiple statements on one line (semicolon) — existing code convention
+    "B905",   # zip without strict — not always needed
+    "SIM108", # ternary operator — readability preference
+    "RET505", # unnecessary else after return
+    "RET504", # unnecessary assignment before return
+    "UP007",  # use X | Y for union types — keep Optional for clarity
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501", "B011", "SIM", "F401"]
+"src/utils/highlight.py" = ["E501"]           # syntax highlighting has long pattern lines
+"src/agents/council.py" = ["E501", "E722", "SIM103", "UP028"]
+"src/agents/agent.py" = ["B904", "SIM102"]    # existing style
+"src/chat/hf_client.py" = ["B904", "F821"]    # existing style
+"src/tools/mcp.py" = ["B007", "B904"]         # existing style
+"src/tools/rag.py" = ["B007"]                 # existing style
+"src/tools/voice.py" = ["B904"]               # existing style
+"src/tui/app.py" = ["E402", "B007", "F811", "SIM105"]  # large TUI module
+"src/utils/tools.py" = ["F841", "SIM115"]     # existing style
+"src/utils/filesystem.py" = ["W291"]          # trailing whitespace in docstring
+"main.py" = ["E501", "C901", "B023", "E402", "E722", "F601", "F811", "F841", "N814", "PIE810", "SIM105", "SIM115"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+# ── Pytest Configuration ─────────────────────────────────────────────────────
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests requiring API keys or network",
+]

@@ -2,9 +2,9 @@
 Lumi file system agent — detects and executes file/folder creation
 from natural language. No slash command needed.
 """
+import json
 import os
 import re
-import json
 
 # ── Intent detection ──────────────────────────────────────────────────────────
 

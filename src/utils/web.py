@@ -1,8 +1,8 @@
 """Web page fetcher — fetch URL, extract readable text."""
 
 import re
-import urllib.request
 import urllib.error
+import urllib.request
 
 MAX_CHARS = 12000  # ~3k tokens
 

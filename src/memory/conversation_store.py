@@ -1,14 +1,17 @@
 """Save and load conversations — with named session support."""
 
+from __future__ import annotations
+
 import json
 import pathlib
 import re
 from datetime import datetime
+from typing import Any
 
 SESSIONS_DIR = pathlib.Path.home() / "Lumi" / "data" / "sessions"
 
 
-def _ensure():
+def _ensure() -> None:
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -17,7 +20,7 @@ def _slug(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "-", name.strip().lower())[:40]
 
 
-def save(history: list, name: str = "") -> pathlib.Path:
+def save(history: list[dict[str, str]], name: str = "") -> pathlib.Path:
     """Save conversation. Returns path."""
     _ensure()
     ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -31,7 +34,7 @@ def save(history: list, name: str = "") -> pathlib.Path:
     return path
 
 
-def load_latest(name: str = "") -> list:
+def load_latest(name: str = "") -> list[dict[str, str]]:
     """Load most recent session, optionally filtered by name."""
     _ensure()
     pattern = f"{_slug(name)}-*.json" if name else "*.json"
@@ -42,7 +45,7 @@ def load_latest(name: str = "") -> list:
     return data.get("messages", data) if isinstance(data, dict) else data
 
 
-def load_by_name(name: str) -> list:
+def load_by_name(name: str) -> list[dict[str, str]]:
     """Load session by exact name or partial slug match."""
     _ensure()
     slug = _slug(name)
@@ -57,7 +60,7 @@ def load_by_name(name: str) -> list:
     return data.get("messages", data) if isinstance(data, dict) else data
 
 
-def list_sessions() -> list[dict]:
+def list_sessions() -> list[dict[str, Any]]:
     """Return list of {id, name, date, messages} dicts."""
     _ensure()
     results = []

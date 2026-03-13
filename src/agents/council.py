@@ -20,6 +20,7 @@ import threading
 import time
 
 from openai import OpenAI
+
 from src.utils.intelligence import classify_request
 
 # ── ANSI ──────────────────────────────────────────────────────────────────────
