@@ -350,6 +350,18 @@ class Renderer:
             lines += [""] * pad_mid
             return lines
 
+        # Optional pinned agent plan panel (from /agent)
+        if getattr(self.tui, "agent_active_objective", None) and getattr(self.tui, "agent_tasks", None):
+            lines.append("")
+            lines.append("  " + _fg(COMMENT) + "Agent objective: " + _fg(FG_HI) + self.tui.agent_active_objective + R)
+            for idx, task in enumerate(self.tui.agent_tasks, start=1):
+                bullet = "○"
+                label = task.get("text", "")
+                for ln in textwrap.wrap(label, inner - 6) or [label]:
+                    lines.append("    " + _fg(MUTED) + bullet + " " + _fg(FG) + ln + R)
+                    bullet = " "  # only first line gets the bullet
+            lines.append("")
+
         for msg in msgs:
             if msg.role == "user":
                 # User: simple right-leaning stripe, no box
@@ -750,6 +762,10 @@ class LumiTUI:
         self.turns = 0; self.last_msg = None; self.last_reply = None
         self.prev_reply = None; self.response_mode = None
         self.multiline = False; self._compact = False; self.busy = False
+
+        # Agent planning state (for /agent plans)
+        self.agent_active_objective = None
+        self.agent_tasks = []
 
         # ── Vessel Mode ───────────────────────────────────────────────────────
         self.vessel_mode   = False   # True when acting as a pure AI conduit
@@ -1245,6 +1261,161 @@ def cmd_browse(tui: LumiTUI, arg: str):
     tui.browser_visible = True
     tui.redraw()
 
+@registry.register("/fs", "Filesystem tools: ls/cat/write/rm/mv/mkdir")
+def cmd_fs(tui: LumiTUI, arg: str):
+    parts = arg.strip().split()
+    if not parts or parts[0] in {"help", "?"}:
+        usage = [
+            "Filesystem tools:",
+            "  /fs ls [path]              - list directory contents",
+            "  /fs cat <file>             - show file contents (truncated)",
+            "  /fs mkdir <dir>            - create directory (parents ok)",
+            "  /fs mv <src> <dst>         - move/rename file",
+            "  /fs rm <file> --force      - delete file (no directories)",
+            "  /fs write <file> [text]    - overwrite file with text or last reply code",
+            "  /fs append <file> [text]   - append text or last reply code",
+        ]
+        tui._sys("\n".join(usage))
+        return
+
+    sub = parts[0].lower()
+    rest = parts[1:]
+
+    def _path(p):
+        return Path(p).expanduser().resolve()
+
+    if sub == "ls":
+        target = _path(rest[0]) if rest else Path(".").resolve()
+        if not target.exists():
+            tui._err(f"Not found: {target}")
+            return
+        if target.is_file():
+            size = target.stat().st_size
+            tui._sys(f"{target}  ({size} bytes)")
+            return
+        try:
+            entries = sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+        except Exception as e:
+            tui._err(str(e))
+            return
+        lines = [f"Directory: {target}"]
+        for e in entries[:200]:
+            icon = "󰉋" if e.is_dir() else "󰈔"
+            suffix = "/" if e.is_dir() else ""
+            lines.append(f"  {icon} {e.name}{suffix}")
+        if len(entries) > 200:
+            lines.append(f"  … {len(entries) - 200} more")
+        tui._sys("\n".join(lines))
+        return
+
+    if sub == "cat":
+        if not rest:
+            tui._err("Usage: /fs cat <file>")
+            return
+        target = _path(rest[0])
+        if not target.is_file():
+            tui._err(f"Not a file: {target}")
+            return
+        try:
+            text = target.read_text(errors="replace")
+        except Exception as e:
+            tui._err(str(e))
+            return
+        max_len = 4000
+        body = text if len(text) <= max_len else text[:max_len] + "\n…(truncated)…"
+        tui._sys(f"{target}:\n```text\n{body}\n```")
+        return
+
+    if sub == "mkdir":
+        if not rest:
+            tui._err("Usage: /fs mkdir <dir>")
+            return
+        target = _path(rest[0])
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            tui._notify(f"Created directory: {target}")
+        except Exception as e:
+            tui._err(str(e))
+        return
+
+    if sub == "mv":
+        if len(rest) != 2:
+            tui._err("Usage: /fs mv <src> <dst>")
+            return
+        src, dst = _path(rest[0]), _path(rest[1])
+        if not src.exists():
+            tui._err(f"Not found: {src}")
+            return
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src.rename(dst)
+            tui._notify(f"Moved: {src.name} → {dst}")
+        except Exception as e:
+            tui._err(str(e))
+        return
+
+    if sub == "rm":
+        if not rest:
+            tui._err("Usage: /fs rm <file> --force")
+            return
+        target = _path(rest[0])
+        force = "--force" in rest[1:]
+        if not target.exists():
+            tui._err(f"Not found: {target}")
+            return
+        if target.is_dir():
+            tui._err("Refusing to delete directories. Use /shell for rm -r.")
+            return
+        if any(part.startswith(".git") for part in target.parts):
+            tui._err("Refusing to touch .git content for safety.")
+            return
+        if not force:
+            tui._err("Add --force to confirm: /fs rm <file> --force")
+            return
+        try:
+            target.unlink()
+            tui._notify(f"Deleted: {target}")
+        except Exception as e:
+            tui._err(str(e))
+        return
+
+    def _code_from_last_reply():
+        if not tui.last_reply:
+            return None
+        blocks = re.findall(r"```[a-zA-Z0-9_+\\-]*\\n(.*?)```", tui.last_reply, re.DOTALL)
+        if blocks:
+            return blocks[-1].strip()
+        return tui.last_reply.strip()
+
+    if sub in {"write", "append"}:
+        if not rest:
+            tui._err(f"Usage: /fs {sub} <file> [text]")
+            return
+        target = _path(rest[0])
+        if len(rest) >= 2:
+            content = " ".join(rest[1:])
+        else:
+            content = _code_from_last_reply()
+            if not content:
+                tui._err("No text provided and no last reply to use.")
+                return
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if sub == "write":
+                target.write_text(content, encoding="utf-8")
+                tui._notify(f"Wrote file: {target}")
+            else:
+                with target.open("a", encoding="utf-8") as f:
+                    if target.stat().st_size > 0:
+                        f.write("\n")
+                    f.write(content)
+                tui._notify(f"Appended to: {target}")
+        except Exception as e:
+            tui._err(str(e))
+        return
+
+    tui._err("Unknown /fs subcommand. Use /fs help.")
+
 @registry.register("/file", "󰈔 Load a file into AI context: /file path/to/file")
 def cmd_file(tui: LumiTUI, arg: str):
     if not arg.strip():
@@ -1572,10 +1743,48 @@ def cmd_data(tui: LumiTUI, arg: str):
         tui.last_reply = reply; tui.set_busy(False)
     threading.Thread(target=_go, daemon=True).start()
 
-@registry.register("/agent", "Autonomous multi-step agent")
+@registry.register("/agent", "Plan a multi-step agent workflow")
 def cmd_agent(tui: LumiTUI, arg: str):
-    if not arg.strip(): tui._err("Usage: /agent <task>"); return
-    tui._sys(f"Agent: {arg.strip()}\nUse /godmode for full autonomous execution")
+    objective = arg.strip()
+    if not objective:
+        tui._err("Usage: /agent <objective>"); return
+
+    def _go():
+        tui.set_busy(True)
+        tui._sys(f"◆ Planning agent steps for: {objective}")
+        try:
+            model = tui.current_model if tui.current_model != "council" else get_models(get_provider())[0]
+        except Exception:
+            model = tui.current_model
+
+        prompt = (
+            "You are a planning module for an autonomous developer agent.\n"
+            f"Objective: {objective}\n\n"
+            "Return a concise numbered list of 3–8 concrete steps.\n"
+            "Each step must fit on one line and start with a number and a period, e.g. `1. ...`.\n"
+            "Do NOT add explanations before or after the list."
+        )
+        plan_text = tui._silent_call(prompt, model, max_tokens=256)
+        if not plan_text:
+            tui._err("Agent planning failed."); tui.set_busy(False); return
+
+        steps = []
+        for line in plan_text.splitlines():
+            m = re.match(r'^\s*\d+\.\s+(.*\S)\s*$', line)
+            if m:
+                steps.append(m.group(1))
+        if not steps:
+            steps = [s.strip() for s in plan_text.split("\n") if s.strip()][:5]
+
+        tui.agent_active_objective = objective
+        tui.agent_tasks = [{"text": s, "status": "pending"} for s in steps]
+
+        summary_lines = ["Agent plan:", ""] + [f"  {i+1}. {s}" for i, s in enumerate(steps)]
+        tui._sys("\n".join(summary_lines))
+        tui.set_busy(False)
+        tui.redraw()
+
+    threading.Thread(target=_go, daemon=True).start()
 
 @registry.register("/draft", "Draft email, Slack msg, or text")
 def cmd_draft(tui: LumiTUI, arg: str):
@@ -1725,7 +1934,7 @@ def cmd_project(tui: LumiTUI, arg: str):
 HELP_CATEGORIES = {
     "💬 Chat": ["/clear", "/retry", "/redo", "/undo", "/more", "/rewrite", "/tl;dr", "/summarize", "/translate", "/short", "/detailed", "/bullets", "/multi"],
     "🔧 Code": ["/fix", "/debug", "/explain", "/review", "/improve", "/optimize", "/security", "/refactor", "/test", "/docs", "/types", "/comment", "/run", "/edit"],
-    "📁 Files": ["/file", "/browse", "/find", "/grep", "/tree", "/project"],
+    "📁 Files": ["/file", "/browse", "/find", "/grep", "/tree", "/project", "/fs"],
     "🔀 Git": ["/git", "/pr", "/changelog", "/standup", "/readme"],
     "🌐 Web": ["/search", "/web", "/image", "/data"],
     "🧠 Memory": ["/remember", "/memory", "/forget", "/save", "/load", "/sessions", "/export", "/tokens", "/context"],
