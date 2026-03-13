@@ -5,9 +5,13 @@
 """
 from __future__ import annotations
 
+import concurrent.futures
+import functools
 import io
 import json
+import logging
 import os
+import queue
 import re
 import select
 import shutil
@@ -23,6 +27,17 @@ import urllib.request
 from contextlib import redirect_stdout
 from datetime import datetime
 from pathlib import Path
+
+# ── Logging setup (file only — never pollutes the TUI) ───────────────────────
+_LOG_DIR = Path.home() / ".lumi"
+_LOG_DIR.mkdir(exist_ok=True)
+logging.basicConfig(
+    filename=str(_LOG_DIR / "lumi.log"),
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("lumi")
 
 ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(ROOT))
@@ -111,7 +126,8 @@ TEAL = "#2ac3de"
 def B(h): return _fg(h) + _bold()
 R = _reset()
 
-SPINNER_FRAMES = list("⠋⠙⠚⠞⠖⠦⠴⠲⠳⠓")
+SPINNER_FRAMES = list("⠋⠙⠚⠞⠦⠴⠲⠳⠓⠋")
+PULSE_DOTS = ["   ", "·  ", " · ", "  ·", "···"]
 
 PROV_NAME = {
     "gemini": "Gemini", "groq": "Groq", "openrouter": "OpenRouter",
@@ -137,10 +153,14 @@ def _read_file(path: str) -> str:
     return Path(path).expanduser().read_text(errors="replace")
 
 _KW = r'\b(def|class|return|import|from|if|elif|else|for|while|in|not|and|or|True|False|None|try|except|with|as|pass|break|continue|raise|yield|lambda|async|await|int|float|void|char|bool|double|auto|const|static|public|private|protected|virtual|override|namespace|using|std|cout|cin|cerr|endl|vector|string|map|set|list|new|delete|this)\b'
+# Pre-compiled once — never rebuilt per line
+_SYNTAX_RE = re.compile(
+    rf'(?P<str>"[^"]*"|\'[^\']*\')|(?P<com>//.*|#.*)|(?P<num>\b\d+\b)|(?P<kw>{_KW})|(?P<ws>\s+)|(?P<other>.)'
+)
 
 def _syntax_hi(line):
     out = ""
-    tokens = re.finditer(rf'(?P<str>"[^"]*"|\'[^\']*\')|(?P<com>//.*|#.*)|(?P<num>\b\d+\b)|(?P<kw>{_KW})|(?P<ws>\s+)|(?P<other>.)', line)
+    tokens = _SYNTAX_RE.finditer(line)
     for t in tokens:
         g = t.lastgroup
         if g == 'str': out += _fg(YELLOW) + t.group() + R
@@ -330,24 +350,52 @@ class Renderer:
         lines =[]
         inner = max(30, width - 6)
         if not msgs:
-            title = "Lumi TUI"
-            subtitle = "agent console"
             ver = "v0.3.3"
-            bar = "─" * max(10, min(width - 6, 32))
 
-            center = max(0, (width - _visible_len(bar)) // 2)
-            lines.append(" " * center + _fg(BLUE) + bar + R)
-            tline = f"{title}  {_fg(MUTED)}{ver}{R}"
-            tpad = max(0, width - _visible_len(tline) - center * 2)
-            lines.append(" " * center + B(FG_HI) + title + "  " + _fg(MUTED) + ver + R + " " * tpad)
-            sline = subtitle
-            spad = max(0, width - _visible_len(sline) - center * 2)
-            lines.append(" " * center + _fg(MUTED) + sline + R + " " * spad)
-            lines.append(" " * center + _fg(BLUE) + bar + R)
+            # ── Braille ruby gem ─────────────────────────────────────────────
+            P  = _fg(PURPLE)
+            C  = _fg(CYAN)
+            BL = _fg(BLUE)
+            T  = _fg(TEAL)
+
+            sprite = [
+                (C  + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R, 30),
+                (C  + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣴⠋⠙⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R, 30),
+                (C  + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣾⠃⠀⠀⠘⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R,  30),
+                (P  + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⠇⠀⠀⠀⠀⠸⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R, 30),
+                (P  + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠀⠀⠀⠀⠀⠀⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R, 30),
+                (P  + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠀⠀⠀⠀⠀⠀⣿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R, 30),
+                (BL + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢿⠀⠀⠀⠀⠀⠀⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R, 30),
+                (BL + "⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣤⣾⣶⠶⠶⠶⠶⣶⣷⣤⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀" + R, 30),
+                (BL + "⠀⠀⠀⠀⠀⢀⣠⠶⠋⠉⠀⠀⢻⣆⠀⠀⣰⡟⠀⠀⠉⠙⠶⣄⡀⠀⠀⠀⠀⠀" + R, 30),
+                (T  + "⠀⠀⠀⠀⣴⠟⠁⠀⠀⠀⠀⠀⠀⠻⣦⣴⠟⠀⠀⠀⠀⠀⠀⠈⠻⣦⠀⠀⠀⠀" + R, 30),
+                (T  + "⠀⠀⢀⡾⠁⠀⠀⠀⠀⠀⠀⠀⢀⣴⠟⠻⣦⡀⠀⠀⠀⠀⠀⠀⠀⠈⢷⡀⠀⠀" + R, 30),
+                (T  + "⠀⢠⣿⠁⠀⠀⠀⠀⢀⣀⣤⠾⠛⠁⠀⠀⠈⠛⠷⣤⣀⡀⠀⠀⠀⠀⠈⣿⡄⠀" + R, 30),
+                (T  + "⠀⠘⠛⠓⠒⠒⠛⠛⠉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠛⠛⠒⠒⠚⠛⠃⠀" + R, 30),
+            ]
+            anchor_w = 30
+
+            sub_vis = f"lumi  {ver}"
+            anchor_w = max(anchor_w, len(sub_vis))
+            cpad = max(0, (width - anchor_w) // 2)
 
             chat_rows = _term_size()[0] - 4
-            pad_mid = max(2, chat_rows - len(lines) - 2)
-            lines += [""] * pad_mid
+            top_pad = max(2, (chat_rows - len(sprite) - 4) // 2)
+            lines += [""] * top_pad
+
+            for row_str, row_w in sprite:
+                spad = (anchor_w - row_w) // 2
+                lines.append(" " * cpad + " " * spad + row_str)
+
+            lines.append("")
+            wpad = (anchor_w - len(sub_vis)) // 2
+            lines.append(
+                " " * cpad + " " * wpad +
+                B(FG_HI) + "lumi" + R +
+                _fg(BORDER) + "  " + ver + R
+            )
+
+            lines += [""] * max(0, chat_rows - len(lines) - 1)
             return lines
 
         # Optional pinned agent plan panel (from /agent)
@@ -364,27 +412,39 @@ class Renderer:
 
         for msg in msgs:
             if msg.role == "user":
-                # User: simple right-leaning stripe, no box
-                u_pre = "  " + _fg(BORDER) + "┃ " + _fg(FG_DIM)
-                head = f"[you · {msg.ts}]"
-                lines.append(u_pre + head + R)
+                # Gemini-style: just indented text, no rail
+                lines.append("  " + _fg(FG_DIM) + "you  " + _fg(COMMENT) + msg.ts + R)
                 for ln in textwrap.wrap(msg.text, inner) or [msg.text]:
-                    lines.append("  " + _fg(BORDER) + "┃ " + _fg(FG_HI) + ln + R)
+                    lines.append("  " + _fg(FG_HI) + ln + R)
                 lines.append("")
 
             elif msg.role in ("assistant", "streaming"):
-                label = msg.label or "󰚩 Lumi"
-                cursor = (" " + _fg(CYAN) + "▋" + R) if msg.role == "streaming" else ""
-                
+                label = msg.label or "◆ Lumi"
+                is_stream = msg.role == "streaming"
+                t_now = time.time()
+                # Animated streaming cursor block
+                if is_stream:
+                    blink_on = int(t_now * 4) % 2 == 0
+                    cursor = (" " + _fg(CYAN) + ("▋" if blink_on else " ") + R)
+                else:
+                    cursor = ""
+
                 if self.tui.vessel_mode and self.tui.active_vessel:
+                    rail_col = RED
                     hdr_col = B(RED)
                     if "vessel" not in label:
-                        label = f"󰚩 Vessel [{self.tui.active_vessel}]"
+                        label = f"◈ Vessel [{self.tui.active_vessel}]"
                 else:
+                    rail_col = PURPLE
                     hdr_col = B(PURPLE)
-                    
-                a_pre = "  " + _fg(BORDER) + "┃ "
-                lines.append(a_pre + hdr_col + label + R + "  " + _fg(COMMENT) + msg.ts + R)
+
+                a_pre = "  "
+                # Header: minimal label + faint timestamp
+                lines.append(
+                    "  " +
+                    hdr_col + label + R +
+                    "  " + _fg(COMMENT) + msg.ts + R
+                )
                 raw_lines = msg.text.split("\n") if msg.text else [""]
                 
                 in_code = False
@@ -396,20 +456,36 @@ class Renderer:
                         if not in_code:
                             in_code = True
                             code_lang = ln[3:].strip()
-                            lt = f" {code_lang} " if code_lang else ""
-                            # Completely flat codeblock start (no borders, just padded code)
-                            lines.append(lpre + _bg(BG_DARK) + _fg(CYAN) + (lt if lt else " code ") + " " * max(0, code_w - len(lt if lt else " code ")) + R)
+                            lt = f" {code_lang}" if code_lang else " code"
+                            lang_badge = _fg(CYAN) + _bold() + lt + R
+                            bar_fill = "─" * max(0, code_w - len(lt) - 1)
+                            lines.append(
+                                lpre +
+                                _fg(BORDER) + "╭" + _fg(TEAL) + "─" + R +
+                                lang_badge +
+                                _fg(BORDER) + " " + bar_fill + "╮" + R
+                            )
+                            _code_lineno = [0]  # mutable counter
                         else:
                             in_code = False
-                            lines.append(lpre + _bg(BG_DARK) + " " * code_w + R)
+                            bar_fill = "─" * max(0, code_w)
+                            lines.append(
+                                lpre + _fg(BORDER) + "╰" + bar_fill + "╯" + R
+                            )
                         continue
                         
                     if in_code:
-                        mcc = code_w - 4
-                        for sl in (textwrap.wrap(ln, mcc) if len(ln) > mcc else [ln]) or[""]:
+                        _code_lineno[0] += 1
+                        lineno_str = _fg(BORDER) + f"{_code_lineno[0]:>3} " + R
+                        mcc = code_w - 6
+                        for sl in (textwrap.wrap(ln, mcc) if len(ln) > mcc else [ln]) or [""]:
                             hi = _syntax_hi(sl)
-                            pad = max(0, code_w - _visible_len(sl) - 2)
-                            lines.append(lpre + _bg(BG_DARK) + "  " + hi + _bg(BG_DARK) + " " * pad + R)
+                            pad = max(0, mcc - _visible_len(sl))
+                            lines.append(
+                                lpre + _bg(BG_DARK) + lineno_str +
+                                hi + _bg(BG_DARK) + " " * pad + R
+                            )
+                            lineno_str = _fg(BORDER) + "    " + R  # continuation lines no number
                         continue
                         
                     # Standard Markdown Formatting inside AI Bubbles
@@ -422,10 +498,17 @@ class Renderer:
                         
                     elif ln.startswith("> "):
                         body = ln[2:]
-                        lines.append(lpre + _fg(MUTED) + "▍ " + _italic() + _fg(FG_DIM) + body + R)
+                        lines.append(lpre + _fg(TEAL) + "▍" + _italic() + _fg(FG_DIM) + " " + body + R)
                     elif re.match(r"^[-*•] ", ln):
                         body = ln[2:]
-                        lines.append(lpre + _fg(PURPLE) + "• " + _fg(FG) + body + R)
+                        lines.append(lpre + _fg(CYAN) + "  ◦ " + _fg(FG) + body + R)
+                    elif re.match(r"^\d+\. ", ln):
+                        m = re.match(r'^(\d+)\. (.*)', ln)
+                        if m:
+                            num, body = m.group(1), m.group(2)
+                            lines.append(lpre + _fg(PURPLE) + _bold() + f"  {num}." + R + " " + _fg(FG) + body + R)
+                        else:
+                            lines.append(lpre + _fg(FG) + ln + R)
                     elif ln.strip() == "":
                         lines.append(lpre)
                     else:
@@ -448,7 +531,7 @@ class Renderer:
                 lines.append("")
 
             elif msg.role == "error":
-                lines.append("  " + _fg(RED) + _bold() + "⚠  " + R + _fg(RED) + msg.text + R)
+                lines.append("  " + _fg(RED) + "⚠  " + msg.text + R)
                 lines.append("")
 
         return lines
@@ -478,7 +561,11 @@ class Renderer:
         tui = self.tui
         pname = PROV_NAME.get(tui.current_model if tui.current_model == "council" else get_provider(), get_provider())
         model = tui.current_model.split("/")[-1][:22]
-        toks = sum(_tok(m["content"]) for m in tui.memory.get())
+        mem = tui.memory.get()
+        if len(mem) != tui._cached_tok_len:
+            tui._cached_tok_count = sum(_tok(m["content"]) for m in mem)
+            tui._cached_tok_len = len(mem)
+        toks = tui._cached_tok_count
 
         mode = f" {tui.response_mode}" if tui.response_mode else ""
 
@@ -518,19 +605,11 @@ class Renderer:
             )
 
         # Top line: hint on the left, model/status on the right
-        hint_plain = "hint: /help · Tab for commands"
+        hint_plain = "  /help · Tab · Ctrl+R · Ctrl+Q"
         hint_colored = (
-            _fg(MUTED)
-            + "hint: "
-            + _fg(CYAN)
-            + "/help"
-            + _fg(MUTED)
-            + " · "
-            + _fg(BLUE)
-            + "Tab"
-            + _fg(MUTED)
-            + " for commands"
-            + R
+            _fg(BORDER) + "  " +
+            _fg(MUTED) + "/help · Tab · Ctrl+R · Ctrl+Q" +
+            R
         )
 
         hint_len = _visible_len(hint_plain)
@@ -548,13 +627,14 @@ class Renderer:
 
         top = _move(rows - 1, 1) + _bg(BG) + _erase_line() + top_line + R
 
-        # Sleek glowing prompt chevron with animated spinner when busy
+        # Prompt chevron
+        t_now = time.time()
         if tui.busy:
-            frame = int(time.time() * 12) % len(SPINNER_FRAMES)
-            sym = _fg(CYAN) + SPINNER_FRAMES[frame] + " " + R
-            hint = _fg(MUTED) + _italic() + " thinking…" + R
+            frame = int(t_now * 10) % len(SPINNER_FRAMES)
+            sym  = _fg(CYAN) + SPINNER_FRAMES[frame] + " " + R
+            hint = _fg(MUTED) + _italic() + "thinking" + PULSE_DOTS[int(t_now * 2) % len(PULSE_DOTS)] + R
         else:
-            sym = _fg(BLUE) + _bold() + "❯ " + R
+            sym  = _fg(BLUE) + _bold() + "❯ " + R
             hint = ""
 
         txt = tui.buf
@@ -586,14 +666,14 @@ class Renderer:
         else:
             local_sel = -1
             
-        out = [_move(top, left) + _bg(BG) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
+        out = [_move(top, left) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
         
         # Header (shows CWD)
         cwd = tui.browser_cwd
         if len(cwd) > pop_w - 6: cwd = "..." + cwd[-(pop_w - 9):]
         pad = max(0, pop_w - 4 - len(cwd))
-        out.append(_move(top + 1, left) + _bg(BG) + _fg(BORDER) + "│ " + B(PURPLE) + cwd + " " * pad + _fg(BORDER) + " │" + R)
-        out.append(_move(top + 2, left) + _bg(BG) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
+        out.append(_move(top + 1, left) + _fg(BORDER) + "│ " + _fg(BLUE) + cwd + " " * pad + _fg(BORDER) + " │" + R)
+        out.append(_move(top + 2, left) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
         
         row = top + 3
         for i, item in enumerate(disp_items):
@@ -614,133 +694,115 @@ class Renderer:
             out.append(
                 _move(row, left)
                 + _bg(BG)
-                + _fg(BORDER)
-                + "│ "
+                + _fg(BORDER) + "│ "
                 + bg_
-                + color
-                + icon
-                + " "
-                + name_color
-                + pointer
-                + disp_name
-                + " " * max(0, sp - 2)
-                + R
-                + _bg(BG)
-                + _fg(BORDER)
-                + " │"
-                + R
+                + color + icon + " "
+                + name_color + pointer + disp_name
+                + " " * max(0, sp - 2) + R
+                + _fg(BORDER) + " │" + R
             )
             row += 1
             
         # Empty space padding if list is short
         while row < top + pop_h - 1:
-            out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "│ " + " " * (pop_w - 4) + " │" + R)
+            out.append(_move(row, left) + _fg(BORDER) + "│ " + " " * (pop_w - 4) + " │" + R)
             row += 1
             
-        out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
+        out.append(_move(row, left) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
         row += 1
-        bot_txt = "Esc Close · ↑↓ Move · Enter/→ Open/Inject · ← Back"
-        out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "│ " + _fg(COMMENT) + bot_txt + " " * max(0, pop_w - 4 - len(bot_txt)) + _fg(BORDER) + " │" + R)
+        bot_txt = "Esc Close  ·  ↑↓ Move  ·  Enter/→ Open  ·  ← Back"
+        out.append(_move(row, left) + _fg(BORDER) + "│ " + _fg(COMMENT) + bot_txt + " " * max(0, pop_w - 4 - len(bot_txt)) + _fg(BORDER) + " │" + R)
         row += 1
-        out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
+        out.append(_move(row, left) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
         
         return "".join(out)
 
     def _slash_popup(self, rows, cols):
-        hits = self.tui.slash_hits; sel = self.tui.slash_sel; pop_w = min(56, cols - 4)
+        hits = self.tui.slash_hits; sel = self.tui.slash_sel; pop_w = min(58, cols - 4)
         n = min(len(hits), 10); top = rows - 2 - n - 2; left = max(2, (cols - pop_w) // 2)
-        out =[_move(top, left) + _bg(BG) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
+        out = [_move(top, left) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
         for i, (cmd, desc) in enumerate(hits[:10]):
             is_sel = (i == sel)
-            bg_ = _bg(BG_HL) if is_sel else _bg(BG)
             cc = _fg(CYAN) + _bold() if is_sel else _fg(BLUE)
-            dc = _fg(FG) if is_sel else _fg(MUTED)
+            dc = _fg(FG_HI) if is_sel else _fg(MUTED)
+            bg_ = _bg(BG_HL) if is_sel else _bg(BG)
             d_cmd = f"{cmd[:15]:<16}"
-            d_desc = desc[:max(0, pop_w - 24)]
+            d_desc = desc[:max(0, pop_w - 26)]
             pad2 = max(0, pop_w - 22 - len(d_desc))
             pointer = "› " if is_sel else "  "
             out.append(
                 _move(top + 1 + i, left)
-                + _bg(BG)
-                + _fg(BORDER)
-                + "│ "
-                + bg_
-                + cc
-                + pointer
-                + d_cmd
-                + R
-                + bg_
-                + dc
-                + d_desc
-                + " " * pad2
-                + R
-                + _bg(BG)
-                + _fg(BORDER)
-                + " │"
-                + R
+                + _fg(BORDER) + "│ "
+                + bg_ + cc + pointer + d_cmd + R
+                + bg_ + dc + d_desc + " " * pad2 + R
+                + _fg(BORDER) + " │" + R
             )
-        out.append(_move(top + 1 + n, left) + _bg(BG) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
+        out.append(_move(top + 1 + n, left) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
         return "".join(out)
 
     def _picker_popup(self, rows, cols):
         items = self.tui.picker_items; sel = self.tui.picker_sel
         pop_w = min(64, cols - 4)
         left = max(2, (cols - pop_w) // 2); top = max(2, (rows - len(items) - 5) // 2)
-        out =[_move(top, left) + _bg(BG) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
-        tp = max(0, pop_w - 2 - 20)
-        out.append(_move(top + 1, left) + _bg(BG) + _fg(BORDER) + "│" + B(PURPLE) + " Model / Provider   " + " " * tp + _fg(BORDER) + "│" + R)
-        out.append(_move(top + 2, left) + _bg(BG) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
+        out = [_move(top, left) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
+        header_txt = " model · provider"
+        tp = max(0, pop_w - 2 - len(header_txt))
+        out.append(
+            _move(top + 1, left) +
+            _fg(BORDER) + "│" +
+            _fg(MUTED) + header_txt + " " * tp +
+            _fg(BORDER) + "│" + R
+        )
+        out.append(_move(top + 2, left) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
         row = top + 3
         for i, (kind, value, label) in enumerate(items):
             if kind == "header":
                 lbl = label[:pop_w - 6]
                 sp = max(0, pop_w - 4 - len(lbl))
-                out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "│ " + B(COMMENT) + lbl + " " * sp + _fg(BORDER) + " │" + R)
+                out.append(
+                    _move(row, left) + _fg(BORDER) + "│ " +
+                    _fg(COMMENT) + lbl + " " * sp +
+                    _fg(BORDER) + " │" + R
+                )
             else:
                 is_sel = (i == sel)
                 dot = "●" if is_sel else "○"
                 bg_ = _bg(BG_HL) if is_sel else _bg(BG)
                 lc = B(CYAN) if is_sel else _fg(FG_DIM)
                 vcol = PROV_COL.get(value, FG) if kind == "provider" else FG
-                # leave space for pointer, dot, and padding
                 lbl = label[: pop_w - 12]
-                text_block = f"{dot} {lbl}"
-                pp = max(0, pop_w - 6 - len(text_block))
+                pp = max(0, pop_w - 8 - len(lbl))
                 pointer = "› " if is_sel else "  "
                 out.append(
                     _move(row, left)
-                    + _bg(BG)
-                    + _fg(BORDER)
-                    + "│ "
-                    + bg_
-                    + lc
-                    + pointer
-                    + dot
-                    + " "
-                    + _fg(vcol if is_sel else FG_DIM)
-                    + lbl
-                    + " " * pp
-                    + R
-                    + _bg(BG)
-                    + _fg(BORDER)
-                    + " │"
-                    + R
+                    + _fg(BORDER) + "│ "
+                    + bg_ + lc + pointer + dot + " "
+                    + _fg(vcol if is_sel else FG_DIM) + lbl
+                    + " " * pp + R
+                    + _fg(BORDER) + " │" + R
                 )
             row += 1
-        out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
+        out.append(_move(row, left) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
         row += 1
-        bot_txt = "Esc Close · ↑↓ Move · Enter Mount"
-        out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "│ " + _fg(COMMENT) + bot_txt + " " * max(0, pop_w - 4 - len(bot_txt)) + _fg(BORDER) + " │" + R)
+        bot_txt = "Esc Close  ·  ↑↓ Navigate  ·  Enter Mount"
+        out.append(
+            _move(row, left) + _fg(BORDER) + "│ " +
+            _fg(MUTED) + bot_txt + " " * max(0, pop_w - 4 - len(bot_txt)) +
+            _fg(BORDER) + " │" + R
+        )
         row += 1
-        out.append(_move(row, left) + _bg(BG) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
+        out.append(_move(row, left) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
         return "".join(out)
 
     def _notification_bar(self, rows, cols):
         msg = self.tui.notification
-        pop_w = min(len(msg) + 6, cols - 4)
-        left = max(1, cols - pop_w - 2)
-        disp_msg = msg[:max(0, pop_w - 6)]
-        return _move(rows - 3, left) + _bg(BG) + _fg(CYAN) + " ╭─ " + _fg(FG_HI) + disp_msg + _fg(CYAN) + " ─╮" + R
+        inner = msg[:max(0, cols - 12)]
+        left = max(1, cols - len(inner) - 8)
+        return (
+            _move(rows - 3, left) +
+            _fg(BORDER) + "╭─ " + _fg(CYAN) + "◆ " + _fg(FG_HI) + inner +
+            _fg(BORDER) + " ─╮" + R
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -749,12 +811,18 @@ class Renderer:
 class LumiTUI:
     def __init__(self):
         self._state_lock = threading.Lock()
+        self._task_executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="lumi")
+        self._active_task: concurrent.futures.Future | None = None
         self.store = Store(); self.agents =[]
+        self._cached_tok_count: int = 0
+        self._cached_tok_len: int = 0   # len(memory) when last computed
         self.buf = ""; self.cur_pos = 0; self.scroll_offset = 0
         self.slash_hits =[]; self.slash_sel = 0; self.slash_visible = False
         self.picker_items =[]; self.picker_sel = 0; self.picker_visible = False
         self.notification = ""; self._notif_timer = None; self._running = False
-        self._input_hist =[]; self._hist_idx = -1; self._hist_draft = ""
+        self._hist_file = _LOG_DIR / "history"
+        self._input_hist = self._load_history()
+        self._hist_idx = -1; self._hist_draft = ""
 
         self.memory = ShortTermMemory(max_turns=20); self.persona = {}
         self.persona_override = {}; self.system_prompt = ""; self.client = None
@@ -893,7 +961,9 @@ class LumiTUI:
                 if chunk.startswith("\n\n__STATS__\n"): continue
                 if chunk.startswith("\n\n__REFINED__\n\n"): refined = chunk[len("\n\n__REFINED__\n\n"):]; continue
                 full += chunk; self.store.append(idx, chunk); self.redraw()
-        except Exception as ex: self.store.set_text(idx, f"⚠  {ex}"); self.store.finalize(idx); return f"⚠  {ex}"
+        except Exception as ex:
+            log.exception("Council stream failed")
+            self.store.set_text(idx, f"⚠  {ex}"); self.store.finalize(idx); return f"⚠  {ex}"
         if refined: self.store.set_text(idx, refined or full)
         self.store.finalize(idx); return refined or full
 
@@ -919,23 +989,43 @@ class LumiTUI:
 
     def _silent_call(self, prompt, model, max_tokens=8192):
         try: return self.client.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}], max_tokens=max_tokens, temperature=0.3, stream=False).choices[0].message.content.strip()
-        except: return ""
+        except Exception:
+            log.exception("Silent call failed")
+            return ""
 
     def _guardian_loop(self):
+        """Background code-quality watcher. Off by default; enable with /guardian on.
+        Uses a 5-minute interval and only runs when guardian_enabled is set."""
+        INTERVAL = 300  # 5 minutes — not every 30 seconds
         while getattr(self, "_running", True):
-            time.sleep(30)
-            if not getattr(self, "_running", True): break
-            if not hasattr(self, "guardian_enabled"): self.guardian_enabled = True
-            if not self.guardian_enabled: continue
-            
+            # Sleep in short chunks so we respond quickly to shutdown
+            for _ in range(INTERVAL):
+                if not getattr(self, "_running", True):
+                    return
+                time.sleep(1)
+
+            if not getattr(self, "guardian_enabled", False):
+                continue  # opt-in only
+
             msgs = []
-            if shutil.which("ruff"):
-                r = subprocess.run(["ruff", "check", ".", "--output-format=concise"], capture_output=True, text=True)
-                if r.returncode != 0: msgs.append("ruff errors")
-            if shutil.which("pytest"):
-                r = subprocess.run(["pytest", "-q"], capture_output=True, text=True)
-                if r.returncode != 0: msgs.append("pytest failing")
-            
+            try:
+                if shutil.which("ruff"):
+                    r = subprocess.run(
+                        ["ruff", "check", ".", "--output-format=concise"],
+                        capture_output=True, text=True, timeout=30
+                    )
+                    if r.returncode != 0:
+                        msgs.append("ruff errors")
+                if shutil.which("pytest"):
+                    r = subprocess.run(
+                        ["pytest", "-q", "--tb=no", "-x"],
+                        capture_output=True, text=True, timeout=60
+                    )
+                    if r.returncode != 0:
+                        msgs.append("pytest failing")
+            except Exception:
+                log.exception("Guardian check failed")
+
             if msgs:
                 self._notify(f"⚠ Guardian: {', '.join(msgs)}")
 
@@ -947,7 +1037,9 @@ class LumiTUI:
 
         try:
             p = get_provider(); self.current_model = get_models(p)[0]; self.client = get_client()
-        except: self.current_model = "unknown"; self.client = None
+        except Exception:
+            log.exception("Failed to load provider/model")
+            self.current_model = "unknown"; self.client = None
 
         self._loaded_plugins = load_plugins()
         for md_path in[Path("LUMI.md"), Path("lumi.md")]:
@@ -957,11 +1049,13 @@ class LumiTUI:
         self.original_termios = old
         def _cleanup(*_):
             try: termios.tcsetattr(fd, termios.TCSADRAIN, old)
-            except: pass
+            except Exception:
+                log.debug("Cleanup termios failed")
             sys.stdout.write(_show_cur() + _alt_off()); sys.stdout.flush()
 
         try: signal.signal(signal.SIGWINCH, lambda *_: self.redraw())
-        except: pass
+        except Exception:
+            log.debug("SIGWINCH not supported")
         signal.signal(signal.SIGTERM, lambda *_: (_cleanup(), sys.exit(0)))
 
         try:
@@ -976,8 +1070,14 @@ class LumiTUI:
         except KeyboardInterrupt: pass
         finally:
             try: session_save(self.memory.get())
-            except: pass
+            except Exception:
+                log.exception("Session save failed")
+            try:
+                self._task_executor.shutdown(wait=False)
+            except Exception:
+                pass
             _cleanup()
+            log.info("Lumi exited cleanly")
 
     def _handle_key(self, key):
         if not key: return
@@ -998,7 +1098,10 @@ class LumiTUI:
             self.turns = 0; self.set_busy(False); self.buf = ""; self.cur_pos = self.scroll_offset = 0
             self.slash_visible = self.picker_visible = False
             self._sys("Chat cleared."); return
-        if key == "CTRL_R": threading.Thread(target=self._do_retry, daemon=True).start(); return
+        if key == "CTRL_R":
+            if not (self._active_task and not self._active_task.done()):
+                self._active_task = self._task_executor.submit(self._do_retry)
+            return
         if key == "CTRL_U": self.buf = ""; self.cur_pos = 0; self.slash_visible = False; return
 
         if key == "UP":
@@ -1041,11 +1144,17 @@ class LumiTUI:
                 self._execute_command(cmd, ""); return
             text = self.buf.strip(); self.buf = ""; self.cur_pos = 0; self.slash_visible = False; self._hist_idx = -1
             if text and not self.busy:
-                if text not in (self._input_hist[-1:] or [""]): self._input_hist.append(text)
+                if text not in (self._input_hist[-1:] or [""]):
+                    self._input_hist.append(text)
+                    self._save_history_entry(text)
                 if text.startswith("/"):
                     parts = text.split(None, 1)
                     self._execute_command(parts[0].lower(), parts[1] if len(parts) > 1 else "")
-                else: threading.Thread(target=self._run_message, args=(text,), daemon=True).start()
+                else:
+                    if self._active_task and not self._active_task.done():
+                        self._err("Still busy — wait for the current reply.")
+                    else:
+                        self._active_task = self._task_executor.submit(self._run_message, text)
             return
 
         if key == "BACKSPACE":
@@ -1097,6 +1206,22 @@ class LumiTUI:
             q = self.buf.lower(); self.slash_hits = registry.get_hits(q); self.slash_sel = 0; self.slash_visible = bool(self.slash_hits)
         else: self.slash_visible = False
 
+    def _load_history(self) -> list:
+        try:
+            if self._hist_file.exists():
+                lines = self._hist_file.read_text(encoding="utf-8").splitlines()
+                return [l for l in lines if l.strip()][-500:]
+        except Exception:
+            log.exception("Failed to load history")
+        return []
+
+    def _save_history_entry(self, text: str):
+        try:
+            with self._hist_file.open("a", encoding="utf-8") as f:
+                f.write(text.replace("\n", " ") + "\n")
+        except Exception:
+            log.exception("Failed to save history entry")
+
     def _hist_nav(self, direction):
         if not self._input_hist: return
         if self._hist_idx == -1: self._hist_draft = self.buf
@@ -1131,7 +1256,8 @@ class LumiTUI:
                 if results_text and not results_text.startswith("[No"):
                     augmented = f"{augmented}\n\n[Web search results:]\n{results_text}\n[Use the above to inform your answer. Cite sources.]"
                     self._sys("◆  found web results")
-            except: pass
+            except Exception:
+                log.exception("Web search failed")
 
         cmd = user_input.split()[0] if user_input.startswith("/") else None
         if cmd:
@@ -1143,13 +1269,25 @@ class LumiTUI:
         if len(self.memory.get()) > 15 and self.turns % 10 == 0 and self.turns > 0:
             def _compress():
                 try:
-                    old = self.memory.get()[:-4]
-                    if not old: return
+                    snapshot = self.memory.get()[:-4]
+                    if not snapshot: return
                     m = self.current_model if self.current_model != "council" else get_models(get_provider())[0]
-                    summ = self._silent_call("Summarize this conversation briefly:\n\n" + "\n".join(f"{x['role']}: {x['content'][:200]}" for x in old), m, 200)
-                    if summ: self.memory._history = [{"role": "system", "content": f"[Summary]: {summ}"}] + self.memory._history[-4:]
-                except: pass
-            threading.Thread(target=_compress, daemon=True).start()
+                    summ = self._silent_call(
+                        "Summarize this conversation briefly:\n\n" +
+                        "\n".join(f"{x['role']}: {x['content'][:200]}" for x in snapshot), m, 200
+                    )
+                    if summ:
+                        # Lock before mutating shared history
+                        with self._state_lock:
+                            self.memory._history = (
+                                [{"role": "system", "content": f"[Summary]: {summ}"}]
+                                + self.memory._history[-4:]
+                            )
+                            self._cached_tok_len = -1  # invalidate token cache
+                        log.debug("Memory compressed to summary + last 4 messages")
+                except Exception:
+                    log.exception("Memory compression failed")
+            self._task_executor.submit(_compress)
 
         self.last_msg = user_input
         self.store.add(Msg("user", user_input)); self.memory.add("user", augmented)
@@ -1163,13 +1301,18 @@ class LumiTUI:
         self.prev_reply = self.last_reply; self.last_reply = raw_reply
         self.turns += 1; self.set_busy(False)
 
-        if self.turns % 5 == 0: threading.Thread(target=lambda: session_save(self.memory.get()), daemon=True).start()
+        if self.turns % 5 == 0:
+            self._task_executor.submit(lambda: session_save(self.memory.get()))
         if self.turns % 8 == 0:
             def _bg_remember():
                 try:
-                    if auto_extract_facts(self.client, self.current_model, self.memory.get()): self.system_prompt = self._make_system_prompt()
-                except: pass
-            threading.Thread(target=_bg_remember, daemon=True).start()
+                    if auto_extract_facts(self.client, self.current_model, self.memory.get()):
+                        with self._state_lock:
+                            self.system_prompt = self._make_system_prompt()
+                        log.debug("Auto-remember: system prompt updated")
+                except Exception:
+                    log.exception("Auto-remember failed")
+            self._task_executor.submit(_bg_remember)
 
     def _run_file_agent(self, user_input, sp):
         self._sys("◆  generating file plan…"); self.redraw()
@@ -1211,7 +1354,8 @@ class LumiTUI:
             if models:
                 items.append(("header", "", f"Models ({PROV_NAME.get(get_provider(), get_provider())})"))
                 for m in models[:16]: items.append(("model", m, m.split("/")[-1]))
-        except: pass
+        except Exception:
+            log.exception("Picker open failed")
         self.picker_items = items; self.picker_sel = 0; self.picker_visible = True
 
     def _confirm_picker(self):
@@ -1223,7 +1367,8 @@ class LumiTUI:
             else:
                 try:
                     set_provider(value); self.client = get_client(); ms = get_models(value); self.current_model = ms[0] if ms else ""; self._open_picker(); return
-                except: pass
+                except Exception:
+                    log.exception("Provider switch failed")
             self._sys(f"Provider → {PROV_NAME.get(self.current_model, self.current_model)}")
         elif kind == "model": self.current_model = value; self._notify(f"Model → {value.split('/')[-1]}")
         self.picker_visible = False
@@ -1241,7 +1386,9 @@ class LumiTUI:
 #  Commands / Utilities Massive Implementation Restoration List
 # ══════════════════════════════════════════════════════════════════════════════
 def bg_task(func):
-    def wrapper(tui, arg): threading.Thread(target=func, args=(tui, arg), daemon=True).start()
+    """Decorator that runs a command in the TUI's thread pool instead of spawning bare threads."""
+    def wrapper(tui: "LumiTUI", arg: str):
+        tui._task_executor.submit(func, tui, arg)
     return wrapper
 
 @registry.register("/clear", "Clear conversation")
@@ -1464,7 +1611,9 @@ def cmd_load(tui: LumiTUI, arg: str):
     except Exception as e: tui._err(str(e))
 
 @registry.register("/retry", "Retry last prompt")
-def cmd_retry(tui: LumiTUI, arg: str): threading.Thread(target=tui._do_retry, daemon=True).start()
+def cmd_retry(tui: LumiTUI, arg: str):
+    if not (tui._active_task and not tui._active_task.done()):
+        tui._active_task = tui._task_executor.submit(tui._do_retry)
 
 @registry.register("/more", "Expand upon previous details")
 @bg_task
@@ -2160,7 +2309,8 @@ def cmd_readme(tui: LumiTUI, arg: str):
             fp = Path(path) / fname
             if fp.exists():
                 try: main_code = f"\n\n{fname}:\n```\n{fp.read_text()[:2000]}\n```"
-                except: pass
+                except Exception:
+                    log.debug("Could not read main file for readme")
                 break
         msg = (f"Generate a comprehensive README.md.\n\nFiles:\n{struct}{main_code}\n\n"
                f"Include: title, description, features, installation, usage, API docs, contributing, license.")
@@ -2221,7 +2371,9 @@ def cmd_standup(tui: LumiTUI, arg: str):
             from src.utils.todo import todo_list as _tlist
             todos = [t for t in _tlist() if not t.get("done")]
             todo_txt = "\n".join(f"- {t['text']}" for t in todos[:10]) or "No pending todos"
-        except: todo_txt = "No pending todos"
+        except Exception:
+            log.debug("Could not read todo file")
+            todo_txt = "No pending todos"
         msg = (f"Generate a short daily standup (Yesterday / Today / Blockers).\n\n"
                f"Recent commits:\n{log}\n\nPending todos:\n{todo_txt}")
         tui.memory.add("user", msg)
@@ -2259,7 +2411,9 @@ def cmd_tree(tui: LumiTUI, arg: str):
         def _t(p, prefix="", depth=0):
             if depth > 3: return
             try: entries = sorted(Path(p).iterdir(), key=lambda x: (x.is_file(), x.name))
-            except: return
+            except Exception:
+                log.debug("Timer parse failed")
+                return
             for i, e in enumerate(entries):
                 if e.name in (".git", "__pycache__", "node_modules", ".venv", "venv"): continue
                 conn = "└── " if i == len(entries)-1 else "├── "
@@ -2556,6 +2710,12 @@ def cmd_mode(tui: LumiTUI, arg: str):
 
     threading.Thread(target=_handoff, daemon=True).start()
 
+@registry.register("/guardian", "Toggle background code-quality watcher (ruff + pytest)")
+def cmd_guardian(tui: LumiTUI, arg: str):
+    tui.guardian_enabled = not getattr(tui, "guardian_enabled", False)
+    state = "on" if tui.guardian_enabled else "off"
+    tui._sys(f"◆  Guardian {state} — runs ruff + pytest every 5 min")
+
 @registry.register("/offline", "Enter air-gapped privacy mode via Ollama")
 def cmd_offline(tui: LumiTUI, arg: str):
     try:
@@ -2634,8 +2794,7 @@ def cmd_godmode(tui: LumiTUI, arg: str):
                 feedback = "No valid [CMD], [EDIT], or [DONE] block found. Format must be exact. Only one action allowed. Do not output markdown code blocks around commands."
             
             tui.memory.add("user", f"System Feedback:\n{feedback}")
-            time.sleep(1)
-            tui.redraw()
+            tui.redraw()  # no sleep — just loop immediately
             
         tui.set_busy(False)
         tui.redraw()
@@ -2697,9 +2856,10 @@ def cmd_apply(tui: LumiTUI, arg: str):
     sys.stdout.flush()
     
     try:
-       ans = input().strip().lower()
-    except:
-       ans = "n"
+        ans = input().strip().lower()
+    except Exception:
+        log.debug("apply input failed")
+        ans = "n"
        
     if ans == "y":
         try:
