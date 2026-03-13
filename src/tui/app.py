@@ -356,7 +356,7 @@ class Renderer:
         lines =[]
         inner = max(30, width - 6)
         if not msgs:
-            ver = "v0.3.3"
+            ver = "v0.3.4"
 
             # ── Ant logo — top left, Tokyo Night colors ──────────────────────
             #          ,
