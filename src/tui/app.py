@@ -840,6 +840,7 @@ class LumiTUI:
         # ── Vessel Mode ───────────────────────────────────────────────────────
         self.vessel_mode   = False   # True when acting as a pure AI conduit
         self.active_vessel = None    # "gemini" | "qwen" | "opencode" | None
+        self._pending_handoff = None # set by /mode; consumed by main loop
 
         self._loaded_plugins =[]; self.renderer = Renderer(self)
         self.original_termios = None
@@ -1032,6 +1033,83 @@ class LumiTUI:
                 self._notify(f"⚠ Guardian: {', '.join(msgs)}")
 
     # ── Application Main loop Thread setup / cleanup & Event bindings ───────
+    def _do_handoff(self, entry: dict):
+        """
+        Execute an external AI CLI synchronously on the main thread.
+        Called by the run() loop — never from a background thread.
+        This is the only correct way: main thread owns the terminal.
+        """
+        binary    = entry["binary"]
+        name      = entry["name"]
+        dest_file = Path(f"{binary}_session.txt")
+        fd        = sys.stdin.fileno()
+
+        # ── 1. Tear down Lumi's terminal state ────────────────────────────────
+        # Exit alternate screen, show cursor, restore original cooked termios
+        sys.stdout.write("\033[?1049l\033[?25h\033[0m")
+        sys.stdout.flush()
+        if self.original_termios:
+            try:
+                termios.tcsetattr(fd, termios.TCSADRAIN, self.original_termios)
+            except Exception:
+                pass
+
+        # Brief banner so the user knows what happened
+        print(f"\n\033[38;2;187;154;247m◆ Entering {name}\033[0m  — exit normally to return to Lumi\n",
+              flush=True)
+
+        # ── 2. Run the CLI directly — no `script` wrapper ────────────────────
+        # `script` corrupts full-TUI apps (claude, opencode, gemini, etc.)
+        # We run the binary raw so it gets a clean controlling terminal.
+        # Transcript capture is skipped for TUI tools; use the tool's own
+        # built-in history / export if you need a log.
+        exit_code = 1
+        try:
+            result    = subprocess.run([binary], env={**os.environ})
+            exit_code = result.returncode
+        except FileNotFoundError:
+            print(f"\033[31m✗ {binary} not found in PATH\033[0m", flush=True)
+        except KeyboardInterrupt:
+            pass  # user Ctrl-C'd out of the CLI — that's fine
+
+        # ── 3. Restore Lumi's terminal state ─────────────────────────────────
+        print(f"\n\033[38;2;86;95;137m◆ Returned from {name}. Restoring Lumi…\033[0m\n",
+              flush=True)
+        time.sleep(0.05)
+
+        try:
+            tty.setraw(fd)
+        except Exception:
+            pass
+
+        # Re-enter alternate screen, hide cursor, full repaint
+        sys.stdout.write("\033[?1049h\033[?25l\033[2J")
+        sys.stdout.flush()
+        self.redraw()
+
+        # ── 4. Inject return-context into memory and greet ───────────────────
+        note = (f" Exit code: {exit_code}." if exit_code != 0 else "")
+        sys_msg = (
+            f"[SYSTEM NOTE: The user just returned from a {name} session.{note} "
+            f"Warmly welcome them back and ask if they need help reviewing or continuing their work.]"
+        )
+        self.memory.add("system", sys_msg)
+
+        user_msg = f"(Returned from {name}.)"
+        self.store.add(Msg("user", user_msg))
+        self.memory.add("user", user_msg)
+
+        def _welcome():
+            msgs = build_messages(self.system_prompt, self.memory.get())
+            raw  = self._tui_stream(msgs, self.current_model)
+            self.memory.add("assistant", raw)
+            self.last_reply = raw
+            self.turns     += 1
+            self.set_busy(False)
+            self.redraw()
+
+        threading.Thread(target=_welcome, daemon=True).start()
+
     def run(self):
         self.persona = load_persona(); self.persona_override = get_persona_override()
         self.system_prompt = self._make_system_prompt()
@@ -1066,6 +1144,12 @@ class LumiTUI:
             threading.Thread(target=self._guardian_loop, daemon=True).start()
             self.redraw()
             while self._running:
+                # ── Consume a pending /mode handoff on the main thread ────────
+                # Must happen here — main thread owns stdin and termios.
+                if self._pending_handoff is not None:
+                    entry, self._pending_handoff = self._pending_handoff, None
+                    self._do_handoff(entry)
+                    continue
                 key = _read_key()
                 self._handle_key(key)
                 self.redraw()
@@ -2627,90 +2711,10 @@ def cmd_mode(tui: LumiTUI, arg: str):
         tui.redraw()
         return
 
-    # ── PTY handoff ────────────────────────────────────────────────────────────
-    binary   = entry["binary"]
-    log_file = f".{binary}_raw.log"
-    dest_file = f"{binary}_session.txt"
-
-    def _handoff():
-        tui.set_busy(True)
-        tui._sys(f"◆  Launching {entry['name']}… Lumi will resume when you exit.")
-        tui.redraw()
-        time.sleep(0.3)  # let the sys message render
-
-        # Phase 1 — suspend TUI, restore normal terminal
-        sys.stdout.write("\033[?1049l\033[?25h")
-        sys.stdout.flush()
-        if hasattr(tui, "original_termios") and tui.original_termios:
-            try:
-                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, tui.original_termios)
-            except Exception:
-                pass
-
-        print(f"\n  ◆ Entering {entry['name']} — exit normally to return to Lumi\n")
-
-        # Phase 2 — run inside `script` for transcript capture
-        try:
-            subprocess.run(
-                f"script -q -c '{binary}' {log_file}",
-                shell=True,
-                env={**os.environ},   # pass full env (API keys etc.)
-            )
-        except Exception:
-            pass
-
-        # Phase 3 — clean & save transcript
-        if os.path.exists(log_file):
-            try:
-                raw = Path(log_file).read_text(errors="replace")
-                clean = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b.', '', raw)
-                clean = re.sub(r'\r\n|\r', '\n', clean).strip()
-                header = (
-                    f"==== {entry['name'].upper()} SESSION | "
-                    f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ====\n"
-                )
-                with open(dest_file, "a", encoding="utf-8") as f:
-                    f.write(header + clean + "\n\n")
-                os.remove(log_file)
-            except Exception:
-                pass
-
-        # Phase 4 — restore Lumi TUI
-        try:
-            tty.setraw(sys.stdin.fileno())
-        except Exception:
-            pass
-        sys.stdout.write("\033[?1049h\033[?25l\033[J")
-        sys.stdout.flush()
-        tui.redraw()
-
-        # Phase 5 — inject context & welcome back
-        transcript_note = (
-            f" The session transcript was saved to '{dest_file}'."
-            if os.path.exists(dest_file) else ""
-        )
-        sys_msg = (
-            f"[SYSTEM NOTE: The user just returned from a {entry['name']} CLI session.{transcript_note} "
-            f"Warmly welcome them back. If a transcript exists, offer to review it for context, bugs, or next steps.]"
-        )
-        tui.memory.add("system", sys_msg)
-
-        user_msg = f"(I have returned from {entry['name']}. Greet me back and mention {dest_file} if it exists.)"
-        tui.store.add(Msg("user", user_msg))
-        tui.memory.add("user", user_msg)
-
-        def _stream_welcome():
-            msgs = build_messages(tui.system_prompt, tui.memory.get())
-            raw = tui._tui_stream(msgs, tui.current_model)
-            tui.memory.add("assistant", raw)
-            tui.last_reply = raw
-            tui.turns += 1
-            tui.set_busy(False)
-            tui.redraw()
-
-        threading.Thread(target=_stream_welcome, daemon=True).start()
-
-    threading.Thread(target=_handoff, daemon=True).start()
+    # ── Signal main loop — it will call _do_handoff() on the main thread ─────
+    tui._sys(f"◆  Launching {entry['name']}…  Lumi will resume when you exit.")
+    tui.redraw()
+    tui._pending_handoff = entry   # consumed by run() before next key read
 
 @registry.register("/guardian", "Toggle background code-quality watcher (ruff + pytest)")
 def cmd_guardian(tui: LumiTUI, arg: str):
