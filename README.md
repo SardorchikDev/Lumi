@@ -28,7 +28,7 @@
 
 # lumi
 
-**A terminal AI that runs 5 models at once, remembers you, edits your files, and costs nothing.**
+**A terminal AI that runs 8 models at once, remembers you, edits your files, and costs nothing.**
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![CI](https://img.shields.io/github/actions/workflow/status/SardorchikDev/Lumi/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/SardorchikDev/Lumi/actions)
@@ -102,7 +102,7 @@ HF_TOKEN=hf_...
 |---|:---:|:---:|:---:|:---:|:---:|
 | 100% free | ✅ | ❌ $20/mo | ❌ limited | ❌ | ❌ $10/mo |
 | 9+ providers | ✅ | ❌ | ❌ | ⚠️ | ❌ |
-| 5-agent council | ✅ | ❌ | ❌ | ❌ | ❌ |
+| 8-agent council | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Auto-fallback | ✅ | ❌ | ⚠️ | ❌ | ❌ |
 | Long-term memory | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Autonomous agent | ✅ | ✅ | ⚠️ | ✅ | ❌ |
@@ -121,19 +121,20 @@ HF_TOKEN=hf_...
 
 ## 🧠 Council Mode
 
-Five AI models answer your question simultaneously. A judge model synthesizes the best response and streams it back. If one model hits a rate limit, the next fallback fires automatically.
+Eight AI models answer your question simultaneously. A judge model synthesizes the best response and streams it back. If one model hits a rate limit, the next fallback fires automatically.
 
 ```
 ❯ lumi --model council
 
-◆ Lumi  │  Council  │  5 agents
+◆ Lumi  │  Council  │  8 agents
 
 ›  explain async vs parallel execution in Python
 
-  council  5 agents  →  asking in parallel...
+  council  8 agents  →  asking in parallel...
 
   ✓ Gemini     ✓ Kimi K2    ✓ GPT-OSS
-  ✓ Codestral  ✓ Llama 3.3
+  ✓ Codestral  ✓ Llama 3.3  ✓ GPT-4o
+  ✓ Command A  ✓ Cloudflare
 
   synthesizing 5 responses...
 
@@ -150,6 +151,9 @@ Five AI models answer your question simultaneously. A judge model synthesizes th
 | **GPT-OSS** | OpenRouter | General purpose |
 | **Codestral** | Mistral | Code generation & review |
 | **Llama 3.3** | HuggingFace | Writing & explanation |
+| **GPT-4o** | GitHub Models | Precision & reliability |
+| **Command A** | Cohere | Language & nuance |
+| **Cloudflare AI** | Cloudflare | Diversity & independence |
 
 ---
 
@@ -252,7 +256,7 @@ lumi -v                                   # show version
 ### Chat
 | Command | Description |
 |---|---|
-| `/council <q>` | Ask all 5 agents — streams synthesized best answer |
+| `/council <q>` | Ask all 8 agents — streams synthesized best answer |
 | `/council --show <q>` | Same + each agent's raw response |
 | `/redo [hint]` | Regenerate with a different approach |
 | `/more` | Expand the last reply |
