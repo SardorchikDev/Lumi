@@ -1039,10 +1039,9 @@ class LumiTUI:
         Called by the run() loop — never from a background thread.
         This is the only correct way: main thread owns the terminal.
         """
-        binary    = entry["binary"]
-        name      = entry["name"]
-        dest_file = Path(f"{binary}_session.txt")
-        fd        = sys.stdin.fileno()
+        binary = entry["binary"]
+        name   = entry["name"]
+        fd     = sys.stdin.fileno()
 
         # ── 1. Tear down Lumi's terminal state ────────────────────────────────
         # Exit alternate screen, show cursor, restore original cooked termios
