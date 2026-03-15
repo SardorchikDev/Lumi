@@ -18,3 +18,5 @@ pdfminer.six
 #promt toolkit
 #prompt_toolkit>=3.0.0
 numpy
+
+google-auth

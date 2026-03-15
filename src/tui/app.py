@@ -148,11 +148,13 @@ PROV_NAME = {
     "gemini": "Gemini", "groq": "Groq", "openrouter": "OpenRouter",
     "mistral": "Mistral", "huggingface": "HuggingFace", "github": "GitHub Models",
     "cohere": "Cohere", "cloudflare": "Cloudflare", "ollama": "Ollama", "council": "⚡ Council",
+    "vercel": "Vercel AI", "vertex": "Vertex AI",
 }
 PROV_COL = {
     "gemini": CYAN, "groq": ORANGE, "openrouter": PURPLE, "mistral": RED,
     "huggingface": YELLOW, "github": FG_HI, "cohere": GREEN,
     "cloudflare": ORANGE, "ollama": FG_DIM, "council": PURPLE,
+    "vercel": TEAL, "vertex": BLUE,
 }
 
 def _hm(): return datetime.now().strftime("%H:%M")

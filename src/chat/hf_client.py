@@ -297,6 +297,39 @@ def _fetch_vercel_models() -> list:
         return VERCEL_MODELS[:]
 
 
+# Vertex AI — Google Cloud AI Platform (pay-as-you-go, no free tier)
+# Requires: GOOGLE_APPLICATION_CREDENTIALS + VERTEX_PROJECT_ID in .env
+# Optional: VERTEX_LOCATION (defaults to us-central1)
+# Models: Gemini, Claude, Llama, Mistral via Vertex Model Garden
+VERTEX_MODELS = [
+    # ── Gemini (via Vertex) ───────────────────────────────────────────────────
+    "gemini-2.5-pro-preview-05-06",            # Gemini 2.5 Pro — deepest reasoning
+    "gemini-2.5-flash-preview-04-17",          # Gemini 2.5 Flash — best speed/quality
+    "gemini-2.0-flash-001",                    # Gemini 2.0 Flash — stable workhorse
+    # ── Claude (via Vertex Model Garden) ─────────────────────────────────────
+    "claude-sonnet-4-5@20250514",              # Claude Sonnet 4.5 — best balance
+    "claude-opus-4@20250514",                  # Claude Opus 4 — most capable
+    "claude-haiku-3-5@20241022",               # Claude Haiku 3.5 — fastest
+    "claude-sonnet-3-7@20250219",              # Claude Sonnet 3.7 — extended thinking
+    # ── Llama (via Vertex Model Garden) ──────────────────────────────────────
+    "llama-3.3-70b-instruct-maas",             # Llama 3.3 70B — best open
+    "llama-3.1-405b-instruct-maas",            # Llama 3.1 405B — largest open
+    "llama-3.1-8b-instruct-maas",              # Llama 3.1 8B — fastest
+    # ── Mistral (via Vertex Model Garden) ────────────────────────────────────
+    "mistral-large@2407",                      # Mistral Large — flagship
+    "mistral-nemo@2407",                       # Mistral Nemo — fast
+    "codestral@2405",                          # Codestral — coding specialist
+]
+
+def _vertex_base_url() -> str:
+    location   = os.getenv("VERTEX_LOCATION", "us-central1")
+    project_id = os.getenv("VERTEX_PROJECT_ID", "")
+    return (
+        f"https://{location}-aiplatform.googleapis.com/v1beta1"
+        f"/projects/{project_id}/locations/{location}/endpoints/openapi"
+    )
+
+
 OLLAMA_BASE = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
 def _fetch_ollama_models() -> list:
@@ -335,6 +368,7 @@ def get_provider() -> str:
     if os.getenv("COHERE_API_KEY"):      return "cohere"
     if os.getenv("VERCEL_API_KEY"):         return "vercel"
     if os.getenv("CLOUDFLARE_API_KEY") and os.getenv("CLOUDFLARE_ACCOUNT_ID"): return "cloudflare"
+    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS") and os.getenv("VERTEX_PROJECT_ID"): return "vertex"
     if _has_ollama():                    return "ollama"
     raise OSError(
         "No API key found in .env\n"
@@ -347,7 +381,9 @@ def get_provider() -> str:
         "  COHERE_API_KEY=...      https://dashboard.cohere.com/api-keys\n"
         "  CLOUDFLARE_API_KEY=...  https://dash.cloudflare.com/profile/api-tokens\n"
         "  CLOUDFLARE_ACCOUNT_ID=... https://dash.cloudflare.com (right sidebar)\n"
-        "  VERCEL_API_KEY=...      https://vercel.com/dashboard -> AI -> API Keys"
+        "  VERCEL_API_KEY=...      https://vercel.com/dashboard -> AI -> API Keys\n"
+        "  GOOGLE_APPLICATION_CREDENTIALS=... /path/to/service-account.json\n"
+        "  VERTEX_PROJECT_ID=...   Your Google Cloud project ID"
     )
 
 
@@ -369,6 +405,7 @@ def get_available_providers() -> list:
     if os.getenv("COHERE_API_KEY"):      providers.append("cohere")
     if os.getenv("VERCEL_API_KEY"):         providers.append("vercel")
     if os.getenv("CLOUDFLARE_API_KEY") and os.getenv("CLOUDFLARE_ACCOUNT_ID"): providers.append("cloudflare")
+    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS") and os.getenv("VERTEX_PROJECT_ID"): providers.append("vertex")
     if _has_ollama():                    providers.append("ollama")
     return providers
 
@@ -414,6 +451,17 @@ def _make_client(provider: str) -> OpenAI:
             base_url="https://ai-gateway.vercel.sh/v1",
             api_key=os.getenv("VERCEL_API_KEY"),
         )
+    if provider == "vertex":
+        import google.auth
+        from google.auth.transport.requests import Request as _GRequest
+        creds, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        creds.refresh(_GRequest())
+        return OpenAI(
+            base_url=_vertex_base_url(),
+            api_key=creds.token,  # short-lived OAuth2 bearer token
+        )
     if provider == "ollama":
         return OpenAI(
             base_url=f"{OLLAMA_BASE}/v1",
@@ -455,6 +503,8 @@ def get_models(provider: str = None) -> list:
         models = CLOUDFLARE_MODELS[:]
     elif p == "vercel":
         models = _fetch_vercel_models()
+    elif p == "vertex":
+        models = VERTEX_MODELS[:]
     elif p == "ollama":
         models = _fetch_ollama_models()
     else:
