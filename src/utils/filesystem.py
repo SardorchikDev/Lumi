@@ -28,15 +28,19 @@ CREATE_PATTERNS = [
     r"\bbootstrap\b.{0,40}\bproject\b",
 ]
 
+# Pre-compile for performance — avoid recompiling on every call.
+_COMPILED_PATTERNS = [re.compile(p) for p in CREATE_PATTERNS]
+
+
 def is_create_request(text: str) -> bool:
     """Return True if the message is asking to create files/folders."""
     t = text.lower()
-    return any(re.search(p, t) for p in CREATE_PATTERNS)
+    return any(p.search(t) for p in _COMPILED_PATTERNS)
 
 
 # ── AI-powered file plan generation ──────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a file system agent. When asked to create files and folders, 
+SYSTEM_PROMPT = """You are a file system agent. When asked to create files and folders,
 you respond ONLY with a valid JSON object describing what to create.
 
 Format:
@@ -61,6 +65,7 @@ Rules:
 - NEVER return anything except the JSON object — no explanation, no markdown fences
 """
 
+
 def generate_file_plan(request: str, client, model: str) -> dict | None:
     """Ask AI to generate a JSON file plan. Three-strategy robust JSON extraction."""
     try:
@@ -68,7 +73,7 @@ def generate_file_plan(request: str, client, model: str) -> dict | None:
             model=model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user",   "content": request}
+                {"role": "user",   "content": request},
             ],
             max_tokens=4000,
             temperature=0.3,
@@ -77,7 +82,7 @@ def generate_file_plan(request: str, client, model: str) -> dict | None:
 
         # Strategy 1: strip fences and parse
         cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", raw, flags=re.MULTILINE)
-        cleaned = re.sub(r"\n?```\s*$",       "", cleaned, flags=re.MULTILINE).strip()
+        cleaned = re.sub(r"\n?```\s*$",        "", cleaned, flags=re.MULTILINE).strip()
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError:
@@ -98,14 +103,19 @@ def generate_file_plan(request: str, client, model: str) -> dict | None:
                 {"role": "system",    "content": SYSTEM_PROMPT},
                 {"role": "user",      "content": request},
                 {"role": "assistant", "content": raw},
-                {"role": "user",      "content":
-                    "Output ONLY a raw JSON object. No markdown, no explanation. Start with { end with }."}
+                {
+                    "role":    "user",
+                    "content": (
+                        "Output ONLY a raw JSON object. "
+                        "No markdown, no explanation. Start with { end with }."
+                    ),
+                },
             ],
             max_tokens=4000,
             temperature=0.1,
         )
         raw2 = retry.choices[0].message.content.strip()
-        m2 = re.search(r"\{[\s\S]+\}", raw2)
+        m2   = re.search(r"\{[\s\S]+\}", raw2)
         if m2:
             return json.loads(m2.group())
         return None
@@ -116,28 +126,27 @@ def generate_file_plan(request: str, client, model: str) -> dict | None:
 # ── File writing ──────────────────────────────────────────────────────────────
 
 def write_file_plan(plan: dict, base_dir: str | Path = ".") -> list[str]:
-    """
-    Execute a file plan — create folders and write files.
-    Returns list of created paths.
+    """Execute a file plan — create folders and write files.
 
-    Args:
-        plan: Dictionary with 'root' and 'files' keys
-        base_dir: Base directory to create files in
-
-    Returns:
-        List of created file/directory paths
+    Returns the list of created paths (directories end with ``/``).
 
     Raises:
-        ValueError: If plan is invalid or missing required keys
-        PermissionError: If unable to write to directory
+        ValueError: plan is structurally invalid or a path traversal is detected.
+        PermissionError: the filesystem refused a write.
+        OSError: any other I/O failure.
     """
-    created = []
+    created: list[str] = []
     base_path = Path(base_dir).expanduser().resolve()
 
     root = plan.get("root", ".").strip()
 
     if root and root != ".":
-        root_path = base_path / root
+        root_path = (base_path / root).resolve()
+        # Guard against crafted root values like "../../etc"
+        if not root_path.is_relative_to(base_path):
+            raise ValueError(
+                f"root '{root}' escapes the base directory (path traversal detected)"
+            )
         root_path.mkdir(parents=True, exist_ok=True)
         created.append(str(root_path) + "/")
     else:
@@ -152,25 +161,23 @@ def write_file_plan(plan: dict, base_dir: str | Path = ".") -> list[str]:
             continue
 
         rel_path = f.get("path", "").strip().lstrip("/")
-        content = f.get("content", "")
+        content  = f.get("content", "")
 
         if not rel_path:
             continue
 
-        # Security: prevent path traversal
         full_path = (root_path / rel_path).resolve()
-        if not str(full_path).startswith(str(root_path)):
-            raise ValueError(f"Invalid path: {rel_path} (path traversal detected)")
+
+        # Reject any path that escapes the root — covers "../../" tricks.
+        if not full_path.is_relative_to(root_path):
+            raise ValueError(
+                f"Invalid path '{rel_path}': resolves outside the target directory "
+                f"(path traversal detected)"
+            )
 
         full_path.parent.mkdir(parents=True, exist_ok=True)
-
-        try:
-            full_path.write_text(content, encoding="utf-8")
-            created.append(str(full_path))
-        except PermissionError as e:
-            raise PermissionError(f"Cannot write to {full_path}: {e}")
-        except OSError as e:
-            raise OSError(f"Failed to write {full_path}: {e}")
+        full_path.write_text(content, encoding="utf-8")
+        created.append(str(full_path))
 
     return created
 
@@ -181,11 +188,11 @@ def format_creation_summary(plan: dict, created: list[str]) -> str:
     """Return a human-readable summary of what was created."""
     root  = plan.get("root", ".")
     files = plan.get("files", [])
-    lines = []
+    lines: list[str] = []
     if root != ".":
         lines.append(f"📁 {root}/")
     for f in files:
-        path = f.get("path", "")
-        size = len(f.get("content", "").encode())
+        path    = f.get("path", "")
+        size    = len(f.get("content", "").encode())
         lines.append(f"   📄 {path}  ({size:,} bytes)")
     return "\n".join(lines)

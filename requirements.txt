@@ -1,22 +1,39 @@
-# Core (already have)
-huggingface_hub
-python-dotenv
-openai
+# Lumi AI — Python dependencies
+# Kept in sync with pyproject.toml [project.dependencies]
+# Install: pip install -r requirements.txt
 
-# PDF reading (pick one — pdfplumber is better)
-pdfplumber
+# ── Core ──────────────────────────────────────────────────────────────────────
+huggingface_hub>=0.20.0
+python-dotenv>=1.0.0
+openai>=1.10.0
+numpy>=1.24.0
 
-# Voice output fallback (only needed if espeak-ng not installed on system)
-pyttsx3
+# ── Google Auth (Vertex AI, Gemini) ───────────────────────────────────────────
+google-auth>=2.0.0
 
-# Optional: faster PDF fallback if pdfplumber fails
-pdfminer.six
+# ── PDF reading ───────────────────────────────────────────────────────────────
+pdfplumber>=0.10.0
+pdfminer.six>=20221105
 
-#textual
-#textual>=0.80.0
+# ── Voice output fallback ─────────────────────────────────────────────────────
+pyttsx3>=2.90
 
-#promt toolkit
-#prompt_toolkit>=3.0.0
-numpy
+# ── Vision / image handling ───────────────────────────────────────────────────
+pillow>=9.0.0
 
-google-auth
+# ── Config / serialisation ────────────────────────────────────────────────────
+pyyaml>=6.0
+
+# ── HTTP ─────────────────────────────────────────────────────────────────────
+httpx>=0.24.0
+requests>=2.28.0
+
+# ── Terminal rendering ────────────────────────────────────────────────────────
+pygments>=2.15.0
+markdown-it-py>=2.0.0
+
+# ── Dev tools (install with: pip install -e ".[dev]") ─────────────────────────
+# pytest>=8.0.0
+# pytest-cov>=4.1.0
+# ruff>=0.4.0
+# pre-commit>=3.6.0
