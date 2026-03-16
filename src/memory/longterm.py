@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
-import pathlib
 import pickle
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
+from src.config import MEMORY_DIR
+
 # ── Fact Memory (JSON) ────────────────────────────────────────────────────────
-MEMORY_FILE = pathlib.Path("data/memory/longterm.json")
+MEMORY_FILE = MEMORY_DIR / "longterm.json"
 
 def _load() -> dict[str, Any]:
     MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -69,7 +71,7 @@ def clear_persona_override() -> None:
     _save(data)
 
 # ── Episodic Memory (Vector Search) ───────────────────────────────────────────
-EPISODIC_DB_PATH = pathlib.Path.home() / "Lumi" / "data" / "memory" / "episodes.pkl"
+EPISODIC_DB_PATH = MEMORY_DIR / "episodes.pkl"
 
 def get_related_episodes(query: str, client: Any, limit: int = 3) -> list[str]:
     """Find summaries of past conversations related to the query."""

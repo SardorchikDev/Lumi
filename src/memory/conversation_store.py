@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-import pathlib
 import re
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-SESSIONS_DIR = pathlib.Path.home() / "Lumi" / "data" / "sessions"
+from src.config import SESSIONS_DIR
 
 
 def _ensure() -> None:

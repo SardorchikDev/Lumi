@@ -1,8 +1,10 @@
 """Input history — up/down arrow key cycling via readline."""
 
-import pathlib
+from pathlib import Path
 
-HIST_FILE = pathlib.Path("data/memory/.input_history")
+from src.config import MEMORY_DIR
+
+HIST_FILE = MEMORY_DIR / ".input_history"
 
 
 def setup():

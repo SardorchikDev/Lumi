@@ -76,6 +76,9 @@ from src.utils.tools import (
 )
 from src.utils.voice import record_audio, speak, transcribe_groq
 from src.utils.web import fetch_url
+from src.config import LUMI_HOME, PLUGINS_DIR, ensure_dirs
+
+ensure_dirs()  # Ensure all data directories exist on startup
 
 
 # ── System prompt builder (unified) ──────────────────────────
@@ -360,7 +363,7 @@ def print_help():
 
     section("PLUGINS")
     cmd("/plugins",                 "list loaded plugins")
-    cmd("/plugins reload",          "reload plugins from ~/Lumi/plugins/")
+    cmd("/plugins reload",          f"reload plugins from {PLUGINS_DIR}")
 
     section("SESSIONS")
     cmd("/save [name]",             "save conversation with optional name")
@@ -1086,11 +1089,9 @@ def cmd_review(target: str, client, model: str, memory, system_prompt: str, name
 # ── /find ─────────────────────────────────────────────────────
 def cmd_find(keyword: str):
     import json
-    import pathlib
-    d = pathlib.Path("data/conversations")
-    if not d.exists(): warn("No saved sessions."); return
+    if not CONVERSATIONS_DIR.exists(): warn("No saved sessions."); return
     hits = []
-    for f in sorted(d.glob("*.json")):
+    for f in sorted(CONVERSATIONS_DIR.glob("*.json")):
         try:
             for m in json.loads(f.read_text(encoding="utf-8")):
                 if keyword.lower() in m.get("content", "").lower():
@@ -2478,7 +2479,7 @@ def main():
                         print(f"  {PU}{c:<20}{R}  {GR}{d}{R}")
                     print()
                 else:
-                    info("No plugins loaded.  Drop .py files in ~/Lumi/plugins/")
+                    info(f"No plugins loaded.  Drop .py files in {PLUGINS_DIR}")
             continue
 
         if cmd == "/lumi.md":

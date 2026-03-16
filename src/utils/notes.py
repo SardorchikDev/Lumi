@@ -3,10 +3,12 @@ Lumi notes system — timestamped notes with search.
 Saved to data/memory/notes.json
 """
 import json
-import os
 from datetime import datetime
+from pathlib import Path
 
-NOTES_PATH = os.path.join(os.path.dirname(__file__), "../../data/memory/notes.json")
+from src.config import MEMORY_DIR
+
+NOTES_PATH = MEMORY_DIR / "notes.json"
 
 def _load():
     try:

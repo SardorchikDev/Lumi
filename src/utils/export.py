@@ -1,11 +1,13 @@
 """Export conversation history to a markdown file."""
 
-import pathlib
 from datetime import datetime
+from pathlib import Path
+
+from src.config import CONVERSATIONS_DIR
 
 
-def export_md(history: list[dict], name: str = "Lumi") -> pathlib.Path:
-    exports_dir = pathlib.Path("data/conversations/exports")
+def export_md(history: list[dict], name: str = "Lumi") -> Path:
+    exports_dir = CONVERSATIONS_DIR / "exports"
     exports_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     path = exports_dir / f"lumi_{timestamp}.md"

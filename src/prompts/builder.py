@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
-import pathlib
 import re
+from pathlib import Path
 from typing import Any
 
-PERSONA_PATH = pathlib.Path("data/personas/default.json")
+from src.config import PERSONAS_DIR
+
+PERSONA_PATH = PERSONAS_DIR / "default.json"
 
 
 def load_persona() -> dict[str, Any]:

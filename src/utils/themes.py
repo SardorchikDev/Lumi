@@ -1,9 +1,11 @@
 """Terminal color themes for Lumi."""
 
 import json
-import pathlib
+from pathlib import Path
 
-THEME_FILE = pathlib.Path("data/memory/theme.json")
+from src.config import MEMORY_DIR
+
+THEME_FILE = MEMORY_DIR / "theme.json"
 
 
 def fg(n): return f"\033[38;5;{n}m"

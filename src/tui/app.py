@@ -1922,7 +1922,8 @@ def cmd_sys(tui: LumiTUI, arg: str): tui._sys(f"System prompt ({len(tui.system_p
 
 @registry.register("/sessions", "List saved sessions")
 def cmd_sessions(tui: LumiTUI, arg: str):
-    sdir = Path("data/sessions")
+    from src.config import SESSIONS_DIR
+    sdir = SESSIONS_DIR
     if not sdir.exists(): tui._sys("No sessions saved yet"); return
     files = sorted(sdir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
     if not files: tui._sys("No sessions saved yet"); return
@@ -2035,8 +2036,8 @@ def cmd_draft(tui: LumiTUI, arg: str):
 
 @registry.register("/todo", "Todo list: /todo add|list|done|rm")
 def cmd_todo(tui: LumiTUI, arg: str):
-    todo_file = Path("data/todos.json")
-    todo_file.parent.mkdir(parents=True, exist_ok=True)
+    from src.config import MEMORY_DIR
+    todo_file = MEMORY_DIR / "todos.json"
     try: todos = json.loads(todo_file.read_text()) if todo_file.exists() else []
     except Exception: todos = []
     parts = arg.strip().split(None, 1) if arg.strip() else ["list"]
@@ -2060,8 +2061,8 @@ def cmd_todo(tui: LumiTUI, arg: str):
 
 @registry.register("/note", "Notes: /note add|list|search")
 def cmd_note(tui: LumiTUI, arg: str):
-    note_file = Path("data/notes.json")
-    note_file.parent.mkdir(parents=True, exist_ok=True)
+    from src.config import MEMORY_DIR
+    note_file = MEMORY_DIR / "notes.json"
     try: notes = json.loads(note_file.read_text()) if note_file.exists() else []
     except Exception: notes = []
     parts = arg.strip().split(None, 1) if arg.strip() else ["list"]

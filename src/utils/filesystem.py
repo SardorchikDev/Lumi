@@ -2,9 +2,12 @@
 Lumi file system agent — detects and executes file/folder creation
 from natural language. No slash command needed.
 """
+from __future__ import annotations
+
 import json
-import os
 import re
+from pathlib import Path
+
 
 # ── Intent detection ──────────────────────────────────────────────────────────
 
@@ -112,34 +115,62 @@ def generate_file_plan(request: str, client, model: str) -> dict | None:
 
 # ── File writing ──────────────────────────────────────────────────────────────
 
-def write_file_plan(plan: dict, base_dir: str = ".") -> list[str]:
+def write_file_plan(plan: dict, base_dir: str | Path = ".") -> list[str]:
     """
     Execute a file plan — create folders and write files.
     Returns list of created paths.
+
+    Args:
+        plan: Dictionary with 'root' and 'files' keys
+        base_dir: Base directory to create files in
+
+    Returns:
+        List of created file/directory paths
+
+    Raises:
+        ValueError: If plan is invalid or missing required keys
+        PermissionError: If unable to write to directory
     """
     created = []
+    base_path = Path(base_dir).expanduser().resolve()
+
     root = plan.get("root", ".").strip()
 
     if root and root != ".":
-        root_path = os.path.join(base_dir, root)
-        os.makedirs(root_path, exist_ok=True)
-        created.append(root_path + "/")
+        root_path = base_path / root
+        root_path.mkdir(parents=True, exist_ok=True)
+        created.append(str(root_path) + "/")
     else:
-        root_path = base_dir
+        root_path = base_path
 
-    for f in plan.get("files", []):
+    files = plan.get("files")
+    if not isinstance(files, list):
+        raise ValueError("Plan must contain a 'files' list")
+
+    for f in files:
+        if not isinstance(f, dict):
+            continue
+
         rel_path = f.get("path", "").strip().lstrip("/")
-        content  = f.get("content", "")
+        content = f.get("content", "")
+
         if not rel_path:
             continue
 
-        full_path = os.path.join(root_path, rel_path)
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        # Security: prevent path traversal
+        full_path = (root_path / rel_path).resolve()
+        if not str(full_path).startswith(str(root_path)):
+            raise ValueError(f"Invalid path: {rel_path} (path traversal detected)")
 
-        with open(full_path, "w", encoding="utf-8") as fh:
-            fh.write(content)
+        full_path.parent.mkdir(parents=True, exist_ok=True)
 
-        created.append(full_path)
+        try:
+            full_path.write_text(content, encoding="utf-8")
+            created.append(str(full_path))
+        except PermissionError as e:
+            raise PermissionError(f"Cannot write to {full_path}: {e}")
+        except OSError as e:
+            raise OSError(f"Failed to write {full_path}: {e}")
 
     return created
 
