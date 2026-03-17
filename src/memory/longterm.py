@@ -17,8 +17,12 @@ MEMORY_FILE = MEMORY_DIR / "longterm.json"
 def _load() -> dict[str, Any]:
     MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     if MEMORY_FILE.exists():
-        try: return json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
-        except Exception: pass
+        try:
+            return json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
+        except Exception as e:
+            from src.utils.log import get_logger
+            logger = get_logger(__name__)
+            logger.error("Failed to load long-term memory: %s", e, exc_info=True)
     return {"facts": [], "persona_override": {}}
 
 def _save(data: dict[str, Any]) -> None:

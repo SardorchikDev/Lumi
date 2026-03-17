@@ -1,189 +1,134 @@
 """
-Terminal syntax highlighter — pure ANSI, zero dependencies.
-Handles Python, JavaScript/TypeScript, Bash, JSON, and generic fallback.
+Terminal syntax highlighter using Pygments.
+Maps Pygments tokens to Lumi TUI colors.
 """
+try:
+    from pygments import lexers, token
+    from pygments.lexers import get_lexer_by_name, guess_lexer, TextLexer
+    HAS_PYGMENTS = True
+except ImportError:
+    HAS_PYGMENTS = False
 
-import re
+from src.tui.colors import (
+    FG_HI, FG_DIM, PURPLE, YELLOW, COMMENT, ORANGE,
+    BLUE, CYAN, B, _fg, R, _italic, BG_DARK, _bg
+)
 
-# ── ANSI codes ────────────────────────────────────────────────────────────────
-R   = "\033[0m"
-B   = "\033[1m"
-DIM = "\033[2m"
+if HAS_PYGMENTS:
+    TOKEN_COLORS = {
+        token.Keyword: B(PURPLE),
+        token.Keyword.Constant: B(ORANGE),
+        token.Keyword.Namespace: B(PURPLE),
+        token.Name.Builtin: _fg(CYAN),
+        token.Name.Function: _fg(BLUE),
+        token.Name.Class: B(BLUE),
+        token.Name.Decorator: _fg(YELLOW),
+        token.Name.Exception: B(ORANGE),
+        token.String: _fg(YELLOW),
+        token.String.Doc: _fg(COMMENT) + _italic(),
+        token.Number: _fg(ORANGE),
+        token.Comment: _fg(COMMENT) + _italic(),
+        token.Operator: _fg(CYAN),
+        token.Operator.Word: B(PURPLE),
+        token.Punctuation: _fg(FG_DIM),
+        token.Text: _fg(FG_HI),
+        token.Error: _fg(ORANGE),
+    }
 
-# Colors
-KEYWORD  = "\033[38;5;141m"   # purple   — keywords
-STRING   = "\033[38;5;114m"   # green    — strings
-NUMBER   = "\033[38;5;215m"   # orange   — numbers
-COMMENT  = "\033[38;5;59m"    # gray     — comments
-FUNC     = "\033[38;5;75m"    # blue     — function names
-BUILTIN  = "\033[38;5;81m"    # cyan     — builtins / types
-OPERATOR = "\033[38;5;203m"   # red      — operators
-PUNCT    = "\033[38;5;246m"   # mid-gray — punctuation
-PLAIN    = "\033[38;5;252m"   # off-white — normal text
+def _get_color(ttype):
+    """Find appropriate color for a token type."""
+    # Fast path
+    if ttype in TOKEN_COLORS:
+        return TOKEN_COLORS[ttype]
+    
+    # Walk up the parent chain
+    curr = ttype
+    while curr is not None:
+        if curr in TOKEN_COLORS:
+            return TOKEN_COLORS[curr]
+        curr = curr.parent
+        
+    return _fg(FG_HI)
 
-# ── Language patterns ─────────────────────────────────────────────────────────
+def highlight_line(code: str, lang: str = "") -> str:
+    """
+    Highlight a line (or fragment) of code using Pygments.
+    Returns ANSI string WITHOUT resets at the end of every token,
+    to preserve background color.
+    """
+    if not HAS_PYGMENTS:
+        return code
 
-PY_KEYWORDS = {
-    "False","None","True","and","as","assert","async","await","break",
-    "class","continue","def","del","elif","else","except","finally",
-    "for","from","global","if","import","in","is","lambda","nonlocal",
-    "not","or","pass","raise","return","try","while","with","yield",
-}
-
-PY_BUILTINS = {
-    "print","len","range","type","str","int","float","bool","list",
-    "dict","set","tuple","super","self","cls","open","input","enumerate",
-    "zip","map","filter","sorted","reversed","any","all","hasattr",
-    "getattr","setattr","isinstance","issubclass","staticmethod","property",
-    "classmethod","abs","max","min","sum","round","repr","vars","dir",
-}
-
-JS_KEYWORDS = {
-    "var","let","const","function","return","if","else","for","while",
-    "do","break","continue","switch","case","default","new","delete",
-    "typeof","instanceof","in","of","class","extends","super","import",
-    "export","from","async","await","try","catch","finally","throw",
-    "true","false","null","undefined","this","yield","void","static",
-    "get","set","=>",
-}
-
-JS_BUILTINS = {
-    "console","Math","JSON","Array","Object","String","Number","Boolean",
-    "Promise","Map","Set","Date","Error","parseInt","parseFloat",
-    "setTimeout","setInterval","fetch","require","module","exports",
-}
-
-BASH_KEYWORDS = {
-    "if","then","else","elif","fi","for","in","do","done","while",
-    "until","case","esac","function","return","exit","echo","export",
-    "source","cd","ls","mkdir","rm","cp","mv","cat","grep","sed","awk",
-    "local","readonly","declare","unset","shift","set","true","false",
-}
-
-
-def _tokenize(line: str, keywords: set, builtins: set, lang: str) -> str:
-    """Colorize a single line of code."""
-    result = ""
-    i = 0
-    n = len(line)
-
-    while i < n:
-        # Comments
-        if lang in ("python",) and line[i] == "#":
-            result += COMMENT + line[i:] + R
-            break
-        if lang in ("js", "ts") and line[i:i+2] == "//":
-            result += COMMENT + line[i:] + R
-            break
-        if lang == "bash" and line[i] == "#":
-            result += COMMENT + line[i:] + R
-            break
-
-        # Strings — single, double, backtick, triple
-        if line[i:i+3] in ('"""', "'''"):
-            q = line[i:i+3]
-            end = line.find(q, i+3)
-            end = end + 3 if end != -1 else n
-            result += STRING + line[i:end] + R
-            i = end
-            continue
-        if line[i] in ('"', "'", "`"):
-            q = line[i]
-            j = i + 1
-            while j < n and line[j] != q:
-                if line[j] == "\\" : j += 1
-                j += 1
-            result += STRING + line[i:j+1] + R
-            i = j + 1
-            continue
-
-        # Numbers
-        if line[i].isdigit() or (line[i] == "." and i+1 < n and line[i+1].isdigit()):
-            j = i
-            while j < n and (line[j].isalnum() or line[j] in ".xXbBoO_"):
-                j += 1
-            result += NUMBER + line[i:j] + R
-            i = j
-            continue
-
-        # Words — keywords / builtins / identifiers
-        if line[i].isalpha() or line[i] == "_":
-            j = i
-            while j < n and (line[j].isalnum() or line[j] == "_"):
-                j += 1
-            word = line[i:j]
-            if word in keywords:
-                result += KEYWORD + B + word + R
-            elif word in builtins:
-                result += BUILTIN + word + R
-            elif j < n and line[j] == "(":
-                result += FUNC + word + R
+    try:
+        if lang:
+            try:
+                lexer = get_lexer_by_name(lang, stripnl=False)
+            except Exception:
+                lexer = TextLexer()
+        else:
+            # Short snippets are hard to guess, default to Text or Python if ambiguous
+            if len(code) > 20:
+                try:
+                    lexer = guess_lexer(code, stripnl=False)
+                except Exception:
+                    lexer = TextLexer()
             else:
-                result += PLAIN + word + R
-            i = j
-            continue
+                lexer = TextLexer()
+    except Exception:
+        lexer = TextLexer()
 
-        # Operators
-        if line[i] in "=+-*/%<>!&|^~":
-            result += OPERATOR + line[i] + R
-            i += 1
-            continue
-
-        # Punctuation
-        if line[i] in "()[]{}.,;:@":
-            result += PUNCT + line[i] + R
-            i += 1
-            continue
-
-        result += PLAIN + line[i] + R
-        i += 1
-
-    return result
-
-
-def _highlight_json(code: str) -> str:
-    lines = []
-    for line in code.split("\n"):
-        line = re.sub(r'("(?:[^"\\]|\\.)*")\s*:', lambda m: FUNC + m.group(1) + R + PUNCT + ":" + R, line)
-        line = re.sub(r':\s*("(?:[^"\\]|\\.)*")', lambda m: ": " + STRING + m.group(1) + R, line)
-        line = re.sub(r'\b(true|false|null)\b', KEYWORD + B + r'\1' + R, line)
-        line = re.sub(r'\b(\d+\.?\d*)\b', NUMBER + r'\1' + R, line)
-        lines.append(line)
-    return "\n".join(lines)
-
-
-def highlight(code: str, lang: str = "") -> str:
-    """Highlight code block. lang is the fence language tag."""
-    lang = lang.lower().strip()
-
-    if lang == "json":
-        return _highlight_json(code)
-
-    if lang in ("python", "py"):
-        kw, bi = PY_KEYWORDS, PY_BUILTINS
-    elif lang in ("javascript", "js", "typescript", "ts", "jsx", "tsx"):
-        kw, bi = JS_KEYWORDS, JS_BUILTINS
-    elif lang in ("bash", "sh", "shell", "zsh", "fish"):
-        kw, bi = BASH_KEYWORDS, set()
-    else:
-        # Generic: just dim it slightly, no full tokenization
-        return DIM + code + R
-
-    return "\n".join(_tokenize(line, kw, bi, lang or "generic") for line in code.split("\n"))
+    tokens = lexer.get_tokens(code)
+    out = ""
+    for ttype, value in tokens:
+        # We wrap each token in its color
+        # IMPORTANT: We append R (reset) after each token?
+        # The TUI app loop does: `lpre + _bg(BG_DARK) + lineno_str + hi + _bg(BG_DARK) + ... + R`
+        # If we return `Color + text + R`, the `_bg(BG_DARK)` after `hi` restores the BG.
+        # But `R` kills the BG *inside* the highlighted string if there are multiple tokens.
+        # So we should NOT emit R, but rather just emit the next Color.
+        # However, if we don't emit R, the foreground color persists.
+        # That's what we want!
+        # What about `token.Text`? It usually means whitespace or plain text.
+        # We need to explicitly color it FG_HI so it doesn't inherit the previous token's color.
+        
+        c = _get_color(ttype)
+        out += c + value
+        
+    # We explicitly return R at the end so the caller knows we are done with colors,
+    # although the caller appends `_bg(BG_DARK)` right after, which sets BG but maybe not FG?
+    # The caller appends `+ R` at the very end of the line.
+    # To be safe and compatible with the old regex behavior (which did append R after every token),
+    # let's try appending R.
+    # WAIT: Old regex `_syntax_hi` appended R after EVERY token.
+    # `elif g == 'str': out += _fg(YELLOW) + t.group() + R`
+    # This means the author expected `R` to be safe.
+    # If `R` resets BG, then the old code had broken BG too!
+    # Let's assume the TUI relies on the caller re-applying BG or `BG_DARK` is simply not visible behind text?
+    # Actually, in `app.py`:
+    # lines.append(lpre + _bg(BG_DARK) + lineno_str + hi + _bg(BG_DARK) + " " * pad + R)
+    # If `hi` has `... + R` in the middle, the text AFTER `R` has default BG.
+    # If `hi` ends with `R`, then `_bg(BG_DARK)` is applied immediately after `hi`.
+    # So the *padding* has BG_DARK.
+    # But the text itself?
+    # If `hi` is `YEL + "foo" + R + CYAN + "bar" + R`.
+    # "foo" has YEL FG. BG? If `_bg(BG_DARK)` was emitted before `hi`, then "foo" has BG_DARK *until* `R`.
+    # `R` resets BG.
+    # So "bar" has CYAN FG and DEFAULT BG.
+    # So the old regex code produced "striped" backgrounds (Dark, Default, Dark, Default...).
+    # If I want to fix this, I should NOT emit R.
+    # Instead, I should emit `_fg(FG_HI)` for plain text.
+    
+    return out + R
 
 
 def render_code_block(code: str, lang: str = "", indent: str = "  ") -> str:
-    """Render a full code block with border, language label, and syntax highlighting."""
-    lang_label = f" {lang} " if lang else " code "
-    border_color = "\033[38;5;238m"  # dark gray border
-    label_color  = "\033[38;5;244m"  # medium gray label
-
-    highlighted = highlight(code, lang)
-    lines = highlighted.split("\n")
-
-    out = []
-    out.append(f"{indent}{border_color}╭─{label_color}{lang_label}{border_color}{'─' * max(0, 40 - len(lang_label))}╮{R}")
+    """Render a code block with syntax highlighting."""
+    if not HAS_PYGMENTS:
+        return f"{indent}{code}"
+    
+    lines = code.split("\n")
+    output = []
     for line in lines:
-        out.append(f"{indent}{border_color}│{R}  {line}")
-    out.append(f"{indent}{border_color}╰{'─' * 42}╯{R}")
-    return "\n".join(out)
+        highlighted = highlight_line(line, lang)
+        output.append(f"{indent}{highlighted}")
+    return "\n".join(output)
