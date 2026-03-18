@@ -1,16 +1,13 @@
 """
 ◆ Council — Overpowered 5-agent parallel system for Lumi AI
 
-New in this version:
-  • Task classifier    — detects code/debug/analysis/creative/factual/design
-  • Specialist prompts — each agent gets a custom system prompt for their strength
-  • Lead agent         — strongest agent for task type gets extra authority
-  • Confidence scoring — each agent self-rates 1–10, judge weights accordingly
-  • Debate round       — if agents disagree, they see each other and argue first
-  • Speed tiers        — fast agents (Gemini, Groq, Mistral) show first
-  • Second-pass refine — judge reviews its own synthesis for gaps/errors
-  • Council stats      — shows who contributed, confidence, timing, task type
-  • Full fallback chain — only auth errors hard-stop; everything else tries next model
+Key improvements over previous version:
+  • _client_cache     — OpenAI clients are created once per agent and reused.
+                        Previously a new client was instantiated on every call,
+                        which is expensive (connection setup, header parsing, etc.).
+  • clear_client_cache() exported so tests / config changes can invalidate it.
+
+Everything else (debate, refinement, stats, spinner) is unchanged.
 """
 
 import os
@@ -51,13 +48,13 @@ AGENTS = [
         "id":       "gemini",
         "name":     "Gemini",
         "models":   [
-            "gemini-3.1-pro-preview",         # most advanced
-            "gemini-3-flash-preview",         # frontier-class
-            "gemini-2.5-pro",                 # deepest reasoning, stable
-            "gemini-2.5-pro-preview-06-05",   # adaptive thinking
-            "gemini-2.5-flash",               # fast + smart
-            "gemini-flash-latest",            # alias fallback
-            "gemini-2.0-flash",               # stable fallback
+            "gemini-3.1-pro-preview",
+            "gemini-3-flash-preview",
+            "gemini-2.5-pro",
+            "gemini-2.5-pro-preview-06-05",
+            "gemini-2.5-flash",
+            "gemini-flash-latest",
+            "gemini-2.0-flash",
         ],
         "provider": "gemini",
         "role":     "reasoning",
@@ -193,8 +190,27 @@ AGENTS = [
         "tier":      "slow",
         "base_url":  "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1",
         "key_env":   "CLOUDFLARE_API_KEY",
-        "extra_env": "CLOUDFLARE_ACCOUNT_ID",   # both required
+        "extra_env": "CLOUDFLARE_ACCOUNT_ID",
         "color":     "\033[38;5;208m",
+    },
+    {
+        "id":       "bytez",
+        "name":     "Bytez",
+        "models":   [
+            "Qwen/Qwen3-32B",                     # dense 32B, fast warm
+            "Qwen/Qwen2.5-72B-Instruct",          # reliable 72B
+            "deepseek-ai/DeepSeek-V3",            # strong coding + general
+            "meta-llama/Llama-3.3-70B-Instruct",  # best Llama 3
+            "Qwen/Qwen2.5-Coder-32B-Instruct",    # coding specialist
+            "microsoft/Phi-4",                    # efficient + reasoning
+        ],
+        "provider": "bytez",
+        "role":     "open-source",
+        "strengths": [TASK_CODE, TASK_GENERAL, TASK_FACTUAL],
+        "tier":     "slow",
+        "base_url": "https://api.bytez.com/models/v2/openai/v1",
+        "key_env":  "BYTEZ_API_KEY",
+        "color":    "\033[38;5;51m",   # bright cyan
     },
 ]
 
@@ -239,6 +255,11 @@ SPECIALIST_PROMPTS = {
         "You are Cloudflare AI — the diversity and independence expert in this council.\n"
         "Excel at: providing a genuinely independent perspective from a different model stack.\n"
         "Be direct and efficient. Your unique model mix brings views others may not surface."
+    ),
+    "bytez": (
+        "You are Bytez AI — the open-source depth expert in this council.\n"
+        "Excel at: accessing the full breadth of open-source models to find the best fit.\n"
+        "Bring rigorous, unfiltered open-source reasoning. No corporate guardrails."
     ),
 }
 
@@ -312,12 +333,44 @@ def classify_task(question: str) -> str:
     return best
 
 
-def _extract_confidence(text: str) -> "tuple[str, int]":
+def _extract_confidence(text: str) -> tuple[str, int]:
     m = re.search(r"CONFIDENCE:\s*(\d+)\s*/\s*10", text, re.IGNORECASE)
     if m:
         score = max(1, min(10, int(m.group(1))))
         return text[:m.start()].rstrip(), score
     return text, 7
+
+
+# ── Client cache ──────────────────────────────────────────────────────────────
+# OpenAI clients are stateless and safe to reuse across calls.
+# Creating a new client per agent per council call wastes time on connection
+# initialisation and header parsing — cache them instead.
+
+_client_cache: dict[str, OpenAI] = {}
+
+
+def clear_client_cache() -> None:
+    """Invalidate the client cache (e.g. after API key rotation)."""
+    _client_cache.clear()
+
+
+def _make_client(agent: dict) -> OpenAI:
+    """Return a cached OpenAI client for *agent*, creating one if needed."""
+    aid = agent["id"]
+    if aid in _client_cache:
+        return _client_cache[aid]
+
+    base_url = agent["base_url"]
+    # Cloudflare needs account ID resolved at runtime
+    if agent["provider"] == "cloudflare":
+        account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
+        base_url = (
+            f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
+        )
+
+    client = OpenAI(api_key=os.getenv(agent["key_env"]), base_url=base_url)
+    _client_cache[aid] = client
+    return client
 
 
 # ── Fallback lists ────────────────────────────────────────────────────────────
@@ -336,9 +389,9 @@ _HARD_STOP_ERRORS = (
 )
 
 # ── Shared state ──────────────────────────────────────────────────────────────
-_agent_used_model: dict = {}
-_agent_confidence: dict = {}
-_agent_timing:     dict = {}
+_agent_used_model: dict[str, str] = {}
+_agent_confidence: dict[str, int] = {}
+_agent_timing:     dict[str, float] = {}
 
 
 def _get_available_agents() -> list:
@@ -351,28 +404,17 @@ def _get_available_agents() -> list:
     return [a for a in AGENTS if _available(a)]
 
 
-def _make_client(agent: dict) -> OpenAI:
-    base_url = agent["base_url"]
-    # Cloudflare needs account ID resolved at runtime
-    if agent["provider"] == "cloudflare":
-        account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
-        base_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
-    return OpenAI(api_key=os.getenv(agent["key_env"]), base_url=base_url)
-
-
-# ── Core agent call ────────────────────────────────────────────────────────────
+# ── Core agent call ───────────────────────────────────────────────────────────
 def _call_agent(agent: dict, messages: list, results: dict, errors: dict,
                 spinner=None, task_type: str = TASK_GENERAL, lead_id: str = ""):
     t0  = time.time()
     aid = agent["id"]
 
-    # Build specialist system prompt
-    sys_content = SPECIALIST_PROMPTS.get(aid, "")
+    sys_content  = SPECIALIST_PROMPTS.get(aid, "")
     sys_content += TASK_PROMPTS.get(task_type, "")
     if aid == lead_id:
         sys_content += LEAD_EXTENSION
 
-    # Rebuild messages with specialist system prompt
     augmented = []
     replaced  = False
     for m in messages:
@@ -384,8 +426,7 @@ def _call_agent(agent: dict, messages: list, results: dict, errors: dict,
     if not replaced:
         augmented = [{"role": "system", "content": sys_content}] + list(messages)
 
-    # Inject confidence request into last user message
-    final = []
+    final: list[dict] = []
     injected = False
     for m in reversed(augmented):
         if m["role"] == "user" and not injected:
@@ -394,8 +435,9 @@ def _call_agent(agent: dict, messages: list, results: dict, errors: dict,
         else:
             final.insert(0, m)
 
-    client = _make_client(agent)
-    models = agent.get("models", [agent.get("model", "")])
+    # Use the cached client — no new connection overhead.
+    client     = _make_client(agent)
+    models     = agent.get("models", [agent.get("model", "")])
     last_error = ""
 
     for model in models:
@@ -407,17 +449,15 @@ def _call_agent(agent: dict, messages: list, results: dict, errors: dict,
                 max_tokens=2048, temperature=0.7, stream=False,
             )
             if not resp.choices:
-                last_error = "no choices"
-                continue
+                last_error = "no choices"; continue
             text = (resp.choices[0].message.content or "").strip()
             if not text:
-                last_error = "empty response"
-                continue
-            clean, conf = _extract_confidence(text)
-            results[aid]           = clean
-            _agent_used_model[aid] = model.split("/")[-1]
-            _agent_confidence[aid] = conf
-            _agent_timing[aid]     = round(time.time() - t0, 1)
+                last_error = "empty response"; continue
+            clean, conf               = _extract_confidence(text)
+            results[aid]              = clean
+            _agent_used_model[aid]    = model.split("/")[-1]
+            _agent_confidence[aid]    = conf
+            _agent_timing[aid]        = round(time.time() - t0, 1)
             return
         except Exception as e:
             last_error = str(e)[:200]
@@ -428,7 +468,7 @@ def _call_agent(agent: dict, messages: list, results: dict, errors: dict,
     errors[aid] = last_error
 
 
-# ── Disagreement detector ──────────────────────────────────────────────────────
+# ── Disagreement detector ─────────────────────────────────────────────────────
 def _detect_disagreement(responses: dict) -> bool:
     if len(responses) < 3:
         return False
@@ -437,12 +477,9 @@ def _detect_disagreement(responses: dict) -> bool:
     neg = sum(1 for t in texts if re.search(r'\b(no|incorrect|avoid|don\'t|shouldn\'t)\b', t[:300], re.I))
     if pos >= 2 and neg >= 1: return True
     if neg >= 2 and pos >= 1: return True
-    # Check if leading content is totally different across agents
-    sets = [set(t.lower().split()[:60]) for t in texts]
+    sets        = [set(t.lower().split()[:60]) for t in texts]
     overlap_avg = sum(len(sets[0] & s) for s in sets[1:]) / max(len(sets) - 1, 1)
-    if overlap_avg < 8 and len(texts) >= 3:
-        return True
-    return False
+    return overlap_avg < 8 and len(texts) >= 3
 
 
 # ── Debate round ──────────────────────────────────────────────────────────────
@@ -600,8 +637,7 @@ def _judge_stream(responses: dict, question: str, task_type: str,
             max_tokens=3000, temperature=0.3, stream=True,
         )
         for chunk in stream:
-            if not chunk.choices:
-                continue
+            if not chunk.choices: continue
             delta = chunk.choices[0].delta.content
             if delta:
                 full_text += delta
@@ -642,7 +678,7 @@ def _judge_sync(responses: dict, question: str, task_type: str) -> str:
 def format_council_stats(responses: dict, task_type: str,
                          had_debate: bool = False) -> str:
     parts = []
-    for aid, _ in responses.items():
+    for aid in responses:
         agent = next((a for a in AGENTS if a["id"] == aid), None)
         if not agent:
             continue
@@ -723,7 +759,6 @@ class CouncilSpinner:
         except: cols = 100
         sys.stdout.write("\r" + " " * cols + "\r")
         sys.stdout.flush()
-        # Final static line
         with self._lock:
             parts = []
             for a in self._agents:
@@ -735,7 +770,7 @@ class CouncilSpinner:
         print("  " + "   ".join(parts))
 
 
-# ── Main entry point ───────────────────────────────────────────────────────────
+# ── Main entry point ──────────────────────────────────────────────────────────
 def council_ask(messages: list, user_question: str,
                 show_individual: bool = False,
                 stream: bool = True,
@@ -745,14 +780,12 @@ def council_ask(messages: list, user_question: str,
                 agent_callback=None,
                 client=None,
                 model: str = "gemini-2.0-flash-lite"):
-    """
-    Full overpowered council call.
+    """Full council call.
 
-    stream=True        → returns a generator yielding string chunks
-    stream=False       → returns (synthesis_str, stats_str)
-    silent=True        → suppress all terminal output (for TUI mode)
-    agent_callback     → called as agent_callback(aid, success, conf, timing)
-                         when each agent finishes (useful for TUI sidebar updates)
+    stream=True  → generator yielding string chunks
+    stream=False → (synthesis_str, stats_str)
+    silent=True  → suppress terminal output (TUI mode)
+    agent_callback(aid, success, conf, timing) → called when each agent finishes
     """
     _agent_used_model.clear()
     _agent_confidence.clear()
@@ -765,15 +798,12 @@ def council_ask(messages: list, user_question: str,
             "GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, MISTRAL_API_KEY, HF_TOKEN"
         )
 
-    # ── Classification & Routing ──────────────────────────────────────────────
     task_type = "general"
     routing   = []
 
     if client:
         try:
-            cls = classify_request(user_question, client, model)
-            raw_intent = cls.get("intent", "general")
-            # Map LLM intent to internal task types
+            cls        = classify_request(user_question, client, model)
             intent_map = {
                 "coding":   TASK_CODE,
                 "debug":    TASK_DEBUG,
@@ -782,16 +812,14 @@ def council_ask(messages: list, user_question: str,
                 "search":   TASK_FACTUAL,
                 "chat":     TASK_GENERAL,
             }
-            task_type = intent_map.get(raw_intent, TASK_GENERAL)
+            task_type = intent_map.get(cls.get("intent", "general"), TASK_GENERAL)
             routing   = cls.get("routing", [])
         except Exception:
             task_type = classify_task(user_question)
     else:
         task_type = classify_task(user_question)
 
-    # Filter agents if routing is specific
     if routing:
-        # always keep reasoning as anchor
         filtered = [a for a in available if a["role"] in routing or a["role"] == "reasoning"]
         if filtered:
             available = filtered
@@ -801,13 +829,10 @@ def council_ask(messages: list, user_question: str,
     results: dict = {}
     errors:  dict = {}
 
-    if not silent:
-        spinner = CouncilSpinner(available)
+    spinner = CouncilSpinner(available) if not silent else None
+    if spinner:
         spinner.start()
-    else:
-        spinner = None
 
-    # ── Parallel agent calls ──────────────────────────────────────────────────
     def _wrap(agent):
         _call_agent(agent, messages, results, errors, spinner, task_type, lead_id)
         success = agent["id"] in results
@@ -838,7 +863,6 @@ def council_ask(messages: list, user_question: str,
     if errors and not silent:
         print(f"  {YE}▲  unavailable: {', '.join(errors)}{R}")
 
-    # ── Debate round ──────────────────────────────────────────────────────────
     had_debate = False
     if debate and len(results) >= 3 and _detect_disagreement(results):
         if not silent:
@@ -846,7 +870,6 @@ def council_ask(messages: list, user_question: str,
         results    = _debate_round(results, user_question, available)
         had_debate = True
 
-    # ── Show individual responses ─────────────────────────────────────────────
     if show_individual and not silent:
         print()
         for aid, text in results.items():
@@ -863,8 +886,10 @@ def council_ask(messages: list, user_question: str,
 
     n = len(results)
     if not silent:
-        print(f"\n  {DG}synthesizing {n} response{'s' if n > 1 else ''}  [{task_type}]"
-              f"{'  [debated]' if had_debate else ''}{R}\n")
+        print(
+            f"\n  {DG}synthesizing {n} response{'s' if n > 1 else ''}  [{task_type}]"
+            f"{'  [debated]' if had_debate else ''}{R}\n"
+        )
 
     if stream:
         def _gen():

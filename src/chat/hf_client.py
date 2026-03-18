@@ -225,6 +225,96 @@ def _cloudflare_base_url() -> str:
     return f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
 
 
+# Bytez — unified API for 100,000+ open-source models (https://bytez.com/api)
+# Base URL: https://api.bytez.com/models/v2/openai/v1
+# Models use HuggingFace-style IDs: org/model-name
+#
+# IMPORTANT: models prefixed with "openai/", "anthropic/", "mistral/", "google/"
+# are treated by Bytez as closed-source and require a separate "provider-key"
+# header — those are excluded here. Use the dedicated providers instead.
+# The "openai/gpt-oss-*" models appear to also trigger this routing and cause
+# 500 errors without a provider-key, even though they are open-weight.
+BYTEZ_MODELS = [
+    # ── Qwen3 — most capable open-source family right now ────────────────────
+    "Qwen/Qwen3-32B",                     # 🧠 dense 32B — best balance, fast warm
+    "Qwen/Qwen3-235B-A22B",               # 🧠 235B MoE — most capable Qwen3
+    "Qwen/Qwen3-8B",                      # ⚡ 8B — fastest Qwen3
+
+    # ── Qwen2.5 — rock-solid workhorses ──────────────────────────────────────
+    "Qwen/Qwen2.5-72B-Instruct",          # 🧠 72B — very reliable
+    "Qwen/Qwen2.5-Coder-32B-Instruct",    # 💻 coding specialist
+
+    # ── DeepSeek ──────────────────────────────────────────────────────────────
+    "deepseek-ai/DeepSeek-V3",            # 🧠 strong general + coding
+    "deepseek-ai/DeepSeek-R1",            # 🔍 reasoning specialist (heavy)
+
+    # ── Llama 3.x ─────────────────────────────────────────────────────────────
+    "meta-llama/Llama-3.3-70B-Instruct",  # 🧠 best Llama 3 general
+    "meta-llama/Llama-3.1-405B-Instruct", # 🧠 largest open model (slow start)
+    "meta-llama/Llama-3.2-3B-Instruct",   # 🚀 tiny, fastest
+
+    # ── Mistral ───────────────────────────────────────────────────────────────
+    "mistralai/Mixtral-8x22B-Instruct-v0.1",  # 🧠 strong MoE
+    "mistralai/Mistral-7B-Instruct-v0.3",     # ⚡ reliable 7B fallback
+
+    # ── Google ────────────────────────────────────────────────────────────────
+    "google/gemma-3-27b-it",              # 🧠 Gemma 3 27B
+
+    # ── Microsoft ─────────────────────────────────────────────────────────────
+    "microsoft/Phi-4",                    # 💻 efficient, great at coding + reasoning
+]
+
+# Skip patterns for the live model fetch — non-chat / multimodal / embed tasks
+_BYTEZ_SKIP_PATTERNS = (
+    "embed", "embedding", "rerank", "whisper", "tts", "asr",
+    "stable-diffusion", "flux", "dall-e", "image-gen", "speech", "video", "depth",
+)
+
+# Closed-source provider prefixes — skip; Bytez routes these to paid providers
+_BYTEZ_CLOSED_PREFIXES = ("openai/", "anthropic/", "google/gemini", "mistral/")
+
+
+def _fetch_bytez_models() -> list:
+    """Fetch chat-capable open-source models from Bytez live API.
+
+    Uses the correct list endpoint: GET /models/v2/list/models?task=chat
+    Falls back to the curated BYTEZ_MODELS list on any error.
+    """
+    try:
+        key = os.getenv("BYTEZ_API_KEY", "")
+        req = urllib.request.Request(
+            "https://api.bytez.com/models/v2/list/models?task=chat",
+            headers={"Authorization": key},
+        )
+        with urllib.request.urlopen(req, timeout=8) as r:
+            data = json.loads(r.read())
+
+        # Response: {"error": null, "output": [{"modelId": "...", "task": "chat"}, ...]}
+        output = data.get("output", [])
+        if not output:
+            return BYTEZ_MODELS[:]
+
+        live_ids = {
+            m.get("modelId", "")
+            for m in output
+            if m.get("modelId")
+            # Skip closed-source provider prefixes (require provider-key)
+            and not any(m.get("modelId", "").startswith(p) for p in _BYTEZ_CLOSED_PREFIXES)
+            # Skip non-text modalities
+            and not any(skip in m.get("modelId", "").lower() for skip in _BYTEZ_SKIP_PATTERNS)
+        }
+
+        if not live_ids:
+            return BYTEZ_MODELS[:]
+
+        # Keep our curated priority order first, then anything new from the live API
+        ordered = [m for m in BYTEZ_MODELS if m in live_ids]
+        extras  = sorted(live_ids - set(BYTEZ_MODELS))
+        return ordered + extras if ordered else BYTEZ_MODELS[:]
+    except Exception:
+        return BYTEZ_MODELS[:]
+
+
 # Vercel AI Gateway — $5 free credits/month, 100+ models, no markup fee
 # Base: https://ai-gateway.vercel.sh/v1
 # Models use provider/model-name format: "openai/gpt-4o", "anthropic/claude-sonnet-4.6"
@@ -366,6 +456,7 @@ def get_provider() -> str:
     if os.getenv("MISTRAL_API_KEY"):     return "mistral"
     if os.getenv("GITHUB_API_KEY"):      return "github"
     if os.getenv("COHERE_API_KEY"):      return "cohere"
+    if os.getenv("BYTEZ_API_KEY"):       return "bytez"
     if os.getenv("VERCEL_API_KEY"):         return "vercel"
     if os.getenv("CLOUDFLARE_API_KEY") and os.getenv("CLOUDFLARE_ACCOUNT_ID"): return "cloudflare"
     if os.getenv("GOOGLE_APPLICATION_CREDENTIALS") and os.getenv("VERTEX_PROJECT_ID"): return "vertex"
@@ -379,6 +470,7 @@ def get_provider() -> str:
         "  HF_TOKEN=...            https://huggingface.co/settings/tokens\n"
         "  GITHUB_API_KEY=...      https://github.com/settings/tokens\n"
         "  COHERE_API_KEY=...      https://dashboard.cohere.com/api-keys\n"
+        "  BYTEZ_API_KEY=...       https://bytez.com/api\n"
         "  CLOUDFLARE_API_KEY=...  https://dash.cloudflare.com/profile/api-tokens\n"
         "  CLOUDFLARE_ACCOUNT_ID=... https://dash.cloudflare.com (right sidebar)\n"
         "  VERCEL_API_KEY=...      https://vercel.com/dashboard -> AI -> API Keys\n"
@@ -403,6 +495,7 @@ def get_available_providers() -> list:
     if os.getenv("HF_TOKEN"):            providers.append("huggingface")
     if os.getenv("GITHUB_API_KEY"):      providers.append("github")
     if os.getenv("COHERE_API_KEY"):      providers.append("cohere")
+    if os.getenv("BYTEZ_API_KEY"):       providers.append("bytez")
     if os.getenv("VERCEL_API_KEY"):         providers.append("vercel")
     if os.getenv("CLOUDFLARE_API_KEY") and os.getenv("CLOUDFLARE_ACCOUNT_ID"): providers.append("cloudflare")
     if os.getenv("GOOGLE_APPLICATION_CREDENTIALS") and os.getenv("VERTEX_PROJECT_ID"): providers.append("vertex")
@@ -440,6 +533,11 @@ def _make_client(provider: str) -> OpenAI:
         return OpenAI(
             base_url="https://api.cohere.com/compatibility/v1",
             api_key=os.getenv("COHERE_API_KEY"),
+        )
+    if provider == "bytez":
+        return OpenAI(
+            base_url="https://api.bytez.com/models/v2/openai/v1",
+            api_key=os.getenv("BYTEZ_API_KEY"),
         )
     if provider == "cloudflare":
         return OpenAI(
@@ -499,6 +597,8 @@ def get_models(provider: str = None) -> list:
         models = _fetch_github_models()
     elif p == "cohere":
         models = COHERE_MODELS[:]
+    elif p == "bytez":
+        models = _fetch_bytez_models()
     elif p == "cloudflare":
         models = CLOUDFLARE_MODELS[:]
     elif p == "vercel":

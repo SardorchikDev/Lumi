@@ -192,6 +192,7 @@ PROV_COL = {
     "openrouter":  "\033[38;5;141m",
     "mistral":     "\033[38;5;210m",
     "huggingface": "\033[38;5;179m",
+    "bytez":       "\033[38;5;51m",   # bright cyan
     "ollama":      "\033[38;5;114m",
 }
 
@@ -441,6 +442,7 @@ PROVIDER_LABELS: dict[str, tuple[str, str]] = {
     "huggingface": ("HuggingFace",   "HuggingFace — free tier, rate limited"),
     "github":      ("GitHub Models", "GPT-4o, o1, DeepSeek R1, Phi-4 — free with GitHub"),
     "cohere":      ("Cohere",        "Cohere — free 1,000 req/month"),
+    "bytez":       ("Bytez",         "Bytez — 100,000+ open-source models, full HuggingFace catalog"),
     "cloudflare":  ("Cloudflare",    "Cloudflare Workers AI — free 10 k neurons/day"),
     "ollama":      ("Ollama",        "Local Ollama — fully offline, no API limits"),
     "council":     ("⚡ Council",    "All agents in parallel — synthesized best answer"),
