@@ -12,6 +12,13 @@ def fg(n): return f"\033[38;5;{n}m"
 
 
 THEMES = {
+    "codex": {
+        "name": "Codex Slate",
+        "C1": fg(255), "C2": fg(252), "C3": fg(249),
+        "PU": fg(81),  "BL": fg(117), "CY": fg(117),
+        "GR": fg(250), "DG": fg(241), "MU": fg(244),
+        "GN": fg(114), "RE": fg(203), "YE": fg(179), "WH": fg(255),
+    },
     "tokyo": {
         "name": "Tokyo Night Storm",
         "C1": fg(117), "C2": fg(111), "C3": fg(105),
@@ -49,7 +56,7 @@ THEMES = {
     },
 }
 
-DEFAULT = "tokyo"
+DEFAULT = "codex"
 
 
 def load_theme_name() -> str:

@@ -120,29 +120,68 @@ def _erase_line(): return f"{CSI}2K"
 def _clr_down(): return f"{CSI}J"
 
 BG = "transparent"
-BG_DARK = "#24283b"
-BG_HL = "#292e42"
-BG_POP = "#1f2335"
-BORDER = "#414868"
-MUTED = "#565f89"
-COMMENT = "#565f89"
-FG_DIM = "#a9b1d6"
-FG = "#c0caf5"
-FG_HI = "#cfc9c2"
-BLUE = "#7aa2f7"
-CYAN = "#7dcfff"
-GREEN = "#9ece6a"
-YELLOW = "#e0af68"
-ORANGE = "#ff9e64"
-RED = "#f7768e"
-PURPLE = "#bb9af7"
-TEAL = "#2ac3de"
+BG_DARK = "#1d2230"
+BG_HL = "#242a38"
+BG_POP = "#181d28"
+BORDER = "#31384a"
+MUTED = "#6b7285"
+COMMENT = "#6b7285"
+FG_DIM = "#abb3c5"
+FG = "#cfd6e6"
+FG_HI = "#eef2ff"
+BLUE = "#8fb4ff"
+CYAN = "#86d3ff"
+GREEN = "#9ad27a"
+YELLOW = "#e3c277"
+ORANGE = "#f2a97f"
+RED = "#ef8b8b"
+PURPLE = "#a7b7ff"
+TEAL = "#78c8c8"
 
 def B(h): return _fg(h) + _bold()
 R = _reset()
 
 SPINNER_FRAMES = list("⠋⠙⠚⠞⠦⠴⠲⠳⠓⠋")
 PULSE_DOTS = ["   ", "·  ", " · ", "  ·", "···"]
+
+def _rule(width, label=""):
+    line_w = max(8, width - 4)
+    if not label:
+        return _fg(BORDER) + "─" * line_w + R
+    plain = f" {label} "
+    left = max(0, (line_w - len(plain)) // 2)
+    right = max(0, line_w - len(plain) - left)
+    return _fg(BORDER) + "─" * left + R + _fg(MUTED) + plain + R + _fg(BORDER) + "─" * right + R
+
+def _popup_frame(top, left, width, title=""):
+    header = _move(top, left) + _fg(BORDER) + "┌" + "─" * (width - 2) + "┐" + R
+    if title:
+        title_text = f" {title} "
+        title_len = min(len(title_text), max(0, width - 4))
+        title_text = title_text[:title_len]
+        start = left + max(2, (width - title_len) // 2)
+        header += _move(top, start) + _fg(MUTED) + title_text + R
+    return header
+
+def _popup_line(row, left, width, content="", tone=FG_DIM, selected=False):
+    inner_w = max(0, width - 4)
+    plain = content[:inner_w]
+    bg = _bg(BG_HL if selected else BG_POP)
+    return (
+        _move(row, left)
+        + _fg(BORDER) + "│ " + R
+        + bg + _fg(tone) + plain + " " * max(0, inner_w - len(plain)) + R
+        + _fg(BORDER) + " │" + R
+    )
+
+def _rule(width, label=""):
+    line_w = max(0, width - 4)
+    if not label:
+        return _fg(BORDER) + "─" * line_w + R
+    plain = f" {label} "
+    left = max(0, (line_w - len(plain)) // 2)
+    right = max(0, line_w - len(plain) - left)
+    return _fg(BORDER) + "─" * left + R + _fg(MUTED) + plain + R + _fg(BORDER) + "─" * right + R
 
 PROV_NAME = {
     "gemini": "Gemini", "groq": "Groq", "openrouter": "OpenRouter",
@@ -205,10 +244,41 @@ def _read_key():
                 if r:
                     seq = os.read(fd, 16)
                     full = ch + seq
+                    if full.startswith(b"\x1b["):
+                        if full.endswith(b"A"):
+                            if b";2" in full or b"[a" in full:
+                                return "SHIFT_UP"
+                            if b";5" in full:
+                                return "CTRL_UP"
+                            return "UP"
+                        if full.endswith(b"B"):
+                            if b";2" in full or b"[b" in full:
+                                return "SHIFT_DOWN"
+                            if b";5" in full:
+                                return "CTRL_DOWN"
+                            return "DOWN"
+                        if full.endswith(b"C"):
+                            if b";5" in full:
+                                return "CTRL_RIGHT"
+                            return "RIGHT"
+                        if full.endswith(b"D"):
+                            if b";5" in full:
+                                return "CTRL_LEFT"
+                            return "LEFT"
+                        if full.endswith(b"H"): return "HOME"
+                        if full.endswith(b"F"): return "END"
+                        if full.endswith(b"~"):
+                            if b"[3~" in full: return "DELETE"
+                            if b"[5~" in full: return "PGUP"
+                            if b"[6~" in full: return "PGDN"
                     if full == b"\x1b[A": return "UP"
                     if full == b"\x1b[B": return "DOWN"
                     if full == b"\x1b[C": return "RIGHT"
                     if full == b"\x1b[D": return "LEFT"
+                    if full == b"\x1b[1;2A": return "SHIFT_UP"
+                    if full == b"\x1b[1;2B": return "SHIFT_DOWN"
+                    if full == b"\x1b[1;5A": return "CTRL_UP"
+                    if full == b"\x1b[1;5B": return "CTRL_DOWN"
                     if full == b"\x1b[H": return "HOME"
                     if full == b"\x1b[F": return "END"
                     if full == b"\x1b[3~": return "DELETE"
@@ -216,6 +286,7 @@ def _read_key():
                     if full == b"\x1b[6~": return "PGDN"
                     if full == b"\x1b[1;5C": return "CTRL_RIGHT"
                     if full == b"\x1b[1;5D": return "CTRL_LEFT"
+                    return ""
                 return "ESC"
 
             if ch in (b"\r", b"\n"): return "ENTER"
@@ -308,9 +379,9 @@ class Renderer:
 
         w(_hide_cur())
 
-        # Row 1 = hint+status bar (top), row rows = prompt (bottom)
-        # Chat occupies rows 2 .. rows-1
-        chat_rows = rows - 2
+        # Rows 1..2 = header, rows-1..rows = prompt area
+        # Chat occupies rows 3 .. rows-2
+        chat_rows = rows - 4
 
         # Draw top bar first
         if not (self.tui.picker_visible or getattr(self.tui, "browser_visible", False)):
@@ -318,7 +389,7 @@ class Renderer:
         else:
             w(_move(1, 1) + _bg(BG) + _erase_line())
 
-        # Build and render chat area (rows 2..rows-1)
+        # Build and render chat area (rows 3..rows-2)
         chat_lines = self._build_chat_lines(chat_w)
         total = len(chat_lines)
         offset = max(0, min(self.tui.scroll_offset, max(0, total - chat_rows)))
@@ -330,7 +401,7 @@ class Renderer:
             chat_lines.insert(0, "")
 
         for i in range(chat_rows):
-            w(_move(i + 2, 1))   # +2 because row 1 is the top bar
+            w(_move(i + 3, 1))
             cl = chat_lines[i] if i < len(chat_lines) else ""
 
             if pane_active:
@@ -341,14 +412,18 @@ class Renderer:
                 pane_lines = getattr(self.tui, "pane_lines_output", [])
                 p_idx = i - chat_rows + len(pane_lines)
                 pane_line = pane_lines[p_idx] if p_idx >= 0 and p_idx < len(pane_lines) else ""
-                pane_line_padded = pane_line.ljust(pane_w)[:pane_w]
+                pane_inner = max(0, pane_w - 3)
+                pane_line_padded = (_fg(FG_DIM) + pane_line[:pane_inner].ljust(pane_inner) + R) if pane_inner else ""
 
-                w(_bg(BG) + cl_padded + _fg(BORDER) + "│" + _fg(FG) + pane_line_padded + _bg(BG))
+                divider = _fg(BORDER) + "│" + R
+                pane_prefix = _fg(MUTED) + " " + R if pane_w > 2 else ""
+                w(_bg(BG) + cl_padded + divider + pane_prefix + pane_line_padded + _bg(BG))
             else:
                 w(_bg(BG) + _erase_line() + cl + _bg(BG))
 
-        # Prompt at bottom row
+        # Prompt area at bottom rows
         if self.tui.picker_visible or getattr(self.tui, "browser_visible", False):
+            w(_move(rows - 1, 1) + _bg(BG) + _erase_line())
             w(_move(rows, 1) + _bg(BG) + _erase_line())
         else:
             w(self._prompt_bar(rows, cols, chat_w))
@@ -372,7 +447,7 @@ class Renderer:
     def _build_chat_lines(self, width):
         msgs = self.tui.store.snapshot()
         lines =[]
-        inner = max(30, width - 6)
+        inner = max(30, width - 8)
         if not msgs:
             ver = "v0.3.4"
 
@@ -399,18 +474,23 @@ class Renderer:
             # wordmark right of logo
             word_row = 3   # row index to place "lumi" inline (0-based)
 
-            lines.append("")  # one blank below the top bar
+            top_pad = max(1, (_term_size()[0] - 18) // 3)
+            lines.extend([""] * top_pad)
             for i, row_tuple in enumerate(ant):
                 row_str = row_tuple[0]
                 if i == word_row:
                     row_str = row_str  # already has ^aNT embedded
-                lines.append(" " + row_str)
+                lines.append(" " * 8 + row_str)
 
             lines.append("")
             lines.append(
-                " " * 4 + B(FG_HI) + "lumi" + R +
-                _fg(BORDER) + "  " + ver + R
+                " " * 8 + _fg(FG_HI) + _bold() + "lumi" + R +
+                _fg(MUTED) + "  terminal workspace" + R
             )
+            provider = PROV_NAME.get(self.tui.current_model if self.tui.current_model == "council" else get_provider(), get_provider())
+            model = self.tui.current_model.split("/")[-1][:24]
+            lines.append(" " * 8 + _fg(MUTED) + ver + "  ·  " + provider + "  ·  " + model + R)
+            lines.append(" " * 8 + _fg(FG_DIM) + "/help  ·  /mode  ·  /search" + R)
             lines.append("")
             # fill rest with empty lines
             chat_rows = _term_size()[0] - 4
@@ -420,25 +500,26 @@ class Renderer:
         # Optional pinned agent plan panel (from /agent)
         if getattr(self.tui, "agent_active_objective", None) and getattr(self.tui, "agent_tasks", None):
             lines.append("")
-            lines.append("  " + _fg(COMMENT) + "Agent objective: " + _fg(FG_HI) + self.tui.agent_active_objective + R)
+            lines.append("  " + _fg(MUTED) + "objective" + R + "  " + _fg(FG_HI) + self.tui.agent_active_objective + R)
             for idx, task in enumerate(self.tui.agent_tasks, start=1):
-                bullet = "○"
+                bullet = "·"
                 label = task.get("text", "")
                 for ln in textwrap.wrap(label, inner - 6) or [label]:
-                    lines.append("    " + _fg(MUTED) + bullet + " " + _fg(FG) + ln + R)
+                    lines.append("    " + _fg(MUTED) + bullet + " " + _fg(FG_DIM) + ln + R)
                     bullet = " "  # only first line gets the bullet
             lines.append("")
 
         for msg in msgs:
             if msg.role == "user":
-                u_rail = _fg(BLUE) + "▎" + R
-                lines.append("  " + u_rail + " " + _fg(FG_DIM) + "you  " + _fg(COMMENT) + msg.ts + R)
+                u_rail = _fg(BLUE) + "│" + R
+                lines.append("  " + u_rail + " " + _fg(MUTED) + "you" + R + "  " + _fg(COMMENT) + msg.ts + R)
                 for ln in textwrap.wrap(msg.text, inner) or [msg.text]:
                     lines.append("  " + u_rail + " " + _fg(FG_HI) + ln + R)
+                lines.append("  " + _fg(BORDER) + "┈" * max(8, min(inner, 30)) + R)
                 lines.append("")
 
             elif msg.role in ("assistant", "streaming"):
-                label = msg.label or "◆ Lumi"
+                label = msg.label or "lumi"
                 is_stream = msg.role == "streaming"
                 t_now = time.time()
                 # Animated streaming cursor block
@@ -450,14 +531,14 @@ class Renderer:
 
                 if self.tui.vessel_mode and self.tui.active_vessel:
                     rail_col = RED
-                    hdr_col = B(RED)
+                    hdr_col = _fg(RED) + _bold()
                     if "vessel" not in label:
-                        label = f"◈ Vessel [{self.tui.active_vessel}]"
+                        label = f"vessel [{self.tui.active_vessel}]"
                 else:
-                    rail_col = PURPLE
-                    hdr_col = B(PURPLE)
+                    rail_col = CYAN
+                    hdr_col = _fg(FG_HI) + _bold()
 
-                a_rail = _fg(rail_col) + "▎" + R
+                a_rail = _fg(rail_col) + "│" + R
                 a_pre  = "  " + a_rail + " "
                 lines.append(
                     "  " + a_rail + " " +
@@ -467,7 +548,7 @@ class Renderer:
                 raw_lines = msg.text.split("\n") if msg.text else [""]
 
                 in_code = False
-                code_w = min(inner - 2, 92)
+                code_w = min(inner - 2, 88)
                 lpre = a_pre
 
                 for ln in raw_lines:
@@ -475,21 +556,21 @@ class Renderer:
                         if not in_code:
                             in_code = True
                             code_lang = ln[3:].strip()
-                            lt = f" {code_lang}" if code_lang else " code"
-                            lang_badge = _fg(CYAN) + _bold() + lt + R
-                            bar_fill = "─" * max(0, code_w - len(lt) - 1)
+                            lt = code_lang or "code"
+                            lang_badge = _fg(MUTED) + lt + R
+                            bar_fill = "─" * max(0, code_w - len(lt) - 3)
                             lines.append(
                                 lpre +
-                                _fg(BORDER) + "╭" + _fg(TEAL) + "─" + R +
+                                _fg(BORDER) + "┌─ " + R +
                                 lang_badge +
-                                _fg(BORDER) + " " + bar_fill + "╮" + R
+                                _fg(BORDER) + " " + bar_fill + "┐" + R
                             )
                             _code_lineno = [0]  # mutable counter
                         else:
                             in_code = False
                             bar_fill = "─" * max(0, code_w)
                             lines.append(
-                                lpre + _fg(BORDER) + "╰" + bar_fill + "╯" + R
+                                lpre + _fg(BORDER) + "└" + bar_fill + "┘" + R
                             )
                         continue
 
@@ -501,8 +582,8 @@ class Renderer:
                             hi = _syntax_hi(sl)
                             pad = max(0, mcc - _visible_len(sl))
                             lines.append(
-                                lpre + _bg(BG_DARK) + lineno_str +
-                                hi + _bg(BG_DARK) + " " * pad + R
+                                lpre + _bg(BG_POP) + lineno_str +
+                                hi + _bg(BG_POP) + " " * pad + R
                             )
                             lineno_str = _fg(BORDER) + "    " + R  # continuation lines no number
                         continue
@@ -510,26 +591,28 @@ class Renderer:
                     # Standard Markdown Formatting inside AI Bubbles
                     if re.match(r"^#{1,6} ", ln):
                         lvl = len(ln) - len(ln.lstrip("#"))
-                        col =[BLUE, CYAN, TEAL, FG_HI, FG, FG_DIM][min(lvl - 1, 5)]
-                        lines.append(lpre) # Extra padding above headers
+                        col =[FG_HI, CYAN, TEAL, FG, FG_DIM, MUTED][min(lvl - 1, 5)]
+                        if lines and lines[-1] != "":
+                            lines.append(lpre)
                         txt = ln.lstrip("# ")
                         lines.append(lpre + _fg(col) + _bold() + txt + R)
 
                     elif ln.startswith("> "):
                         body = ln[2:]
-                        lines.append(lpre + _fg(TEAL) + "▍" + _italic() + _fg(FG_DIM) + " " + body + R)
+                        lines.append(lpre + _fg(TEAL) + "│ " + _italic() + _fg(FG_DIM) + body + R)
                     elif re.match(r"^[-*•] ", ln):
                         body = ln[2:]
-                        lines.append(lpre + _fg(CYAN) + "  ◦ " + _fg(FG) + body + R)
+                        lines.append(lpre + _fg(MUTED) + "• " + _fg(FG) + body + R)
                     elif re.match(r"^\d+\. ", ln):
                         m = re.match(r'^(\d+)\. (.*)', ln)
                         if m:
                             num, body = m.group(1), m.group(2)
-                            lines.append(lpre + _fg(PURPLE) + _bold() + f"  {num}." + R + " " + _fg(FG) + body + R)
+                            lines.append(lpre + _fg(CYAN) + _bold() + f"{num}." + R + " " + _fg(FG) + body + R)
                         else:
                             lines.append(lpre + _fg(FG) + ln + R)
                     elif ln.strip() == "":
-                        lines.append(lpre)
+                        if not lines or lines[-1] != lpre:
+                            lines.append(lpre)
                     else:
                         rendered = self._inline(ln)
                         if len(_strip_ansi(ln)) <= inner:
@@ -538,21 +621,22 @@ class Renderer:
                             for wl in (textwrap.wrap(_strip_ansi(ln), inner) or [ln]):
                                 lines.append(lpre + _fg(FG) + wl + R)
 
-                if in_code: lines.append(lpre + _bg(BG_DARK) + _fg(RED) + "[STREAM PAUSED]" + " " * (code_w - 15) + R)
+                if in_code: lines.append(lpre + _bg(BG_POP) + _fg(RED) + "[STREAM PAUSED]" + " " * (code_w - 15) + R)
                 if cursor: lines[-1] += cursor
 
+                lines.append("  " + _fg(BORDER) + "┈" * max(8, min(inner, 30)) + R)
                 lines.append("")
 
             elif msg.role == "system":
-                sys_rail = _fg(TEAL) + "▎" + R
+                sys_rail = _fg(TEAL) + "│" + R
                 for sln in msg.text.split("\n"):
                     for wl in (textwrap.wrap(sln, inner) if sln.strip() else [""]):
-                        lines.append("  " + sys_rail + " " + _fg(TEAL) + wl + R)
+                        lines.append("  " + sys_rail + " " + _fg(FG_DIM) + wl + R)
                 lines.append("")
 
             elif msg.role == "error":
-                err_rail = _fg(RED) + "▎" + R
-                lines.append("  " + err_rail + " " + _fg(RED) + "⚠  " + msg.text + R)
+                err_rail = _fg(RED) + "│" + R
+                lines.append("  " + err_rail + " " + _fg(RED) + "warning" + R + "  " + _fg(FG_HI) + msg.text + R)
                 lines.append("")
 
         return lines
@@ -578,6 +662,16 @@ class Renderer:
                 i += 1
         return out
 
+    def _mode_hint(self):
+        parts = []
+        if self.tui.multiline:
+            parts.append("multiline")
+        if self.tui.response_mode:
+            parts.append(self.tui.response_mode)
+        if self.tui.vessel_mode and self.tui.active_vessel:
+            parts.append(f"vessel {self.tui.active_vessel}")
+        return " · ".join(parts)
+
     def _stat_info(self, chat_w):
         """Compute status string (plain + colored) for top bar."""
         tui = self.tui
@@ -591,8 +685,8 @@ class Renderer:
         mode = f" {tui.response_mode}" if tui.response_mode else ""
 
         if tui.vessel_mode and tui.active_vessel:
-            stat_str   = f"⬡ VESSEL [{tui.active_vessel.upper()}] · ~{toks:,}tk{mode}"
-            stat_colored = _fg(RED) + _bold() + f"⬡ VESSEL [{tui.active_vessel.upper()}]" + R + _fg(COMMENT) + f" · ~{toks:,}tk{mode}"
+            stat_str   = f"vessel {tui.active_vessel.lower()} · ~{toks:,}tk{mode}"
+            stat_colored = _fg(RED) + _bold() + f"vessel {tui.active_vessel.lower()}" + R + _fg(COMMENT) + f" · ~{toks:,}tk{mode}"
         else:
             stat_str   = f"{pname} · {model} · ~{toks:,}tk{mode}"
             stat_colored = _fg(FG_DIM) + pname + R + _fg(COMMENT) + f" · {model} · ~{toks:,}tk{mode}"
@@ -606,15 +700,15 @@ class Renderer:
                 names_plain.append(nm)
                 rail_segments.append(_fg(col) + ico + " " + nm + R)
             stat_str     = "Council " + " ".join(names_plain) + mode
-            stat_colored = _fg(COMMENT) + "Council " + _fg(FG_DIM) + " | " + _fg(FG) + "  ".join(rail_segments) + R
+            stat_colored = _fg(COMMENT) + "council" + _fg(FG_DIM) + " · " + _fg(FG) + "  ".join(rail_segments) + R
 
         return stat_str, stat_colored
 
     def _top_bar(self, rows, cols, chat_w):
         """Row 1: hint on left, model/status on right."""
         stat_str, stat_colored = self._stat_info(chat_w)
-        hint_plain   = "  /help · Tab · Ctrl+R · Ctrl+Q"
-        hint_colored = _fg(BORDER) + "  " + _fg(MUTED) + "/help · Tab · Ctrl+R · Ctrl+Q" + R
+        hint_plain   = "  lumi · /help · tab complete · shift+↑↓ scroll"
+        hint_colored = _fg(BORDER) + "  " + _fg(FG_HI) + _bold() + "lumi" + R + _fg(MUTED) + " · /help · tab complete · shift+↑↓ scroll" + R
 
         hint_len = _visible_len(hint_plain)
         stat_len = _visible_len(stat_str)
@@ -626,7 +720,10 @@ class Renderer:
             top_w    = max(0, chat_w - stat_len - 2)
             top_line = " " * top_w + stat_colored
 
-        return _move(1, 1) + _bg(BG) + _erase_line() + top_line + R
+        return (
+            _move(1, 1) + _bg(BG) + _erase_line() + top_line + R +
+            _move(2, 1) + _bg(BG) + _erase_line() + "  " + _rule(chat_w) + R
+        )
 
     def _prompt_bar(self, rows, cols, chat_w):
         """Bottom row: spinner/chevron + input buffer."""
@@ -637,15 +734,24 @@ class Renderer:
             sym  = _fg(CYAN) + SPINNER_FRAMES[frame] + " " + R
             hint = _fg(MUTED) + _italic() + "thinking" + PULSE_DOTS[int(t_now * 2) % len(PULSE_DOTS)] + R
         else:
-            sym  = _fg(BLUE) + _bold() + "❯ " + R
+            sym  = _fg(BLUE) + _bold() + "> " + R
             hint = ""
 
         txt    = tui.buf
         disp_w = chat_w - 7
         scroll = max(0, tui.cur_pos - disp_w + 1)
         shown  = txt[scroll:scroll + disp_w]
+        placeholder = _fg(MUTED) + "ask lumi to code, explain, or search..." + R if not shown and not tui.busy else ""
+        mode_hint = self._mode_hint()
+        status_line = mode_hint if mode_hint else ("thinking" if tui.busy else "ready")
 
-        return _move(rows, 1) + _bg(BG) + _erase_line() + "  " + sym + _fg(FG_HI) + shown + hint + R
+        bar = "  " + _fg(BORDER) + "─" * max(0, chat_w - 4) + R
+        prompt = _move(rows - 1, 1) + _bg(BG) + _erase_line() + bar
+        status_prefix = _fg(MUTED) + status_line + R
+        status_room = max(0, chat_w - _visible_len(status_line) - 4)
+        prompt = _move(rows - 1, 1) + _bg(BG) + _erase_line() + "  " + status_prefix + " " * status_room + R
+        prompt += _move(rows, 1) + _bg(BG) + _erase_line() + "  " + sym + _fg(FG_HI) + shown + (placeholder if not shown else hint) + R
+        return prompt
 
     # kept for any external callers; delegates to the two new methods
     def _input_area(self, rows, cols, chat_w):
@@ -671,13 +777,12 @@ class Renderer:
         else:
             local_sel = -1
 
-        out = [_move(top, left) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
+        out = [_popup_frame(top, left, pop_w, "browser")]
 
         # Header (shows CWD)
         cwd = tui.browser_cwd
         if len(cwd) > pop_w - 6: cwd = "..." + cwd[-(pop_w - 9):]
-        pad = max(0, pop_w - 4 - len(cwd))
-        out.append(_move(top + 1, left) + _fg(BORDER) + "│ " + _fg(BLUE) + cwd + " " * pad + _fg(BORDER) + " │" + R)
+        out.append(_popup_line(top + 1, left, pop_w, cwd, tone=FG_HI))
         out.append(_move(top + 2, left) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
 
         row = top + 3
@@ -694,119 +799,76 @@ class Renderer:
                 icon = "󰈔"; color = _fg(FG_DIM); name_color = _fg(FG_HI) if is_sel else _fg(MUTED)
 
             disp_name = iname[:pop_w - 10]
-            sp = max(0, pop_w - 4 - len(disp_name) - 2)
             pointer = "› " if is_sel else "  "
-            out.append(
-                _move(row, left)
-                + _bg(BG)
-                + _fg(BORDER) + "│ "
-                + bg_
-                + color + icon + " "
-                + name_color + pointer + disp_name
-                + " " * max(0, sp - 2) + R
-                + _fg(BORDER) + " │" + R
-            )
+            content = f"{icon} {pointer}{disp_name}"
+            out.append(_popup_line(row, left, pop_w, _strip_ansi(content), tone=FG_HI if is_sel else FG_DIM, selected=is_sel))
             row += 1
 
         # Empty space padding if list is short
         while row < top + pop_h - 1:
-            out.append(_move(row, left) + _fg(BORDER) + "│ " + " " * (pop_w - 4) + " │" + R)
+            out.append(_popup_line(row, left, pop_w, "", tone=FG_DIM))
             row += 1
 
         out.append(_move(row, left) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
         row += 1
         bot_txt = "Esc Close  ·  ↑↓ Move  ·  Enter/→ Open  ·  ← Back"
-        out.append(_move(row, left) + _fg(BORDER) + "│ " + _fg(COMMENT) + bot_txt + " " * max(0, pop_w - 4 - len(bot_txt)) + _fg(BORDER) + " │" + R)
+        out.append(_popup_line(row, left, pop_w, bot_txt, tone=MUTED))
         row += 1
-        out.append(_move(row, left) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
+        out.append(_move(row, left) + _fg(BORDER) + "└" + "─" * (pop_w - 2) + "┘" + R)
 
         return "".join(out)
 
     def _slash_popup(self, rows, cols):
         hits = self.tui.slash_hits; sel = self.tui.slash_sel; pop_w = min(58, cols - 4)
         n = min(len(hits), 10); top = rows - 2 - n - 2; left = max(2, (cols - pop_w) // 2)
-        out = [_move(top, left) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
+        out = [_popup_frame(top, left, pop_w, "commands")]
         for i, (cmd, desc) in enumerate(hits[:10]):
             is_sel = (i == sel)
-            cc = _fg(CYAN) + _bold() if is_sel else _fg(BLUE)
-            dc = _fg(FG_HI) if is_sel else _fg(MUTED)
-            bg_ = _bg(BG_HL) if is_sel else _bg(BG)
             d_cmd = f"{cmd[:15]:<16}"
             d_desc = desc[:max(0, pop_w - 26)]
-            pad2 = max(0, pop_w - 22 - len(d_desc))
             pointer = "› " if is_sel else "  "
-            out.append(
-                _move(top + 1 + i, left)
-                + _fg(BORDER) + "│ "
-                + bg_ + cc + pointer + d_cmd + R
-                + bg_ + dc + d_desc + " " * pad2 + R
-                + _fg(BORDER) + " │" + R
-            )
-        out.append(_move(top + 1 + n, left) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
+            content = f"{pointer}{d_cmd} {d_desc}"
+            out.append(_popup_line(top + 1 + i, left, pop_w, content, tone=FG_HI if is_sel else FG_DIM, selected=is_sel))
+        out.append(_move(top + 1 + n, left) + _fg(BORDER) + "└" + "─" * (pop_w - 2) + "┘" + R)
         return "".join(out)
 
     def _picker_popup(self, rows, cols):
         items = self.tui.picker_items; sel = self.tui.picker_sel
         pop_w = min(64, cols - 4)
         left = max(2, (cols - pop_w) // 2); top = max(2, (rows - len(items) - 5) // 2)
-        out = [_move(top, left) + _fg(BORDER) + "╭" + "─" * (pop_w - 2) + "╮" + R]
+        out = [_popup_frame(top, left, pop_w, "picker")]
         header_txt = " model · provider"
-        tp = max(0, pop_w - 2 - len(header_txt))
-        out.append(
-            _move(top + 1, left) +
-            _fg(BORDER) + "│" +
-            _fg(MUTED) + header_txt + " " * tp +
-            _fg(BORDER) + "│" + R
-        )
+        out.append(_popup_line(top + 1, left, pop_w, header_txt.strip(), tone=MUTED))
         out.append(_move(top + 2, left) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
         row = top + 3
         for i, (kind, value, label) in enumerate(items):
             if kind == "header":
                 lbl = label[:pop_w - 6]
-                sp = max(0, pop_w - 4 - len(lbl))
-                out.append(
-                    _move(row, left) + _fg(BORDER) + "│ " +
-                    _fg(COMMENT) + lbl + " " * sp +
-                    _fg(BORDER) + " │" + R
-                )
+                out.append(_popup_line(row, left, pop_w, lbl, tone=MUTED))
             else:
                 is_sel = (i == sel)
                 dot = "●" if is_sel else "○"
-                bg_ = _bg(BG_HL) if is_sel else _bg(BG)
-                lc = B(CYAN) if is_sel else _fg(FG_DIM)
-                vcol = PROV_COL.get(value, FG) if kind == "provider" else FG
                 lbl = label[: pop_w - 12]
-                pp = max(0, pop_w - 8 - len(lbl))
                 pointer = "› " if is_sel else "  "
-                out.append(
-                    _move(row, left)
-                    + _fg(BORDER) + "│ "
-                    + bg_ + lc + pointer + dot + " "
-                    + _fg(vcol if is_sel else FG_DIM) + lbl
-                    + " " * pp + R
-                    + _fg(BORDER) + " │" + R
-                )
+                content = f"{pointer}{dot} {lbl}"
+                out.append(_popup_line(row, left, pop_w, content, tone=FG_HI if is_sel else FG_DIM, selected=is_sel))
             row += 1
         out.append(_move(row, left) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
         row += 1
         bot_txt = "Esc Close  ·  ↑↓ Navigate  ·  Enter Mount"
-        out.append(
-            _move(row, left) + _fg(BORDER) + "│ " +
-            _fg(MUTED) + bot_txt + " " * max(0, pop_w - 4 - len(bot_txt)) +
-            _fg(BORDER) + " │" + R
-        )
+        out.append(_popup_line(row, left, pop_w, bot_txt, tone=MUTED))
         row += 1
-        out.append(_move(row, left) + _fg(BORDER) + "╰" + "─" * (pop_w - 2) + "╯" + R)
+        out.append(_move(row, left) + _fg(BORDER) + "└" + "─" * (pop_w - 2) + "┘" + R)
         return "".join(out)
 
     def _notification_bar(self, rows, cols):
         msg = self.tui.notification
-        inner = msg[:max(0, cols - 12)]
-        left = max(1, cols - len(inner) - 8)
+        inner = msg[:max(0, cols - 18)]
+        left = max(2, cols - len(inner) - 10)
         return (
             _move(rows - 3, left) +
-            _fg(BORDER) + "╭─ " + _fg(CYAN) + "◆ " + _fg(FG_HI) + inner +
-            _fg(BORDER) + " ─╮" + R
+            _fg(BORDER) + "┌─ " + _fg(CYAN) + "info" + R + _fg(BORDER) + " · " + _fg(FG_HI) + inner +
+            _fg(BORDER) + " ─┐" + R
         )
 
 
@@ -1191,6 +1253,12 @@ class LumiTUI:
                 self._active_task = self._task_executor.submit(self._do_retry)
             return
         if key == "CTRL_U": self.buf = ""; self.cur_pos = 0; self.slash_visible = False; return
+        if key in ("SHIFT_UP", "CTRL_UP"):
+            self.scroll_offset += 3
+            return
+        if key in ("SHIFT_DOWN", "CTRL_DOWN"):
+            self.scroll_offset = max(0, self.scroll_offset - 3)
+            return
 
         if key == "UP":
             if getattr(self, "browser_visible", False):
@@ -1200,7 +1268,6 @@ class LumiTUI:
                 new = self.picker_sel - 1
                 while new >= 0 and self.picker_items[new][0] == "header": new -= 1
                 if new >= 0: self.picker_sel = new
-            elif not self.buf: self.scroll_offset += 3
             else: self._hist_nav(-1)
             return
         if key == "DOWN":
@@ -1211,7 +1278,6 @@ class LumiTUI:
                 new = self.picker_sel + 1
                 while new < len(self.picker_items) and self.picker_items[new][0] == "header": new += 1
                 if new < len(self.picker_items): self.picker_sel = new
-            elif not self.buf: self.scroll_offset = max(0, self.scroll_offset - 3)
             else: self._hist_nav(1)
             return
 

@@ -28,12 +28,12 @@
 
 # lumi
 
-**A terminal AI that runs 8 models at once, remembers you, edits your files, and costs nothing.**
+**A terminal AI with an 8-model council, grounded agent mode, long-term memory, and a cleaner TUI.**
 
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
 [![CI](https://img.shields.io/github/actions/workflow/status/SardorchikDev/Lumi/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/SardorchikDev/Lumi/actions)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e?style=flat-square)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-182_passing-22c55e?style=flat-square)](https://github.com/SardorchikDev/Lumi/actions)
+[![Tests](https://img.shields.io/badge/Tests-passing-22c55e?style=flat-square)](https://github.com/SardorchikDev/Lumi/actions)
 [![Providers](https://img.shields.io/badge/Providers-9%2B-8b5cf6?style=flat-square)](#-api-keys)
 
 [Install](#-installation) · [Quick Start](#-quick-start) · [API Keys](#-api-keys) · [Council Mode](#-council-mode) · [Agent Mode](#-agent-mode) · [Commands](#-commands) · [MCP](#-mcp-servers)
@@ -106,6 +106,8 @@ HF_TOKEN=hf_...
 | Auto-fallback | ✅ | ❌ | ⚠️ | ❌ | ❌ |
 | Long-term memory | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Autonomous agent | ✅ | ✅ | ⚠️ | ✅ | ❌ |
+| Grounded planning | ✅ | ✅ | ⚠️ | ❌ | ❌ |
+| Safer file patching | ✅ | ⚠️ | ❌ | ❌ | ❌ |
 | MCP servers | ✅ | ✅ | ✅ | ❌ | ❌ |
 | Plugin system | ✅ | ❌ | ⚠️ | ❌ | ❌ |
 | Vision / images | ✅ | ❌ | ❌ | ❌ | ❌ |
@@ -115,6 +117,7 @@ HF_TOKEN=hf_...
 | Custom persona | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Voice input | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Offline (Ollama) | ✅ | ❌ | ❌ | ⚠️ | ❌ |
+| Minimal TUI | ✅ | ✅ | ⚠️ | ❌ | ❌ |
 | Open source | ✅ | ❌ | ❌ | ✅ | ❌ |
 
 ---
@@ -159,28 +162,46 @@ Eight AI models answer your question simultaneously. A judge model synthesizes t
 
 ## 🤖 Agent Mode
 
-Give Lumi a goal. It builds a plan, shows it to you, and executes — asking before anything risky.
+Give Lumi a goal. It inspects the workspace, builds a grounded plan, previews file changes, and executes with rollback support if a run fails.
 
 ```
 ›  /agent build a FastAPI project with JWT auth and Postgres
 
-  Plan  (8 steps)
+  Plan  (6 steps)
 
-  1. [shell]      Create project structure
-  2. [file_write] Write main.py
-  3. [file_write] Write models.py — SQLAlchemy
-  4. [file_write] Write auth.py — JWT logic
-  5. [ai_task]    Generate requirements.txt
-  6. [shell]      git init                    ▲ risky
-  7. [file_write] Write .env template
-  8. [shell]      pip install -r requirements  ▲ risky
+  1. [action]     list_dir .
+  2. [action]     read_file pyproject.toml
+  3. [action]     mkdir app/auth
+  4. [file_write] Write app/main.py
+  5. [action]     patch_file app/config.py
+  6. [action]     run_tests tests/
 
-  Execute 8 steps? [y/N]  y
+  Summary  2 file changes  1 patch  1 dir  1 check  2 reads  0 risky
+  diff preview for app/config.py:
+  -DEBUG = False
+  +DEBUG = True
 
-  ✓  Agent completed 8/8 steps
+  Execute 6 preflighted steps? [y/N]  y
+
+  ✓  Agent completed 6/6 steps
 ```
 
-Use `--yolo` to skip all confirmation prompts.
+Agent mode now uses structured actions such as `list_dir`, `read_file`, `search_code`, `run_tests`, `run_ruff`, `run_mypy`, `mkdir`, `write_json`, `patch_file`, and `patch_lines` instead of arbitrary shell execution.
+
+Use `--yolo` to skip confirmations and rollback prompts.
+
+---
+
+## 🖥️ TUI
+
+Lumi ships with a more minimal terminal UI:
+
+- Fractal splash logo, cleaner chrome
+- Compact status bar and calmer colors
+- Better code block presentation
+- Split pane for live shell output with `/pane <cmd>`
+- Prompt history on `↑` / `↓`
+- Transcript scrolling on `Shift+↑` / `Shift+↓`, `Ctrl+↑` / `Ctrl+↓`, `PgUp` / `PgDn`
 
 ---
 
@@ -299,7 +320,7 @@ lumi -v                                   # show version
 ### Autonomous
 | Command | Description |
 |---|---|
-| `/agent <task>` | Plan and execute a multi-step task |
+| `/agent <task>` | Grounded plan + preflight + rollback-capable execution |
 | `/godmode <goal>` | Fully autonomous loop until goal is met |
 | `/scaffold <type>` | Full project scaffold (fastapi, react, cli...) |
 | `/lumi.md create` | Create a project context file |
@@ -343,7 +364,7 @@ lumi -v                                   # show version
 | Command | Description |
 |---|---|
 | `/model` | Pick provider and model |
-| `/theme` | Switch color theme (5 themes) |
+| `/theme` | Switch color theme |
 | `/persona` | Edit Lumi's name, tone, and traits |
 | `/offline [model]` | Switch to local Ollama |
 | `/plugins` · `/plugins reload` | Manage plugins |
@@ -380,9 +401,9 @@ pre-commit install
 ```
 
 ```bash
-pytest tests/ -v    # run all 182 tests
-ruff check .        # lint
-ruff format .       # format
+pytest tests/ -v
+ruff check .
+ruff format .
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full guide. Follow [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, etc.
