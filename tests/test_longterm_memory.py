@@ -1,19 +1,25 @@
-"""Tests for src.memory.longterm — fact memory and persona overrides."""
+"""Tests for src.memory.longterm — fact memory, persona overrides, and episodes."""
 
 import json
 import pathlib
+import sqlite3
 from unittest.mock import patch
+
+import numpy as np
+import pytest
 
 from src.memory.longterm import (
     _load,
-    _save,
     add_fact,
+    auto_summarize_and_save,
     build_memory_block,
     clear_facts,
     clear_persona_override,
     get_facts,
     get_persona_override,
+    get_related_episodes,
     remove_fact,
+    save_episode,
     set_persona_override,
     update_fact,
 )
@@ -149,3 +155,69 @@ class TestPersonaOverride:
         set_persona_override({"name": "Test"})
         assert len(get_facts()) == 1
         assert get_persona_override()["name"] == "Test"
+
+
+class TestEpisodes:
+    def setup_method(self):
+        self._db = pathlib.Path("/tmp/lumi_test_episodes.sqlite3")
+        self._legacy = pathlib.Path("/tmp/lumi_test_episodes.pkl")
+        self._db.unlink(missing_ok=True)
+        self._legacy.unlink(missing_ok=True)
+        self._db_patcher = patch("src.memory.longterm.EPISODIC_DB_PATH", self._db)
+        self._legacy_patcher = patch("src.memory.longterm.LEGACY_EPISODIC_DB_PATH", self._legacy)
+        self._db_patcher.start()
+        self._legacy_patcher.start()
+
+    def teardown_method(self):
+        self._db_patcher.stop()
+        self._legacy_patcher.stop()
+        self._db.unlink(missing_ok=True)
+        self._legacy.unlink(missing_ok=True)
+
+    def test_save_episode_uses_sqlite_store(self):
+        save_episode("Finished refactor", np.array([0.1, 0.9], dtype=np.float32))
+        assert self._db.exists()
+        with sqlite3.connect(self._db) as conn:
+            rows = conn.execute("SELECT summary, vector_json FROM episodes").fetchall()
+        assert rows[0][0] == "Finished refactor"
+        assert json.loads(rows[0][1]) == pytest.approx([0.1, 0.9])
+
+    def test_get_related_episodes_scores_sqlite_entries(self, monkeypatch):
+        save_episode("Refactored parser", np.array([1.0, 0.0], dtype=np.float32))
+        save_episode("Improved tests", np.array([0.0, 1.0], dtype=np.float32))
+        monkeypatch.setattr("src.tools.rag.get_embedding", lambda query, client: [1.0, 0.0])
+        monkeypatch.setattr("src.tools.rag.cosine_similarity", lambda a, b: float(np.dot(a, b)))
+        assert get_related_episodes("parser", object()) == ["Refactored parser", "Improved tests"]
+
+    def test_auto_summarize_and_save_logs_instead_of_printing(self, monkeypatch, capsys):
+        history = [{"role": "user", "content": f"line {idx}"} for idx in range(6)]
+        fake_client = type(
+            "Client",
+            (),
+            {
+                "chat": type(
+                    "Chat",
+                    (),
+                    {
+                        "completions": type(
+                            "Completions",
+                            (),
+                            {
+                                "create": staticmethod(
+                                    lambda **kwargs: type(
+                                        "Resp",
+                                        (),
+                                        {"choices": [type("Choice", (), {"message": type("Message", (), {"content": "summary"})()})()]},
+                                    )()
+                                )
+                            },
+                        )()
+                    },
+                )()
+            },
+        )()
+        monkeypatch.setattr("src.tools.rag.get_embedding_client", lambda: object())
+        monkeypatch.setattr("src.tools.rag.get_embedding", lambda text, client: [0.2, 0.8])
+        auto_summarize_and_save(history, fake_client, "model")
+        assert capsys.readouterr().out == ""
+        assert self._db.exists()

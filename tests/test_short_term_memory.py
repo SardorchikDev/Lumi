@@ -49,12 +49,14 @@ class TestShortTermMemory:
         assert history[0]["content"] == "msg-4"
         assert history[-1]["content"] == "msg-9"
 
-    def test_get_returns_list_copy_reference(self):
-        """Verify get() returns the internal list (not a copy)."""
+    def test_get_returns_snapshot_copy(self):
         mem = ShortTermMemory()
         mem.add("user", "test")
         history = mem.get()
-        assert history is mem._history
+        assert history == mem._history
+        assert history is not mem._history
+        history.append({"role": "assistant", "content": "mutated"})
+        assert len(mem) == 1
 
     def test_add_preserves_role_and_content(self):
         mem = ShortTermMemory()

@@ -11,10 +11,12 @@ import json
 import os
 import time
 import urllib.request
+from pathlib import Path
 
 from openai import OpenAI
 
 from src.chat.providers import get_configured_providers, pick_default_provider
+from src.config import DATA_DIR
 
 # ── Model lists ───────────────────────────────────────────────────────────────
 
@@ -119,29 +121,14 @@ HF_FALLBACKS = [
 # Curated priority order — live API always fetches the full real list.
 # This is used as fallback when API is unreachable AND as the sort order.
 OPENROUTER_MODELS = [
-    # ── Best for coding & chat (large, powerful) ─────────────
     "qwen/qwen3-coder-480b-a35b:free",                # Qwen3 Coder 480B — best coder, 262k ctx
     "openai/gpt-oss-120b:free",                       # OpenAI open-weight 120B, 131k ctx
     "nousresearch/hermes-3-llama-3.1-405b:free",      # Hermes 3 405B, 131k ctx
     "meta-llama/llama-3.3-70b-instruct:free",         # Llama 3.3 70B, 128k ctx
     "qwen/qwen3-next-80b-a3b-instruct:free",          # Qwen3 Next 80B, 262k ctx
-    "zhipuai/glm-4.5-air:free",                       # GLM-4.5 Air 60B weekly tokens, 131k ctx
-    "arcee-ai/trinity-mini:free",                     # Arcee Trinity Mini, 131k ctx
-
-    # ── Mid-size solid models ────────────────────────────────
     "openai/gpt-oss-20b:free",                        # OpenAI open-weight 20B, 131k ctx
-    "nvidia/nemotron-nano-12b-2-vl:free",             # NVIDIA Nemotron 12B, 128k ctx
-    "nvidia/nemotron-nano-9b-v2:free",                # NVIDIA Nemotron 9B, 128k ctx
     "google/gemma-3-27b-it:free",                     # Gemma 3 27B, 131k ctx
-    "mistralai/mistral-small-3.1-24b-instruct:free",  # Mistral Small 3.1 24B, 128k ctx
-
-    # ── Fast & lightweight ───────────────────────────────────
     "google/gemma-3-12b-it:free",                     # Gemma 3 12B, 32k ctx
-    "google/gemma-3-4b-it:free",                      # Gemma 3 4B, 32k ctx
-    "qwen/qwen3-4b:free",                             # Qwen3 4B, 40k ctx
-    "meta-llama/llama-3.2-3b-instruct:free",          # Llama 3.2 3B, 131k ctx
-    "google/gemma-3n-4b-it:free",                     # Gemma 3n 4B, 8k ctx
-    "google/gemma-3n-2b-it:free",                     # Gemma 3n 2B, 8k ctx
 ]
 # Mistral — free tier (1B tokens/month)
 MISTRAL_MODELS = [
@@ -161,14 +148,8 @@ GITHUB_MODELS = [
     "DeepSeek-R1",                             # DeepSeek R1 — strong reasoning
     "DeepSeek-V3-0324",                        # DeepSeek V3 — general
     "Meta-Llama-3.1-70B-Instruct",             # Llama 3.1 70B
-    "Meta-Llama-3.1-8B-Instruct",              # Llama 3.1 8B — fast
     "Phi-4",                                   # Phi-4 — efficient
-    "Phi-3.5-MoE-instruct",                    # Phi-3.5 MoE
     "Mistral-large",                           # Mistral Large
-    "Mistral-small",                           # Mistral Small
-    "Cohere-command-r-plus-08-2024",           # Command R+
-    "AI21-Jamba-1.5-Large",                    # Jamba 1.5 Large
-    "xai/grok-3-mini",                         # Grok 3 Mini
 ]
 
 def _fetch_github_models() -> list:
@@ -237,32 +218,15 @@ def _cloudflare_base_url() -> str:
 # The "openai/gpt-oss-*" models appear to also trigger this routing and cause
 # 500 errors without a provider-key, even though they are open-weight.
 BYTEZ_MODELS = [
-    # ── Qwen3 — most capable open-source family right now ────────────────────
     "Qwen/Qwen3-32B",                     # 🧠 dense 32B — best balance, fast warm
     "Qwen/Qwen3-235B-A22B",               # 🧠 235B MoE — most capable Qwen3
-    "Qwen/Qwen3-8B",                      # ⚡ 8B — fastest Qwen3
-
-    # ── Qwen2.5 — rock-solid workhorses ──────────────────────────────────────
     "Qwen/Qwen2.5-72B-Instruct",          # 🧠 72B — very reliable
     "Qwen/Qwen2.5-Coder-32B-Instruct",    # 💻 coding specialist
-
-    # ── DeepSeek ──────────────────────────────────────────────────────────────
     "deepseek-ai/DeepSeek-V3",            # 🧠 strong general + coding
     "deepseek-ai/DeepSeek-R1",            # 🔍 reasoning specialist (heavy)
-
-    # ── Llama 3.x ─────────────────────────────────────────────────────────────
     "meta-llama/Llama-3.3-70B-Instruct",  # 🧠 best Llama 3 general
-    "meta-llama/Llama-3.1-405B-Instruct", # 🧠 largest open model (slow start)
-    "meta-llama/Llama-3.2-3B-Instruct",   # 🚀 tiny, fastest
-
-    # ── Mistral ───────────────────────────────────────────────────────────────
     "mistralai/Mixtral-8x22B-Instruct-v0.1",  # 🧠 strong MoE
-    "mistralai/Mistral-7B-Instruct-v0.3",     # ⚡ reliable 7B fallback
-
-    # ── Google ────────────────────────────────────────────────────────────────
     "google/gemma-3-27b-it",              # 🧠 Gemma 3 27B
-
-    # ── Microsoft ─────────────────────────────────────────────────────────────
     "microsoft/Phi-4",                    # 💻 efficient, great at coding + reasoning
 ]
 
@@ -322,34 +286,18 @@ def _fetch_bytez_models() -> list:
 # Models use provider/model-name format: "openai/gpt-4o", "anthropic/claude-sonnet-4.6"
 # Env var: VERCEL_API_KEY
 VERCEL_MODELS = [
-    # ── OpenAI ───────────────────────────────────────────────────────────────
     "openai/gpt-4.1",                         # GPT-4.1 — flagship reasoning + code
     "openai/gpt-4.1-mini",                    # GPT-4.1 Mini — fast, cheap
     "openai/gpt-4o",                          # GPT-4o — multimodal
-    "openai/gpt-4o-mini",                     # GPT-4o Mini — fastest OpenAI
     "openai/o3",                              # o3 — deep reasoning
-    "openai/o4-mini",                         # o4-mini — fast reasoning
-    "openai/gpt-5",                           # GPT-5 — latest
-    # ── Anthropic ────────────────────────────────────────────────────────────
     "anthropic/claude-sonnet-4-5",            # Claude Sonnet 4.5 — best balance
-    "anthropic/claude-opus-4",                # Claude Opus 4 — most capable
-    "anthropic/claude-haiku-3-5",             # Claude Haiku 3.5 — fastest
-    # ── Google ───────────────────────────────────────────────────────────────
     "google/gemini-2.5-pro",                  # Gemini 2.5 Pro — 1M context
     "google/gemini-2.5-flash",                # Gemini 2.5 Flash — fast + smart
-    "google/gemini-2.0-flash",                # Gemini 2.0 Flash — stable
-    # ── Meta ─────────────────────────────────────────────────────────────────
     "meta/llama-3.3-70b-instruct",            # Llama 3.3 70B — best open
-    "meta/llama-3.1-8b-instruct",             # Llama 3.1 8B — lightweight
-    # ── xAI ──────────────────────────────────────────────────────────────────
     "xai/grok-3",                             # Grok 3 — strong reasoning
-    "xai/grok-3-mini",                        # Grok 3 Mini — fast
-    # ── Mistral ──────────────────────────────────────────────────────────────
     "mistral/mistral-large-latest",           # Mistral Large
     "mistral/codestral-latest",               # Codestral — coding specialist
-    # ── DeepSeek ─────────────────────────────────────────────────────────────
     "deepseek/deepseek-r1",                   # DeepSeek R1 — open-source reasoning
-    "deepseek/deepseek-v3",                   # DeepSeek V3 — strong general
 ]
 
 # Patterns to skip when live-fetching Vercel model list (non-text modalities)
@@ -444,6 +392,59 @@ def _has_ollama() -> bool:
 _active_provider: str = None   # "gemini" | "groq" | "huggingface"
 _active_client: OpenAI = None
 _models_cache: dict = {}       # provider → list of models
+MODEL_CACHE_DIR = DATA_DIR / "model_catalogs"
+MODEL_CACHE_TTL_SECONDS = 900
+
+
+def _catalog_cache_path(provider: str) -> Path:
+    return MODEL_CACHE_DIR / f"{provider}.json"
+
+
+def _read_catalog_cache(provider: str) -> list[str] | None:
+    path = _catalog_cache_path(provider)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    ts = float(data.get("fetched_at", 0) or 0)
+    models = data.get("models", [])
+    if time.time() - ts > MODEL_CACHE_TTL_SECONDS:
+        return None
+    if not isinstance(models, list):
+        return None
+    return [model for model in models if isinstance(model, str) and model.strip()]
+
+
+def _write_catalog_cache(provider: str, models: list[str]) -> None:
+    MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "provider": provider,
+        "fetched_at": time.time(),
+        "models": models,
+    }
+    _catalog_cache_path(provider).write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def _discover_models(provider: str, curated: list[str], fetcher) -> list[str]:
+    cached = _read_catalog_cache(provider)
+    if cached:
+        return cached
+    try:
+        models = fetcher()
+    except Exception:
+        models = []
+    normalized = [model for model in models if isinstance(model, str) and model.strip()]
+    if normalized:
+        _write_catalog_cache(provider, normalized)
+        return normalized
+    return curated[:]
 
 
 def get_provider() -> str:
@@ -565,29 +566,29 @@ def get_models(provider: str = None) -> list:
     if p in _models_cache:
         return _models_cache[p]
     if p == "gemini":
-        models = _fetch_gemini_models()
+        models = _discover_models(p, ["gemini-3.1-flash-lite-preview", "gemini-2.0-flash"], _fetch_gemini_models)
     elif p == "groq":
-        models = _fetch_groq_models()
+        models = _discover_models(p, GROQ_FALLBACK, _fetch_groq_models)
     elif p == "openrouter":
-        models = _fetch_openrouter_models()
+        models = _discover_models(p, OPENROUTER_MODELS, _fetch_openrouter_models)
     elif p == "mistral":
         models = MISTRAL_MODELS[:]
     elif p == "github":
-        models = _fetch_github_models()
+        models = _discover_models(p, GITHUB_MODELS, _fetch_github_models)
     elif p == "cohere":
         models = COHERE_MODELS[:]
     elif p == "bytez":
-        models = _fetch_bytez_models()
+        models = _discover_models(p, BYTEZ_MODELS, _fetch_bytez_models)
     elif p == "cloudflare":
         models = CLOUDFLARE_MODELS[:]
     elif p == "vercel":
-        models = _fetch_vercel_models()
+        models = _discover_models(p, VERCEL_MODELS, _fetch_vercel_models)
     elif p == "vertex":
         models = VERTEX_MODELS[:]
     elif p == "ollama":
         models = _fetch_ollama_models()
     else:
-        models = HF_MODELS
+        models = HF_MODELS[:]
     _models_cache[p] = models
     return models
 

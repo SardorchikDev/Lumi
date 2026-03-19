@@ -9,6 +9,20 @@ from src.chat.providers import (
 
 
 def test_pick_default_provider_prefers_documented_order(monkeypatch):
+    for env_var in (
+        "HF_TOKEN",
+        "OPENROUTER_API_KEY",
+        "MISTRAL_API_KEY",
+        "GITHUB_API_KEY",
+        "COHERE_API_KEY",
+        "BYTEZ_API_KEY",
+        "VERCEL_API_KEY",
+        "CLOUDFLARE_API_KEY",
+        "CLOUDFLARE_ACCOUNT_ID",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "VERTEX_PROJECT_ID",
+    ):
+        monkeypatch.delenv(env_var, raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "x")
     monkeypatch.setenv("GROQ_API_KEY", "y")
     assert pick_default_provider() == "gemini"

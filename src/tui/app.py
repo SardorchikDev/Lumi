@@ -16,7 +16,6 @@ import signal
 import subprocess
 import sys
 import termios
-import textwrap
 import threading
 import time
 import tty
@@ -72,9 +71,25 @@ from src.prompts.builder import (
 )
 from src.tools.search import search, search_display
 from src.tui.input import InputHistory, read_key
+from src.tui.notes import LittleNotesStore
 from src.tui.state import AgentState, Msg, Store
+from src.tui.views import OverlayView, StarterView, TranscriptView, ViewStyle
 from src.utils.autoremember import auto_extract_facts
-from src.utils.filesystem import generate_file_plan, is_create_request
+from src.utils.filesystem import (
+    execute_operation_plan,
+    generate_delete_plan,
+    generate_file_plan,
+    generate_transfer_plan,
+    inspect_operation_plan,
+    is_copy_request,
+    is_create_request,
+    is_delete_request,
+    is_filesystem_request,
+    is_move_request,
+    is_rename_request,
+    suggest_paths,
+    undo_operation,
+)
 from src.utils.intelligence import (
     detect_emotion,
     emotion_hint,
@@ -293,6 +308,56 @@ class Renderer:
     def __init__(self, tui):
         self.tui = tui
         self._lock = threading.Lock()
+        style = ViewStyle(
+            fg_fn=_fg,
+            bg_fn=_bg,
+            bold=_bold,
+            italic=_italic,
+            reset=R,
+            bg_value=BG,
+            bg_pop_value=BG_POP,
+            bg_hl_value=BG_HL,
+            border=BORDER,
+            muted=MUTED,
+            comment=COMMENT,
+            fg_dim=FG_DIM,
+            fg=FG,
+            fg_hi=FG_HI,
+            cyan=CYAN,
+            red=RED,
+            teal=TEAL,
+        )
+        self._starter_view = StarterView(
+            tui,
+            style,
+            provider_resolver=self._active_provider_key,
+            provider_label=lambda provider: PROV_NAME.get(provider, provider),
+            spinner_frames=SPINNER_FRAMES,
+        )
+        self._transcript_view = TranscriptView(
+            tui,
+            style,
+            inline_renderer=self._inline,
+            syntax_highlighter=_syntax_hi,
+            strip_ansi=_strip_ansi,
+            visible_len=_visible_len,
+        )
+        self._overlay_view = OverlayView(
+            tui,
+            style,
+            popup_frame=_popup_frame,
+            popup_line=_popup_line,
+            move=_move,
+            strip_ansi=_strip_ansi,
+        )
+
+    def _active_provider_key(self) -> str:
+        if self.tui.current_model == "council":
+            return "council"
+        try:
+            return get_provider()
+        except Exception:
+            return "huggingface"
 
     def draw(self):
         with self._lock:
@@ -361,6 +426,7 @@ class Renderer:
 
         if getattr(self.tui, "browser_visible", False): w(self._browser_popup(rows, cols))
         if self.tui.slash_visible and self.tui.slash_hits: w(self._slash_popup(rows, cols))
+        if self.tui.path_visible and self.tui.path_hits: w(self._path_popup(rows, cols))
         if self.tui.picker_visible and self.tui.picker_items: w(self._picker_popup(rows, cols))
         if self.tui.notification: w(self._notification_bar(rows, cols))
 
@@ -376,235 +442,14 @@ class Renderer:
         sys.stdout.flush()
 
     def _build_starter_lines(self, width):
-        if not getattr(self.tui, "show_starter_panel", True):
-            txt = self.tui.buf
-            prompt_prefix = " " * 4
-            disp_w = max(10, width - len(prompt_prefix) - 4)
-            scroll = max(0, self.tui.cur_pos - disp_w + 1)
-            shown = txt[scroll:scroll + disp_w]
-            lines = ["", ""]
-            if self.tui.busy:
-                frame = int(time.time() * 10) % len(SPINNER_FRAMES)
-                sym = _fg(CYAN) + SPINNER_FRAMES[frame] + " " + R
-                tail = _fg(MUTED) + _italic() + "thinking softly" + R if not shown else ""
-            else:
-                sym = _fg(FG_HI) + _bold() + "> " + R
-                tail = _fg(MUTED) + "say something nice" + R if not shown else ""
-            lines.append(prompt_prefix + sym + _fg(FG_HI) + shown + tail + R)
-            self.tui._inline_prompt_row = len(lines) - 1
-            self.tui._inline_prompt_prefix = len(prompt_prefix) + 3
-            lines.append("")
-            return lines
-
-        provider = PROV_NAME.get(self.tui.current_model if self.tui.current_model == "council" else get_provider(), get_provider())
-        model = self.tui.current_model.split("/")[-1][:24]
-        cwd = os.getcwd()
-        cwd_short = cwd if len(cwd) <= 28 else "..." + cwd[-25:]
-        panel_w = min(max(74, width - 10), 108)
-        panel_pad = " " * max(2, (width - panel_w - 2) // 2)
-        left_w = max(28, panel_w // 2)
-        right_w = panel_w - left_w - 1
-
-        border = _fg(BORDER)
-        lines = []
-
-        def pad(text, width_):
-            return text[:width_].ljust(width_)
-
-        def center(text, width_):
-            return text[:width_].center(width_)
-
-        def row(left="", right="", left_tone=FG_HI, right_tone=FG_HI):
-            return (
-                panel_pad
-                + border + "│" + R
-                + " " + _fg(left_tone) + pad(left, left_w - 2) + R + " "
-                + border + "│" + R
-                + " " + _fg(right_tone) + pad(right, right_w - 2) + R + " "
-                + border + "│" + R
-            )
-
-        logo = "[˶ᵔ ᵕ ᵔ˶]"
-        recent_commands = [cmd for cmd in getattr(self.tui, "recent_commands", []) if cmd]
-        recent_items = ["little notes"] + recent_commands[:3]
-        while len(recent_items) < 4:
-            recent_items.append("")
-        help_items = ["", "", "", ""]
-
-        lines.append(panel_pad + border + "╭" + "─" * panel_w + "╮" + R)
-        lines.append(row(center("welcome to lumi", left_w - 2), center(recent_items[0], right_w - 2), FG_HI, FG_HI))
-        lines.append(row("", recent_items[1], FG_DIM, FG_DIM))
-        lines.append(row(center(logo, left_w - 2), recent_items[2], FG_HI, FG_DIM))
-        lines.append(row("", recent_items[3], FG_DIM, FG_DIM))
-        lines.append(row("", ""))
-        lines.append(row(center(f"{provider}  ·  {model}", left_w - 2), center(help_items[0], right_w - 2), MUTED, FG_HI))
-        lines.append(row(center(cwd_short, left_w - 2), help_items[1], MUTED, FG_DIM))
-        lines.append(row("", help_items[2], FG_DIM, FG_DIM))
-        lines.append(row("", help_items[3], FG_DIM, FG_DIM))
-        lines.append(panel_pad + border + "╰" + "─" * panel_w + "╯" + R)
-        lines.append("")
-        lines.append("")
-
-        txt = self.tui.buf
-        disp_w = width - 7
-        scroll = max(0, self.tui.cur_pos - disp_w + 1)
-        shown = txt[scroll:scroll + disp_w]
-        if self.tui.busy:
-            frame = int(time.time() * 10) % len(SPINNER_FRAMES)
-            sym = _fg(CYAN) + SPINNER_FRAMES[frame] + " " + R
-            tail = _fg(MUTED) + _italic() + "thinking softly" + R if not shown else ""
-        else:
-            sym = _fg(FG_HI) + _bold() + "> " + R
-            tail = _fg(MUTED) + "say something nice" + R if not shown else ""
-        prompt_prefix = panel_pad + "  "
-        lines.append(prompt_prefix + sym + _fg(FG_HI) + shown + tail + R)
-        self.tui._inline_prompt_row = len(lines) - 1
-        self.tui._inline_prompt_prefix = len(prompt_prefix) + 3
-        lines.append("")
+        intro = self._starter_view.build(width)
+        lines = intro.header_lines + [intro.prompt.line] + intro.trailing_lines
+        self.tui._inline_prompt_row = len(intro.header_lines)
+        self.tui._inline_prompt_prefix = intro.prompt.prefix
         return lines
 
     def _build_chat_lines(self, width):
-        msgs = self.tui.store.snapshot()
-        lines =[]
-        inner = max(30, width - 8)
-        if not msgs:
-            return lines
-
-        # Optional pinned agent plan panel (from /agent)
-        if getattr(self.tui, "agent_active_objective", None) and getattr(self.tui, "agent_tasks", None):
-            lines.append("")
-            lines.append("  " + _fg(MUTED) + "objective" + R + "  " + _fg(FG_HI) + self.tui.agent_active_objective + R)
-            for idx, task in enumerate(self.tui.agent_tasks, start=1):
-                bullet = "·"
-                label = task.get("text", "")
-                for ln in textwrap.wrap(label, inner - 6) or [label]:
-                    lines.append("    " + _fg(MUTED) + bullet + " " + _fg(FG_DIM) + ln + R)
-                    bullet = " "  # only first line gets the bullet
-            lines.append("")
-
-        for msg in msgs:
-            if msg.role == "user":
-                rail = _fg(BORDER) + "|" + R
-                lines.append("  " + rail + " " + _fg(MUTED) + "you" + R)
-                for ln in textwrap.wrap(msg.text, inner) or [msg.text]:
-                    lines.append("  " + rail + " " + _fg(FG_HI) + ln + R)
-                lines.append("")
-
-            elif msg.role in ("assistant", "streaming"):
-                label = msg.label or "lumi"
-                is_stream = msg.role == "streaming"
-                t_now = time.time()
-                # Animated streaming cursor block
-                if is_stream:
-                    blink_on = int(t_now * 4) % 2 == 0
-                    cursor = (" " + _fg(CYAN) + ("▋" if blink_on else " ") + R)
-                else:
-                    cursor = ""
-
-                if self.tui.vessel_mode and self.tui.active_vessel:
-                    hdr_col = _fg(RED) + _bold()
-                    if "vessel" not in label:
-                        label = f"vessel [{self.tui.active_vessel}]"
-                else:
-                    hdr_col = _fg(FG_HI) + _bold()
-
-                rail = _fg(BORDER) + "|" + R
-                a_pre  = "  " + rail + " "
-                lines.append(
-                    "  " + rail + " " +
-                    hdr_col + label + R
-                )
-                raw_lines = msg.text.split("\n") if msg.text else [""]
-
-                in_code = False
-                code_w = min(inner - 2, 88)
-                lpre = a_pre
-
-                for ln in raw_lines:
-                    if ln.startswith("```"):
-                        if not in_code:
-                            in_code = True
-                            code_lang = ln[3:].strip()
-                            lt = code_lang or "code"
-                            lang_badge = _fg(MUTED) + lt + R
-                            bar_fill = "─" * max(0, code_w - len(lt) - 3)
-                            lines.append(
-                                lpre +
-                                _fg(BORDER) + "  " + R +
-                                lang_badge +
-                                _fg(BORDER) + " " + bar_fill + R
-                            )
-                            _code_lineno = [0]  # mutable counter
-                        else:
-                            in_code = False
-                            lines.append(lpre)
-                        continue
-
-                    if in_code:
-                        _code_lineno[0] += 1
-                        lineno_str = _fg(BORDER) + f"{_code_lineno[0]:>3} " + R
-                        mcc = code_w - 6
-                        for sl in (textwrap.wrap(ln, mcc) if len(ln) > mcc else [ln]) or [""]:
-                            hi = _syntax_hi(sl)
-                            pad = max(0, mcc - _visible_len(sl))
-                            lines.append(
-                                lpre + _bg(BG_POP) + lineno_str +
-                                hi + _bg(BG_POP) + " " * pad + R
-                            )
-                            lineno_str = _fg(BORDER) + "    " + R  # continuation lines no number
-                        continue
-
-                    # Standard Markdown Formatting inside AI Bubbles
-                    if re.match(r"^#{1,6} ", ln):
-                        lvl = len(ln) - len(ln.lstrip("#"))
-                        col =[FG_HI, CYAN, TEAL, FG, FG_DIM, MUTED][min(lvl - 1, 5)]
-                        if lines and lines[-1] != "":
-                            lines.append(lpre)
-                        txt = ln.lstrip("# ")
-                        lines.append(lpre + _fg(col) + _bold() + txt + R)
-
-                    elif ln.startswith("> "):
-                        body = ln[2:]
-                        lines.append(lpre + _fg(TEAL) + "│ " + _italic() + _fg(FG_DIM) + body + R)
-                    elif re.match(r"^[-*•] ", ln):
-                        body = ln[2:]
-                        lines.append(lpre + _fg(MUTED) + "• " + _fg(FG) + body + R)
-                    elif re.match(r"^\d+\. ", ln):
-                        m = re.match(r'^(\d+)\. (.*)', ln)
-                        if m:
-                            num, body = m.group(1), m.group(2)
-                            lines.append(lpre + _fg(CYAN) + _bold() + f"{num}." + R + " " + _fg(FG) + body + R)
-                        else:
-                            lines.append(lpre + _fg(FG) + ln + R)
-                    elif ln.strip() == "":
-                        if not lines or lines[-1] != lpre:
-                            lines.append(lpre)
-                    else:
-                        rendered = self._inline(ln)
-                        if len(_strip_ansi(ln)) <= inner:
-                            lines.append(lpre + rendered + R)
-                        else:
-                            for wl in (textwrap.wrap(_strip_ansi(ln), inner) or [ln]):
-                                lines.append(lpre + _fg(FG) + wl + R)
-
-                if in_code: lines.append(lpre + _bg(BG_POP) + _fg(RED) + "[stream paused]" + " " * (code_w - 15) + R)
-                if cursor: lines[-1] += cursor
-
-                lines.append("")
-
-            elif msg.role == "system":
-                rail = _fg(BORDER) + "|" + R
-                for sln in msg.text.split("\n"):
-                    for wl in (textwrap.wrap(sln, inner) if sln.strip() else [""]):
-                        lines.append("  " + rail + " " + _fg(FG_DIM) + wl + R)
-                lines.append("")
-
-            elif msg.role == "error":
-                rail = _fg(RED) + "|" + R
-                lines.append("  " + rail + " " + _fg(RED) + "warning" + R + "  " + _fg(FG_HI) + msg.text + R)
-                lines.append("")
-
-        return lines
+        return self._transcript_view.build(width)
 
     def _inline(self, text):
         out = ""
@@ -676,10 +521,14 @@ class Renderer:
         """Bottom row: single-line prompt."""
         tui   = self.tui
         t_now = time.time()
+        pending_label, pending_hint = tui.filesystem_prompt_hint()
         if tui.busy:
             frame = int(t_now * 10) % len(SPINNER_FRAMES)
             sym  = _fg(CYAN) + SPINNER_FRAMES[frame] + R
             hint = _fg(MUTED) + _italic() + "thinking" + PULSE_DOTS[int(t_now * 2) % len(PULSE_DOTS)] + R
+        elif pending_label:
+            sym  = _fg(CYAN) + _bold() + "?" + R
+            hint = _fg(MUTED) + pending_hint + R
         else:
             sym  = _fg(FG_HI) + _bold() + ">" + R
             hint = ""
@@ -688,7 +537,10 @@ class Renderer:
         disp_w = max(10, chat_w - 7)
         scroll = max(0, tui.cur_pos - disp_w + 1)
         shown  = txt[scroll:scroll + disp_w]
-        placeholder = _fg(MUTED) + "ask lumi anything" + R if not shown and not tui.busy else ""
+        placeholder_text = (
+            pending_label + (f" · {pending_hint}" if pending_label and pending_hint else "")
+        ) or "ask lumi anything"
+        placeholder = _fg(MUTED) + placeholder_text + R if not shown and not tui.busy else ""
         prompt = _move(rows - 1, 1) + _bg(BG) + _erase_line() + "  " + _fg(BORDER) + "─" * max(0, chat_w - 4) + R
         prompt += _move(rows, 1) + _bg(BG) + _erase_line() + "  " + sym + " " + _fg(FG_HI) + shown + (placeholder if not shown else hint) + R
         return prompt
@@ -698,116 +550,19 @@ class Renderer:
         return self._top_bar(rows, cols, chat_w) + self._prompt_bar(rows, cols, chat_w)
 
     def _browser_popup(self, rows, cols):
-        tui = getattr(self, "tui", None)
-        if not tui: return ""
-
-        items = tui.browser_items; sel = tui.browser_sel
-        pop_w = min(60, cols - 6); pop_h = min(20, rows - 6)
-        left = max(2, (cols - pop_w) // 2); top = max(2, (rows - pop_h) // 2)
-
-        # Display window
-        disp_items = []
-        if items:
-            total = len(items)
-            start = max(0, min(sel - pop_h // 2, total - pop_h + 2))
-            disp_items = items[start:start + pop_h - 2]
-
-            # Recalculate local selection index
-            local_sel = sel - start
-        else:
-            local_sel = -1
-
-        out = [_popup_frame(top, left, pop_w, "browser")]
-
-        # Header (shows CWD)
-        cwd = tui.browser_cwd
-        if len(cwd) > pop_w - 6: cwd = "..." + cwd[-(pop_w - 9):]
-        out.append(_popup_line(top + 1, left, pop_w, cwd, tone=FG_HI))
-        out.append(_move(top + 2, left) + _fg(BORDER) + "  " + "─" * (pop_w - 4) + "  " + R)
-
-        row = top + 3
-        for i, item in enumerate(disp_items):
-            itype, iname, ipath = item
-            is_sel = (i == local_sel)
-
-            if iname == "..":
-                icon = "󰜄"
-            elif itype == "dir":
-                icon = "󰉋"
-            else:
-                icon = "󰈔"
-
-            disp_name = iname[:pop_w - 10]
-            pointer = "› " if is_sel else "  "
-            content = f"{icon} {pointer}{disp_name}"
-            out.append(_popup_line(row, left, pop_w, _strip_ansi(content), tone=FG_HI if is_sel else FG_DIM, selected=is_sel))
-            row += 1
-
-        # Empty space padding if list is short
-        while row < top + pop_h - 1:
-            out.append(_popup_line(row, left, pop_w, "", tone=FG_DIM))
-            row += 1
-
-        out.append(_move(row, left) + _fg(BORDER) + "  " + "─" * (pop_w - 4) + "  " + R)
-        row += 1
-        bot_txt = "Esc Close  ·  ↑↓ Move  ·  Enter/→ Open  ·  ← Back"
-        out.append(_popup_line(row, left, pop_w, bot_txt, tone=MUTED))
-        row += 1
-        out.append(_move(row, left) + _fg(BORDER) + "  " + "─" * (pop_w - 4) + "  " + R)
-
-        return "".join(out)
+        return self._overlay_view.browser_popup(rows, cols)
 
     def _slash_popup(self, rows, cols):
-        hits = self.tui.slash_hits; sel = self.tui.slash_sel; pop_w = min(58, cols - 4)
-        n = min(len(hits), 10); top = rows - 2 - n - 2; left = max(2, (cols - pop_w) // 2)
-        out = [_popup_frame(top, left, pop_w, "commands")]
-        for i, (cmd, desc) in enumerate(hits[:10]):
-            is_sel = (i == sel)
-            d_cmd = f"{cmd[:15]:<16}"
-            d_desc = desc[:max(0, pop_w - 26)]
-            pointer = "› " if is_sel else "  "
-            content = f"{pointer}{d_cmd} {d_desc}"
-            out.append(_popup_line(top + 1 + i, left, pop_w, content, tone=FG_HI if is_sel else FG_DIM, selected=is_sel))
-        out.append(_move(top + 1 + n, left) + _fg(BORDER) + "  " + "─" * (pop_w - 4) + "  " + R)
-        return "".join(out)
+        return self._overlay_view.slash_popup(rows, cols)
+
+    def _path_popup(self, rows, cols):
+        return self._overlay_view.path_popup(rows, cols)
 
     def _picker_popup(self, rows, cols):
-        items = self.tui.picker_items; sel = self.tui.picker_sel
-        pop_w = min(64, cols - 4)
-        left = max(2, (cols - pop_w) // 2); top = max(2, (rows - len(items) - 5) // 2)
-        out = [_popup_frame(top, left, pop_w, "picker")]
-        header_txt = " model · provider"
-        out.append(_popup_line(top + 1, left, pop_w, header_txt.strip(), tone=MUTED))
-        out.append(_move(top + 2, left) + _fg(BORDER) + "  " + "─" * (pop_w - 4) + "  " + R)
-        row = top + 3
-        for i, (kind, value, label) in enumerate(items):
-            if kind == "header":
-                lbl = label[:pop_w - 6]
-                out.append(_popup_line(row, left, pop_w, lbl, tone=MUTED))
-            else:
-                is_sel = (i == sel)
-                dot = "●" if is_sel else "○"
-                lbl = label[: pop_w - 12]
-                pointer = "› " if is_sel else "  "
-                content = f"{pointer}{dot} {lbl}"
-                out.append(_popup_line(row, left, pop_w, content, tone=FG_HI if is_sel else FG_DIM, selected=is_sel))
-            row += 1
-        out.append(_move(row, left) + _fg(BORDER) + "  " + "─" * (pop_w - 4) + "  " + R)
-        row += 1
-        bot_txt = "Esc Close  ·  ↑↓ Navigate  ·  Enter Mount"
-        out.append(_popup_line(row, left, pop_w, bot_txt, tone=MUTED))
-        row += 1
-        out.append(_move(row, left) + _fg(BORDER) + "  " + "─" * (pop_w - 4) + "  " + R)
-        return "".join(out)
+        return self._overlay_view.picker_popup(rows, cols)
 
     def _notification_bar(self, rows, cols):
-        msg = self.tui.notification
-        inner = msg[:max(0, cols - 18)]
-        left = max(2, cols - len(inner) - 10)
-        return (
-            _move(rows - 3, left) +
-            _fg(MUTED) + inner + R
-        )
+        return self._overlay_view.notification_bar(rows, cols)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -843,13 +598,21 @@ class LumiTUI:
         self.vessel_mode   = False   # True when acting as a pure AI conduit
         self.active_vessel = None    # "gemini" | "qwen" | "opencode" | None
         self._pending_handoff = None # set by /mode; consumed by main loop
+        self._pending_file_plan = None
+        self._last_filesystem_undo = None
 
         self._loaded_plugins =[]; self.renderer = Renderer(self)
         self.original_termios = None
         self.pane_active = False
         self.pane_lines_output = []
         self.show_starter_panel = True
-        self.recent_commands: list[str] = []
+        self.little_notes = LittleNotesStore()
+        self.recent_commands: list[str] = self.little_notes.recent_commands
+        self.recent_actions: list[str] = self.little_notes.recent_actions
+        self.path_hits: list[str] = []
+        self.path_sel = 0
+        self.path_visible = False
+        self._path_span = (0, 0)
 
         # ── Browser Mode ──────────────────────────────────────────────────────
         self.browser_visible = False
@@ -862,6 +625,29 @@ class LumiTUI:
 
     def _sys(self, text): self.store.add(Msg("system", text))
     def _err(self, text): self.store.add(Msg("error", str(text)))
+
+    def filesystem_prompt_hint(self) -> tuple[str, str]:
+        pending = self._pending_file_plan
+        if not pending:
+            return "", ""
+        operation = pending.get("plan", {}).get("operation", "create")
+        if operation == "delete":
+            return "confirm removal", "y apply · Enter cancel"
+        return "confirm filesystem plan", "y apply · Enter cancel"
+
+    def _record_filesystem_action(self, summary: str, undo_record: dict | None = None) -> None:
+        self._last_filesystem_undo = undo_record
+        self.recent_actions = self.little_notes.record_action(summary)[:4]
+
+    def _undo_last_filesystem_action(self) -> bool:
+        if not self._last_filesystem_undo:
+            return False
+        restored = undo_operation(self._last_filesystem_undo)
+        self._last_filesystem_undo = None
+        summary = f"Undid filesystem action ({len(restored)} path(s) restored)."
+        self.recent_actions = self.little_notes.record_action(summary)[:4]
+        self._sys(summary)
+        return True
 
     def _notify(self, msg, duration=2.5):
         with self._state_lock: self.notification = msg
@@ -1120,6 +906,7 @@ class LumiTUI:
 
         try:
             p = get_provider(); self.current_model = get_models(p)[0]; self.client = get_client()
+            self.little_notes.record_model(p, self.current_model)
         except Exception:
             log.exception("Failed to load provider/model")
             self.current_model = "unknown"; self.client = None
@@ -1173,6 +960,7 @@ class LumiTUI:
         if key == "ESC":
             if getattr(self, "browser_visible", False): self.browser_visible = False; self.redraw(); return
             if self.slash_visible: self.slash_visible = False
+            elif self.path_visible: self.path_visible = False
             elif self.picker_visible: self.picker_visible = False
             return
         if key in ("CTRL_Q", "CTRL_C"):
@@ -1207,6 +995,7 @@ class LumiTUI:
             if getattr(self, "browser_visible", False):
                 self.browser_sel = max(0, self.browser_sel - 1); self.redraw(); return
             if self.slash_visible: self.slash_sel = max(0, self.slash_sel - 1)
+            elif self.path_visible: self.path_sel = max(0, self.path_sel - 1)
             elif self.picker_visible:
                 new = self.picker_sel - 1
                 while new >= 0 and self.picker_items[new][0] == "header": new -= 1
@@ -1217,6 +1006,7 @@ class LumiTUI:
             if getattr(self, "browser_visible", False):
                 self.browser_sel = min(len(self.browser_items) - 1, self.browser_sel + 1); self.redraw(); return
             if self.slash_visible: self.slash_sel = min(len(self.slash_hits) - 1, self.slash_sel + 1)
+            elif self.path_visible: self.path_sel = min(len(self.path_hits) - 1, self.path_sel + 1)
             elif self.picker_visible:
                 new = self.picker_sel + 1
                 while new < len(self.picker_items) and self.picker_items[new][0] == "header": new += 1
@@ -1230,6 +1020,9 @@ class LumiTUI:
             if self.slash_visible and self.slash_hits:
                 cmd = self.slash_hits[self.slash_sel][0]; self.buf = cmd + " "
                 self.cur_pos = len(self.buf); self.slash_visible = False
+                self.path_visible = False
+            elif self.path_visible and self.path_hits:
+                self._apply_path_suggestion(self.path_hits[self.path_sel])
             return
 
         if key == "ENTER":
@@ -1240,7 +1033,13 @@ class LumiTUI:
                 self.slash_visible = False; self.buf = ""; self.cur_pos = 0
                 self._execute_command(cmd, ""); return
             text = self.buf.strip(); self.buf = ""; self.cur_pos = 0; self.slash_visible = False; self.history.reset_navigation()
+            self.path_visible = False
+            if self._pending_file_plan is not None and not self.busy and not text:
+                self._consume_pending_file_plan("")
+                return
             if text and not self.busy:
+                if self._consume_pending_file_plan(text):
+                    return
                 self.history.append(text)
                 if text.startswith("/"):
                     parts = text.split(None, 1)
@@ -1263,6 +1062,7 @@ class LumiTUI:
             self._update_slash(); return
         if key == "DELETE":
             if self.cur_pos < len(self.buf): self.buf = self.buf[:self.cur_pos] + self.buf[self.cur_pos + 1:]
+            self._update_slash()
             return
         if key == "CTRL_W":
             if self.cur_pos > 0:
@@ -1274,24 +1074,24 @@ class LumiTUI:
             i = self.cur_pos
             while i < len(self.buf) and self.buf[i] == " ": i += 1
             while i < len(self.buf) and self.buf[i] != " ": i += 1
-            self.cur_pos = i; return
+            self.cur_pos = i; self._update_slash(); return
         if key == "CTRL_LEFT":
             i = self.cur_pos
             while i > 0 and self.buf[i - 1] == " ": i -= 1
             while i > 0 and self.buf[i - 1] != " ": i -= 1
-            self.cur_pos = i; return
+            self.cur_pos = i; self._update_slash(); return
         if key == "LEFT":
             if getattr(self, "browser_visible", False):
                 parent = os.path.dirname(self.browser_cwd)
                 if parent != self.browser_cwd:
                     self.browser_sel = 0; self.browser_cwd = parent; self._refresh_browser(); self.redraw()
-                return
-            self.cur_pos = max(0, self.cur_pos - 1); return
+                    return
+            self.cur_pos = max(0, self.cur_pos - 1); self._update_slash(); return
         if key == "RIGHT":
             if getattr(self, "browser_visible", False): self._browser_select(); return
-            self.cur_pos = min(len(self.buf), self.cur_pos + 1); return
-        if key == "HOME": self.cur_pos = 0; return
-        if key == "END": self.cur_pos = len(self.buf); return
+            self.cur_pos = min(len(self.buf), self.cur_pos + 1); self._update_slash(); return
+        if key == "HOME": self.cur_pos = 0; self._update_slash(); return
+        if key == "END": self.cur_pos = len(self.buf); self._update_slash(); return
 
         if len(key) == 1 and (key.isprintable() or ord(key) > 127):
             self.buf = self.buf[:self.cur_pos] + key + self.buf[self.cur_pos:]; self.cur_pos += 1; self._update_slash()
@@ -1299,7 +1099,19 @@ class LumiTUI:
     def _update_slash(self):
         if self.buf.startswith("/"):
             q = self.buf.lower(); self.slash_hits = registry.get_hits(q); self.slash_sel = 0; self.slash_visible = bool(self.slash_hits)
-        else: self.slash_visible = False
+            self.path_visible = False
+            self.path_hits = []
+            return
+        self.slash_visible = False
+        suggestion = suggest_paths(self.buf[: self.cur_pos], Path.cwd())
+        if suggestion:
+            self.path_hits = suggestion["items"]
+            self.path_sel = 0
+            self.path_visible = bool(self.path_hits)
+            self._path_span = (suggestion["start"], suggestion["end"])
+        else:
+            self.path_visible = False
+            self.path_hits = []
 
     def _load_history(self) -> list:
         return self.history.entries
@@ -1316,6 +1128,16 @@ class LumiTUI:
             return
         self.buf = new_text
         self.cur_pos = len(self.buf)
+        self._update_slash()
+
+    def _apply_path_suggestion(self, suggestion: str) -> None:
+        start, end = self._path_span
+        replacement = suggestion[:-1] if suggestion.endswith("/") else suggestion
+        self.buf = self.buf[:start] + replacement + self.buf[end:]
+        self.cur_pos = start + len(replacement)
+        self.path_visible = False
+        self.path_hits = []
+        self._update_slash()
 
     # ── Master LLM Task Query Send Operation Routing  ───────────────────────
     def _run_message(self, user_input):
@@ -1327,7 +1149,9 @@ class LumiTUI:
 
         if needs_plan_first(user_input) and _is_files:
             sp += "\n\n[INSTRUCTION: Output a brief one-paragraph plan. Then write each file completely.]"
-        if is_create_request(user_input): self._run_file_agent(user_input, sp); return
+        if is_filesystem_request(user_input):
+            self._run_file_agent(user_input, sp)
+            return
 
         emotion = detect_emotion(user_input); augmented = user_input
         if emotion: hint = emotion_hint(emotion); augmented = (hint + augmented) if hint else augmented
@@ -1400,19 +1224,93 @@ class LumiTUI:
 
     def _run_file_agent(self, user_input, sp):
         self._sys("◆  generating file plan…"); self.redraw()
+        home = os.path.expanduser("~")
+        plan = None
+        label = "File plan"
+        if is_delete_request(user_input):
+            plan = generate_delete_plan(user_input)
+            label = "Removal plan"
+        elif is_move_request(user_input) or is_copy_request(user_input) or is_rename_request(user_input):
+            plan = generate_transfer_plan(user_input)
+            label = "Transfer plan"
+        elif is_create_request(user_input):
+            label = "File plan"
+
+        if plan is None and is_create_request(user_input):
+            try:
+                _fs_model = self.current_model
+                if _fs_model == "council": _fs_model = get_models(get_provider())[0]
+                plan = generate_file_plan(user_input, self.client, _fs_model)
+            except Exception as e: self._err(f"File plan failed: {e}"); self.set_busy(False); return
+            if plan:
+                plan["operation"] = "create"
+        if not plan:
+            self._err(f"Couldn't generate a {label.lower()}."); self.set_busy(False); return
+
         try:
-            _fs_model = self.current_model
-            if _fs_model == "council": _fs_model = get_models(get_provider())[0]
-            plan = generate_file_plan(user_input, self.client, _fs_model)
-        except Exception as e: self._err(f"File plan failed: {e}"); self.set_busy(False); return
-        if not plan: self._err("Couldn't generate a file plan."); self.set_busy(False); return
+            inspection = inspect_operation_plan(plan, home)
+        except Exception as exc:
+            self._err(f"{label} failed: {exc}")
+            self.set_busy(False)
+            return
 
-        root = plan.get("root", "."); files = plan.get("files",[]); home = os.path.expanduser("~")
-        lines = [f"File plan → {home}"]; lines.append(f"  📁 {root}/") if root and root != "." else None
-        for f in files: lines.append(f"  📄 {f.get('path', '')}")
-        lines.append(""); lines.append("Type 'yes' to create, anything else to cancel.")
+        lines = [f"{label} → {home}"]
+        lines.extend(f"  {line}" for line in inspection["summary_lines"])
+        lines.extend(f"  {line}" for line in inspection["detail_lines"])
+        if inspection["preview_lines"]:
+            lines.append("")
+            lines.append("  preview")
+            lines.extend(inspection["preview_lines"][:32])
+        lines.append("")
+        lines.append("Type 'y' or 'yes' to apply. Press Enter or type 'n' to cancel.")
 
-        self._sys("\n".join(lines)); self.set_busy(False); self._pending_file_plan = (plan, home)
+        self._sys("\n".join(lines)); self.set_busy(False); self._pending_file_plan = {"plan": plan, "base_dir": home, "inspection": inspection}
+
+    def _consume_pending_file_plan(self, text: str) -> bool:
+        if self._pending_file_plan is None:
+            return False
+
+        payload = self._pending_file_plan
+        self._pending_file_plan = None
+        self.store.add(Msg("user", text))
+        if isinstance(payload, tuple):
+            plan, base_dir = payload
+            inspection = None
+        else:
+            plan = payload.get("plan", {})
+            base_dir = payload.get("base_dir", os.path.expanduser("~"))
+            inspection = payload.get("inspection")
+
+        accepted = {"y", "yes", "confirm", "apply"}
+        cancelled = {"", "n", "no", "cancel"}
+        normalized = text.strip().lower()
+        if normalized in cancelled:
+            action = "Removal" if plan.get("operation") == "delete" else "File plan"
+            self._sys(f"{action} cancelled.")
+            return True
+        if normalized not in accepted:
+            self._sys("Filesystem action cancelled.")
+            return True
+
+        try:
+            result = execute_operation_plan(plan, base_dir)
+        except Exception as exc:
+            action = {
+                "delete": "Removal",
+                "move": "Move",
+                "copy": "Copy",
+                "rename": "Rename",
+            }.get(plan.get("operation"), "File creation")
+            self._err(f"{action} failed: {exc}")
+            return True
+        detail_lines = result.get("details") or (inspection or {}).get("detail_lines") or []
+        rendered = [result["summary"]]
+        if detail_lines:
+            rendered.append("")
+            rendered.extend(detail_lines[:3])
+        self._sys("\n".join(rendered))
+        self._record_filesystem_action(result["summary"], result.get("undo"))
+        return True
 
     def _do_retry(self):
         if self.busy: return
@@ -1450,24 +1348,29 @@ class LumiTUI:
             if value == "council": self.current_model = "council"
             else:
                 try:
-                    set_provider(value); self.client = get_client(); ms = get_models(value); self.current_model = ms[0] if ms else ""; self._open_picker(); return
+                    set_provider(value); self.client = get_client(); ms = get_models(value); self.current_model = ms[0] if ms else ""
+                    self.little_notes.record_model(value, self.current_model)
+                    self._open_picker(); return
                 except Exception:
                     log.exception("Provider switch failed")
             self._sys(f"Provider → {PROV_NAME.get(self.current_model, self.current_model)}")
         elif kind == "model": self.current_model = value; self._notify(f"Model → {value.split('/')[-1]}")
+        try:
+            provider_key = "council" if self.current_model == "council" else get_provider()
+        except Exception:
+            provider_key = "huggingface"
+        self.little_notes.record_model(provider_key, self.current_model)
         self.picker_visible = False
 
     def _execute_command(self, cmd, arg):
         if cmd in registry.commands:
             if cmd not in {"/help"}:
-                self.recent_commands = [cmd] + [item for item in self.recent_commands if item != cmd]
-                self.recent_commands = self.recent_commands[:3]
+                self.recent_commands = self.little_notes.record_command(cmd)[:3]
             registry.commands[cmd]["func"](self, arg)
         else:
             handled, plug_result = plugin_dispatch(cmd, arg, client=self.client, model=self.current_model, memory=self.memory, system_prompt=self.system_prompt, name=self.name)
             if handled:
-                self.recent_commands = [cmd] + [item for item in self.recent_commands if item != cmd]
-                self.recent_commands = self.recent_commands[:3]
+                self.recent_commands = self.little_notes.record_command(cmd)[:3]
                 if plug_result: self._sys(plug_result)
             else: self._err(f"Unknown command: {cmd}  (try /help)")
 
@@ -1678,7 +1581,10 @@ def cmd_file(tui: LumiTUI, arg: str):
         tui._err(f"Failed to read {path}: {e}")
 
 @registry.register("/council", "All agents run together")
-def cmd_council(tui: LumiTUI, arg: str): tui.current_model = "council"; tui._sys("⚡ Council mode — all agents in parallel")
+def cmd_council(tui: LumiTUI, arg: str):
+    tui.current_model = "council"
+    tui.little_notes.record_model("council", "council")
+    tui._sys("⚡ Council mode — all agents in parallel")
 
 @registry.register("/exit", "Quit app")
 def cmd_exit(tui: LumiTUI, arg: str):
@@ -1714,8 +1620,16 @@ def cmd_more(tui: LumiTUI, arg: str):
     tui.memory.replace_last("user", "Tell me more."); tui.memory.add("assistant", raw)
     tui.prev_reply = tui.last_reply; tui.last_reply = raw; tui.turns += 1; tui.set_busy(False)
 
-@registry.register("/undo", "Pop the latest history branch")
+@registry.register("/undo", "Undo last filesystem action or pop the latest chat branch")
 def cmd_undo(tui: LumiTUI, arg: str):
+    mode = arg.strip().lower()
+    if mode in {"fs", "file", "files"} or (not mode and tui._last_filesystem_undo):
+        try:
+            if tui._undo_last_filesystem_action():
+                return
+        except Exception as exc:
+            tui._err(f"Filesystem undo failed: {exc}")
+            return
     if tui.memory.remove_last_exchange():
         tui.turns = max(0, tui.turns - 1)
         tui._sys("Last exchange removed from LLM Memory Tree.")
@@ -1987,6 +1901,7 @@ def cmd_agent(tui: LumiTUI, arg: str):
     objective = arg.strip()
     if not objective:
         tui._err("Usage: /agent <objective>"); return
+    tui.little_notes.record_agent_task(objective)
 
     def _go():
         tui.set_busy(True)

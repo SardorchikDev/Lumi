@@ -27,9 +27,9 @@ class ShortTermMemory:
                 self._history = self._history[-(self.max_turns * 2):]
 
     def get(self) -> list[dict[str, str]]:
-        """Return the current history list."""
+        """Return a snapshot of the current history."""
         with self._lock:
-            return self._history
+            return list(self._history)
 
     def clear(self) -> None:
         """Discard all stored turns."""

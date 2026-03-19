@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import pickle
+import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -11,6 +11,9 @@ from typing import Any
 import numpy as np
 
 from src.config import MEMORY_DIR
+from src.utils.log import get_logger
+
+logger = get_logger(__name__)
 
 # ── Fact Memory (JSON) ────────────────────────────────────────────────────────
 MEMORY_FILE = MEMORY_DIR / "longterm.json"
@@ -21,8 +24,6 @@ def _load() -> dict[str, Any]:
         try:
             return json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
         except Exception as e:
-            from src.utils.log import get_logger
-            logger = get_logger(__name__)
             logger.error("Failed to load long-term memory: %s", e, exc_info=True)
     return {"facts": [], "persona_override": {}}
 
@@ -105,11 +106,76 @@ def clear_persona_override() -> None:
     _save(data)
 
 # ── Episodic Memory (Vector Search) ───────────────────────────────────────────
-EPISODIC_DB_PATH = MEMORY_DIR / "episodes.pkl"
+EPISODIC_DB_PATH = MEMORY_DIR / "episodes.sqlite3"
+LEGACY_EPISODIC_DB_PATH = MEMORY_DIR / "episodes.pkl"
+
+
+def _episode_conn() -> sqlite3.Connection:
+    EPISODIC_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(EPISODIC_DB_PATH)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS episodes (
+            summary TEXT PRIMARY KEY,
+            vector_json TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    return conn
+
+
+def _migrate_legacy_episode_db() -> None:
+    if not LEGACY_EPISODIC_DB_PATH.exists() or EPISODIC_DB_PATH.exists():
+        return
+    try:
+        import pickle
+
+        with LEGACY_EPISODIC_DB_PATH.open("rb") as handle:
+            episodes = pickle.load(handle)
+        if not isinstance(episodes, dict):
+            return
+        with _episode_conn() as conn:
+            for summary, vector in episodes.items():
+                if not isinstance(summary, str):
+                    continue
+                vec = np.asarray(vector, dtype=np.float32)
+                conn.execute(
+                    "INSERT OR REPLACE INTO episodes(summary, vector_json) VALUES (?, ?)",
+                    (summary, json.dumps(vec.tolist(), ensure_ascii=False)),
+                )
+            conn.commit()
+    except Exception:
+        logger.exception("Failed to migrate legacy episodic memory store")
+
+
+def _load_episodes() -> list[tuple[str, np.ndarray]]:
+    _migrate_legacy_episode_db()
+    if not EPISODIC_DB_PATH.exists():
+        return []
+    try:
+        with _episode_conn() as conn:
+            rows = conn.execute("SELECT summary, vector_json FROM episodes").fetchall()
+    except sqlite3.Error:
+        logger.exception("Failed to read episodic memory database")
+        return []
+    episodes: list[tuple[str, np.ndarray]] = []
+    for summary, vector_json in rows:
+        try:
+            vector = np.array(json.loads(vector_json), dtype=np.float32)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        episodes.append((summary, vector))
+    return episodes
+
 
 def get_related_episodes(query: str, client: Any, limit: int = 3) -> list[str]:
     """Find summaries of past conversations related to the query."""
-    if not EPISODIC_DB_PATH.exists() or not client:
+    if not client:
+        return []
+
+    episodes = _load_episodes()
+    if not episodes:
         return []
 
     from src.tools.rag import cosine_similarity, get_embedding
@@ -119,37 +185,27 @@ def get_related_episodes(query: str, client: Any, limit: int = 3) -> list[str]:
         return []
 
     q_vec = np.array(q_emb, dtype=np.float32)
-
-    try:
-        with open(EPISODIC_DB_PATH, "rb") as f:
-            episodes = pickle.load(f)  # format: {summary_text: vector}
-    except Exception:
-        return []
-
     scores = []
-    for summary, vec in episodes.items():
+    for summary, vec in episodes:
         score = cosine_similarity(q_vec, vec)
         scores.append((score, summary))
 
     scores.sort(key=lambda x: x[0], reverse=True)
     return [summary for score, summary in scores[:limit]]
 
+
 def save_episode(summary: str, vector: np.ndarray) -> None:
     """Save a new session summary and its vector."""
-    EPISODIC_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with open(EPISODIC_DB_PATH, "rb") as f:
-            episodes = pickle.load(f)
-    except (OSError, EOFError):
-        episodes = {}
-
-    episodes[summary] = vector
-
-    with tempfile.NamedTemporaryFile("wb", delete=False, dir=EPISODIC_DB_PATH.parent) as handle:
-        pickle.dump(episodes, handle)
-        temp_name = handle.name
-    tempfile_path = Path(temp_name)
-    tempfile_path.replace(EPISODIC_DB_PATH)
+    normalized = " ".join(summary.split())
+    if not normalized:
+        return
+    payload = np.asarray(vector, dtype=np.float32).tolist()
+    with _episode_conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO episodes(summary, vector_json) VALUES (?, ?)",
+            (normalized, json.dumps(payload, ensure_ascii=False)),
+        )
+        conn.commit()
 
 SUMMARIZE_PROMPT = """You are a summarization agent. Read the following conversation and create a concise, one-paragraph summary of what was discussed and accomplished. Focus on the key topics, decisions, and outcomes.
 
@@ -160,7 +216,7 @@ One-paragraph summary:"""
 
 def auto_summarize_and_save(history: list[dict[str, str]], client: Any, model: str) -> None:
     """Generate a summary, get its embedding, and save it."""
-    if len(history) < 6: # Don't summarize very short chats
+    if len(history) < 6:  # Don't summarize very short chats
         return
 
     from src.tools.rag import get_embedding, get_embedding_client
@@ -189,9 +245,8 @@ def auto_summarize_and_save(history: list[dict[str, str]], client: Any, model: s
 
         vector = get_embedding(summary, emb_client)
         if vector:
-            # 3. Save
             save_episode(summary, np.array(vector, dtype=np.float32))
-            print("\n  [memory] Saved session summary.")
+            logger.info("Saved episodic session summary")
 
     except Exception as e:
-        print(f"\n  [memory] Failed to save session summary: {e}")
+        logger.exception("Failed to save session summary: %s", e)

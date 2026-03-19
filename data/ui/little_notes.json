@@ -1,0 +1,14 @@
+{
+  "recent_commands": [
+    "/exit",
+    "/clear",
+    "/changelog",
+    "/model",
+    "/memory"
+  ],
+  "recent_actions": [],
+  "last_provider": "huggingface",
+  "last_model": "meta-llama/Llama-3.3-70B-Instruct",
+  "last_agent_task": "",
+  "updated_at": "2026-03-19T18:08:06"
+}
