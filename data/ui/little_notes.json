@@ -2,11 +2,11 @@
   "recent_commands": [
     "/exit",
     "/clear",
-    "/shell"
+    "/model"
   ],
   "recent_actions": [],
-  "last_provider": "huggingface",
-  "last_model": "meta-llama/Llama-3.3-70B-Instruct",
+  "last_provider": "gemini",
+  "last_model": "gemini-2.5-flash",
   "last_agent_task": "",
-  "updated_at": "2026-03-19T20:01:33"
+  "updated_at": "2026-03-19T21:43:19"
 }

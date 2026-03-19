@@ -150,3 +150,26 @@ def test_chat_stream_uses_fallback_gateway_model_chain(monkeypatch):
     result = hf_client.chat_stream(object(), [{"role": "user", "content": "hi"}], model="kimi")
     assert result == "ok"
     assert calls == ["kimi", "deepseek"]
+
+
+def test_chat_stream_emits_chunks_via_callback(monkeypatch):
+    monkeypatch.setattr(hf_client, "get_provider", lambda: "huggingface")
+    received: list[str] = []
+
+    def fake_stream(client, model, messages, max_tokens, temperature, on_delta=None):
+        if on_delta is not None:
+            on_delta("hel")
+            on_delta("lo")
+        return "hello"
+
+    monkeypatch.setattr(hf_client, "_do_stream", fake_stream)
+
+    result = hf_client.chat_stream(
+        object(),
+        [{"role": "user", "content": "hi"}],
+        model="meta-llama/Llama-3.3-70B-Instruct",
+        on_delta=received.append,
+    )
+
+    assert result == "hello"
+    assert received == ["hel", "lo"]

@@ -55,6 +55,16 @@ def test_run_git_subcommand_summary_and_review(tmp_path):
     assert "review" in review.lower()
     assert "app.py" in review
 
+    ok, changed = run_git_subcommand("changed", cwd=tmp_path)
+    assert ok is True
+    assert "changed files" in changed.lower()
+    assert "app.py" in changed
+
+    ok, prepare = run_git_subcommand("prepare", cwd=tmp_path)
+    assert ok is True
+    assert "prepare commit" in prepare.lower()
+    assert "suggested commit title" in prepare.lower()
+
 
 def test_run_git_subcommand_unknown():
     ok, output = run_git_subcommand("nope")

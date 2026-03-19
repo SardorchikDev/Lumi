@@ -6,6 +6,7 @@ instead of accessing _history directly from other modules.
 """
 from __future__ import annotations
 
+import re
 import threading
 
 
@@ -98,6 +99,26 @@ class ShortTermMemory:
             tail = self._history[-tail_messages:] if tail_messages > 0 else []
             self._history = [{"role": "system", "content": f"[Summary]: {summary.strip()}"}] + tail
             return True
+
+    def relevant_slice(self, query: str, limit: int = 6) -> list[dict[str, str]]:
+        """Return the most relevant recent messages for *query*."""
+        tokens = {
+            token.lower()
+            for token in re.findall(r"[A-Za-z_][A-Za-z0-9_./-]{2,}", query or "")
+        }
+        with self._lock:
+            history = list(self._history)
+        if not tokens:
+            return history[-limit:]
+        scored: list[tuple[int, int, dict[str, str]]] = []
+        for index, message in enumerate(history):
+            content = str(message.get("content", "")).lower()
+            score = sum(1 for token in tokens if token in content)
+            if score:
+                scored.append((score, index, message))
+        scored.sort(key=lambda item: (-item[0], -item[1]))
+        picked = sorted(scored[:limit], key=lambda item: item[1])
+        return [message for _, _, message in picked] or history[-limit:]
 
     def append_to_last(self, chunk: str) -> None:
         """Append *chunk* to the content of the last message (streaming helper)."""

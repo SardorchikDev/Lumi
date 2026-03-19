@@ -239,6 +239,19 @@ def test_undo_restores_last_filesystem_action(tmp_path, monkeypatch):
     tui._task_executor.shutdown(wait=False)
 
 
+def test_fs_mkdir_queues_preview_instead_of_mutating_immediately(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._execute_command("/fs", "mkdir docs")
+
+    assert tui._pending_file_plan is not None
+    assert not (tmp_path / "docs").exists()
+    messages = tui.store.snapshot()
+    assert any(msg.role == "system" and "Filesystem plan" in msg.text for msg in messages)
+    tui._task_executor.shutdown(wait=False)
+
+
 def test_permissions_command_renders_permission_report(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
 
@@ -247,4 +260,15 @@ def test_permissions_command_renders_permission_report(tmp_path, monkeypatch):
     messages = tui.store.snapshot()
     assert any(msg.role == "system" and "Plugin permissions" in msg.text for msg in messages)
     assert any(msg.role == "system" and "loaded plugins" in msg.text for msg in messages)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_onboard_command_renders_guidance(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    tui._execute_command("/onboard", "")
+
+    messages = tui.store.snapshot()
+    assert any(msg.role == "system" and "Lumi onboarding" in msg.text for msg in messages)
+    assert any(msg.role == "system" and "Starter prompts" in msg.text for msg in messages)
     tui._task_executor.shutdown(wait=False)

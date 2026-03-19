@@ -43,9 +43,9 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=ROOT / ".env")
 
 # ── CLI Modules ──────────────────────────────────────────────────────────────
-from src.agents.benchmark import load_benchmark_scenarios, render_benchmark_catalog
 from src.agents.council import LEAD_AGENTS, _get_available_agents, classify_task, council_ask
 from src.chat.hf_client import (
+    chat_stream,
     get_available_providers,
     get_client,
     get_models,
@@ -58,6 +58,7 @@ from src.chat.optimizer import (
     optimize_messages,
     route_model,
 )
+from src.chat.runtime import build_runtime_messages
 from src.memory.conversation_store import load_by_name, load_latest
 from src.memory.conversation_store import (
     save as session_save,
@@ -70,15 +71,67 @@ from src.memory.longterm import (
 )
 from src.memory.short_term import ShortTermMemory
 from src.prompts.builder import (
-    build_messages as _base_build_messages,
-)
-from src.prompts.builder import (
     build_system_prompt,
     is_coding_task,
     is_file_generation_task,
     load_persona,
 )
 from src.tools.search import search, search_display
+from src.tui.command_groups import register_command_groups
+from src.tui.controller_actions import (
+    apply_path_suggestion as controller_apply_path_suggestion,
+)
+from src.tui.controller_actions import (
+    browser_select as controller_browser_select,
+)
+from src.tui.controller_actions import (
+    cancel_pending_file_plan as controller_cancel_pending_file_plan,
+)
+from src.tui.controller_actions import (
+    cancel_transient_state as controller_cancel_transient_state,
+)
+from src.tui.controller_actions import (
+    confirm_picker as controller_confirm_picker,
+)
+from src.tui.controller_actions import (
+    consume_pending_file_plan as controller_consume_pending_file_plan,
+)
+from src.tui.controller_actions import (
+    do_retry as controller_do_retry,
+)
+from src.tui.controller_actions import (
+    execute_command as controller_execute_command,
+)
+from src.tui.controller_actions import (
+    filesystem_prompt_hint as controller_filesystem_prompt_hint,
+)
+from src.tui.controller_actions import (
+    handle_key as controller_handle_key,
+)
+from src.tui.controller_actions import (
+    hist_nav as controller_hist_nav,
+)
+from src.tui.controller_actions import (
+    open_picker as controller_open_picker,
+)
+from src.tui.controller_actions import (
+    queue_filesystem_plan as controller_queue_filesystem_plan,
+)
+from src.tui.controller_actions import (
+    record_filesystem_action as controller_record_filesystem_action,
+)
+from src.tui.controller_actions import (
+    refresh_browser as controller_refresh_browser,
+)
+from src.tui.controller_actions import (
+    run_file_agent as controller_run_file_agent,
+)
+from src.tui.controller_actions import (
+    undo_last_filesystem_action as controller_undo_last_filesystem_action,
+)
+from src.tui.controller_actions import (
+    update_slash as controller_update_slash,
+)
 from src.tui.input import InputHistory, read_key
 from src.tui.notes import LittleNotesStore
 from src.tui.state import AgentState, Msg, Store
@@ -99,7 +152,6 @@ from src.utils.filesystem import (
     suggest_paths,
     undo_operation,
 )
-from src.utils.git_tools import GIT_USAGE, run_git_subcommand
 from src.utils.intelligence import (
     detect_emotion,
     emotion_hint,
@@ -107,7 +159,16 @@ from src.utils.intelligence import (
     needs_plan_first,
     should_search,
 )
-from src.utils.plugins import describe_plugins, load_plugins, render_permission_report
+from src.utils.plugins import (
+    approve_plugin,
+    describe_plugin_inventory,
+    describe_plugins,
+    load_plugins,
+    reload_plugins,
+    render_permission_report,
+    render_plugin_audit_report,
+    revoke_plugin,
+)
 from src.utils.plugins import dispatch as plugin_dispatch
 from src.utils.system_reports import build_doctor_report, build_status_report
 from src.utils.web import fetch_url
@@ -121,35 +182,18 @@ _context_cache = get_global_context_cache()
 _session_telemetry = get_global_telemetry()
 
 
-def _infer_message_mode(history: list[dict[str, str]]) -> str:
-    text = next((m.get("content", "") for m in reversed(history) if m.get("role") == "user"), "")
-    lowered = str(text).lower()
-    if any(token in lowered for token in ("/review", "review", "security review")):
-        return "review"
-    if any(token in lowered for token in ("traceback", "stack trace", "assert", "test failed", "/fix", "mypy", "ruff")):
-        return "debug"
-    if any(token in lowered for token in ("/search", "/web", "fetched external raw web link", "auto search tool results")):
-        return "search"
-    if any(token in lowered for token in ("/tl;dr", "summarize", "summary")):
-        return "summary"
-    if any(token in lowered for token in ("/file", "/project", "loaded file", "<file path=", "cached for retrieval")):
-        return "files"
-    return "code" if is_file_generation_task(lowered) or "```" in lowered or is_coding_task(lowered) else "chat"
-
-
 def build_messages(system_prompt: str, history: list[dict[str, str]], *, model: str = "") -> list[dict[str, str]]:
-    active_model = model or "unknown"
-    if active_model == "unknown":
-        try:
-            active_model = get_models(get_provider())[0]
-        except Exception:
-            active_model = "unknown"
-    return optimize_messages(
-        _base_build_messages(system_prompt, history),
-        active_model,
-        mode=_infer_message_mode(history),
+    return build_runtime_messages(
+        system_prompt,
+        history,
+        model=model,
+        get_provider_fn=get_provider,
+        get_models_fn=get_models,
         context_cache=_context_cache,
         telemetry=_session_telemetry,
+        search_markers=("fetched external raw web link", "auto search tool results"),
+        file_markers=("loaded file", "<file path=", "cached for retrieval"),
+        include_coding_detector=True,
     )
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -320,7 +364,7 @@ class CommandRegistry:
         return decorator
 
     def _infer_category(self, name):
-        if name in {"/model", "/theme", "/persona", "/mode", "/offline", "/plugins", "/permissions", "/status", "/doctor", "/benchmark", "/quit", "/exit"}:
+        if name in {"/model", "/theme", "/persona", "/mode", "/offline", "/plugins", "/permissions", "/status", "/doctor", "/onboard", "/benchmark", "/quit", "/exit"}:
             return "settings"
         if name in {"/agent", "/scaffold", "/edit", "/review", "/fix", "/debug", "/improve", "/optimize", "/security", "/refactor", "/test", "/explain"}:
             return "code"
@@ -677,62 +721,19 @@ class LumiTUI:
     def _err(self, text): self.store.add(Msg("error", str(text)))
 
     def filesystem_prompt_hint(self) -> tuple[str, str]:
-        pending = self._pending_file_plan
-        if not pending:
-            return "", ""
-        operation = pending.get("plan", {}).get("operation", "create")
-        if operation == "delete":
-            return "confirm removal", "y apply · Enter cancel"
-        return "confirm filesystem plan", "y apply · Enter cancel"
+        return controller_filesystem_prompt_hint(self)
 
     def _cancel_pending_file_plan(self) -> bool:
-        pending = self._pending_file_plan
-        if pending is None:
-            return False
-        self._pending_file_plan = None
-        operation = pending.get("plan", {}).get("operation", "create")
-        label = "Removal" if operation == "delete" else "Filesystem plan"
-        self._sys(f"{label} cancelled.")
-        return True
+        return controller_cancel_pending_file_plan(self)
 
     def _cancel_transient_state(self) -> bool:
-        changed = False
-        if getattr(self, "browser_visible", False):
-            self.browser_visible = False
-            changed = True
-        if self.slash_visible:
-            self.slash_visible = False
-            changed = True
-        if self.path_visible or self.path_hits:
-            self.path_visible = False
-            self.path_hits = []
-            self.path_sel = 0
-            changed = True
-        if self.picker_visible:
-            self.picker_visible = False
-            changed = True
-        if self._cancel_pending_file_plan():
-            changed = True
-        if self.buf:
-            self.buf = ""
-            self.cur_pos = 0
-            self.history.reset_navigation()
-            changed = True
-        return changed
+        return controller_cancel_transient_state(self)
 
     def _record_filesystem_action(self, summary: str, undo_record: dict | None = None) -> None:
-        self._last_filesystem_undo = undo_record
-        self.recent_actions = self.little_notes.record_action(summary)[:4]
+        controller_record_filesystem_action(self, summary, undo_record)
 
     def _undo_last_filesystem_action(self) -> bool:
-        if not self._last_filesystem_undo:
-            return False
-        restored = undo_operation(self._last_filesystem_undo)
-        self._last_filesystem_undo = None
-        summary = f"Undid filesystem action ({len(restored)} path(s) restored)."
-        self.recent_actions = self.little_notes.record_action(summary)[:4]
-        self._sys(summary)
-        return True
+        return controller_undo_last_filesystem_action(self, undo_operation)
 
     def _notify(self, msg, duration=2.5):
         with self._state_lock: self.notification = msg
@@ -745,43 +746,10 @@ class LumiTUI:
         self._notif_timer = t
 
     def _refresh_browser(self):
-        try:
-            entries = list(os.scandir(self.browser_cwd))
-            dirs = sorted([e for e in entries if e.is_dir()], key=lambda e: e.name.lower())
-            files = sorted([e for e in entries if e.is_file()], key=lambda e: e.name.lower())
-
-            self.browser_items = []
-            if self.browser_cwd != "/":
-                self.browser_items.append(("dir", "..", os.path.dirname(self.browser_cwd)))
-
-            for d in dirs: self.browser_items.append(("dir", d.name, d.path))
-            for f in files: self.browser_items.append(("file", f.name, f.path))
-            self.browser_sel = max(0, min(self.browser_sel, len(self.browser_items) - 1))
-        except Exception as e:
-            self._err(f"Browser error: {e}")
-            self.browser_items = []
+        controller_refresh_browser(self)
 
     def _browser_select(self):
-        if not self.browser_items: return
-        sel = self.browser_sel
-        if sel < 0 or sel >= len(self.browser_items): return
-        itype, iname, ipath = self.browser_items[sel]
-
-        if itype == "dir":
-            # Navigate into the directory
-            self.browser_cwd = ipath
-            self.browser_sel = 0
-            self._refresh_browser()
-            self.redraw()
-        else:
-            # File selected — inject into context, close the browser
-            self.browser_visible = False
-            self._notify(f"󰈔 Loaded: {iname}")
-            threading.Thread(
-                target=self._execute_command,
-                args=("/file", ipath),
-                daemon=True
-            ).start()
+        controller_browser_select(self)
 
     def _capture(self, fn, *args, **kwargs):
         buf = io.StringIO(); result = None
@@ -803,15 +771,26 @@ class LumiTUI:
         idx = self.store.add(Msg("streaming", "", label))
         if model == "council": return self._run_council_stream(idx, messages)
 
-        full = ""
+        chunks: list[str] = []
         try:
-            for chunk in self.client.chat.completions.create(model=model, messages=messages, max_tokens=8192, temperature=0.7, stream=True):
-                if not chunk.choices: continue
-                d = chunk.choices[0].delta.content
-                if d:
-                    full += d; self.store.append(idx, d); self.redraw()
+            def _on_delta(delta: str) -> None:
+                chunks.append(delta)
+                self.store.append(idx, delta)
+                self.redraw()
+
+            full = chat_stream(
+                self.client,
+                messages,
+                model=model,
+                max_tokens=8192,
+                temperature=0.7,
+                on_delta=_on_delta,
+                on_status=lambda status: self._notify(status, duration=2.0),
+            )
         except Exception as ex: return self._handle_stream_error(idx, ex, messages)
         self.store.finalize(idx)
+        if not full:
+            full = "".join(chunks)
         _session_telemetry.record_response(full)
         return full
 
@@ -859,11 +838,22 @@ class LumiTUI:
                 try:
                     set_provider(remaining[0]); self.client = get_client(); self.current_model = get_models(remaining[0])[0]
                     self.store.set_text(idx, "")
-                    full = ""
-                    for chunk in self.client.chat.completions.create(model=self.current_model, messages=messages, max_tokens=8192, temperature=0.7, stream=True):
-                        if not chunk.choices: continue
-                        d = chunk.choices[0].delta.content
-                        if d: full += d; self.store.append(idx, d); self.redraw()
+                    chunks: list[str] = []
+                    def _on_delta(delta: str) -> None:
+                        chunks.append(delta)
+                        self.store.append(idx, delta)
+                        self.redraw()
+                    full = chat_stream(
+                        self.client,
+                        messages,
+                        model=self.current_model,
+                        max_tokens=8192,
+                        temperature=0.7,
+                        on_delta=_on_delta,
+                        on_status=lambda status: self._notify(status, duration=2.0),
+                    )
+                    if not full:
+                        full = "".join(chunks)
                     self.store.finalize(idx); return full
                 except Exception as ex2: self.store.set_text(idx, f"⚠  {ex2}")
             else: self.store.set_text(idx, f"⚠  {ex}")
@@ -872,11 +862,13 @@ class LumiTUI:
 
     def _silent_call(self, prompt, model, max_tokens=8192):
         try:
-            routed = route_model(model, get_models(get_provider()), "summary")
+            provider = get_provider()
+            routed = route_model(model, get_models(provider), "summary", provider=provider)
             messages = optimize_messages(
                 [{"role": "system", "content": "You are Lumi. Return only the requested result."}, {"role": "user", "content": prompt}],
                 routed,
                 mode="summary",
+                provider=provider,
                 context_cache=_context_cache,
                 telemetry=_session_telemetry,
             )
@@ -886,8 +878,11 @@ class LumiTUI:
                 max_tokens=max_tokens,
                 temperature=0.3,
                 stream=False,
-            ).choices[0].message.content.strip()
-            _session_telemetry.record_response(reply)
+            )
+            usage = getattr(reply, "usage", None)
+            completion_tokens = getattr(usage, "completion_tokens", None) if usage is not None else None
+            reply = reply.choices[0].message.content.strip()
+            _session_telemetry.record_response(reply, actual_tokens=completion_tokens)
             return reply
         except Exception:
             log.exception("Silent call failed")
@@ -1063,159 +1058,16 @@ class LumiTUI:
             log.info("Lumi exited cleanly")
 
     def _handle_key(self, key):
-        if not key: return
-        if key == "ESC":
-            self._cancel_transient_state()
-            return
-        if key in ("CTRL_Q", "CTRL_C"):
-            with self._state_lock: self._running = False
-            return
-        if key == "CTRL_G":
-            self.show_starter_panel = not self.show_starter_panel
-            self.redraw()
-            return
-        if key == "CTRL_N":
-            if not self.slash_visible: self._open_picker()
-            return
-        if key == "CTRL_L":
-            self.memory.clear(); self.store.clear(); self.agents.clear()
-            self.last_msg = self.last_reply = self.prev_reply = None
-            self.turns = 0; self.set_busy(False); self.buf = ""; self.cur_pos = self.scroll_offset = 0
-            self.slash_visible = self.picker_visible = False
-            self._sys("Chat cleared."); return
-        if key == "CTRL_R":
-            if not (self._active_task and not self._active_task.done()):
-                self._active_task = self._task_executor.submit(self._do_retry)
-            return
-        if key == "CTRL_U": self.buf = ""; self.cur_pos = 0; self.slash_visible = False; return
-        if key in ("SHIFT_UP", "CTRL_UP"):
-            self.scroll_offset += 3
-            return
-        if key in ("SHIFT_DOWN", "CTRL_DOWN"):
-            self.scroll_offset = max(0, self.scroll_offset - 3)
-            return
-
-        if key == "UP":
-            if getattr(self, "browser_visible", False):
-                self.browser_sel = max(0, self.browser_sel - 1); self.redraw(); return
-            if self.slash_visible: self.slash_sel = max(0, self.slash_sel - 1)
-            elif self.path_visible: self.path_sel = max(0, self.path_sel - 1)
-            elif self.picker_visible:
-                new = self.picker_sel - 1
-                while new >= 0 and self.picker_items[new][0] == "header": new -= 1
-                if new >= 0: self.picker_sel = new
-            else: self._hist_nav(-1)
-            return
-        if key == "DOWN":
-            if getattr(self, "browser_visible", False):
-                self.browser_sel = min(len(self.browser_items) - 1, self.browser_sel + 1); self.redraw(); return
-            if self.slash_visible: self.slash_sel = min(len(self.slash_hits) - 1, self.slash_sel + 1)
-            elif self.path_visible: self.path_sel = min(len(self.path_hits) - 1, self.path_sel + 1)
-            elif self.picker_visible:
-                new = self.picker_sel + 1
-                while new < len(self.picker_items) and self.picker_items[new][0] == "header": new += 1
-                if new < len(self.picker_items): self.picker_sel = new
-            else: self._hist_nav(1)
-            return
-
-        if key == "PGUP": rows, _ = _term_size(); self.scroll_offset += max(1, rows - 6); return
-        if key == "PGDN": rows, _ = _term_size(); self.scroll_offset = max(0, self.scroll_offset - max(1, rows - 6)); return
-        if key == "TAB":
-            if self.slash_visible and self.slash_hits:
-                cmd = self.slash_hits[self.slash_sel][0]; self.buf = cmd + " "
-                self.cur_pos = len(self.buf); self.slash_visible = False
-                self.path_visible = False
-            elif self.path_visible and self.path_hits:
-                self._apply_path_suggestion(self.path_hits[self.path_sel])
-            return
-
-        if key == "ENTER":
-            if getattr(self, "browser_visible", False): self._browser_select(); return
-            if self.picker_visible: self._confirm_picker(); return
-            if self.slash_visible and self.slash_hits:
-                cmd = self.slash_hits[self.slash_sel][0]
-                self.slash_visible = False; self.buf = ""; self.cur_pos = 0
-                self._execute_command(cmd, ""); return
-            text = self.buf.strip(); self.buf = ""; self.cur_pos = 0; self.slash_visible = False; self.history.reset_navigation()
-            self.path_visible = False
-            if self._pending_file_plan is not None and not self.busy and not text:
-                self._consume_pending_file_plan("")
-                return
-            if text and not self.busy:
-                if self._consume_pending_file_plan(text):
-                    return
-                self.history.append(text)
-                if text.startswith("/"):
-                    parts = text.split(None, 1)
-                    self._execute_command(parts[0].lower(), parts[1] if len(parts) > 1 else "")
-                else:
-                    if self._active_task and not self._active_task.done():
-                        self._err("Still busy — wait for the current reply.")
-                    else:
-                        self._active_task = self._task_executor.submit(self._run_message, text)
-            return
-
-        if key == "BACKSPACE":
-            if getattr(self, "browser_visible", False):
-                parent = os.path.dirname(self.browser_cwd)
-                if parent != self.browser_cwd:
-                    self.browser_sel = 0; self.browser_cwd = parent; self._refresh_browser(); self.redraw()
-                return
-            if self.cur_pos > 0:
-                self.buf = self.buf[:self.cur_pos - 1] + self.buf[self.cur_pos:]; self.cur_pos -= 1
-            self._update_slash(); return
-        if key == "DELETE":
-            if self.cur_pos < len(self.buf): self.buf = self.buf[:self.cur_pos] + self.buf[self.cur_pos + 1:]
-            self._update_slash()
-            return
-        if key == "CTRL_W":
-            if self.cur_pos > 0:
-                t = self.buf[:self.cur_pos].rstrip(); idx = t.rfind(" ")
-                keep = t[:idx + 1] if idx >= 0 else ""; self.buf = keep + self.buf[self.cur_pos:]; self.cur_pos = len(keep)
-            self._update_slash(); return
-
-        if key == "CTRL_RIGHT":
-            i = self.cur_pos
-            while i < len(self.buf) and self.buf[i] == " ": i += 1
-            while i < len(self.buf) and self.buf[i] != " ": i += 1
-            self.cur_pos = i; self._update_slash(); return
-        if key == "CTRL_LEFT":
-            i = self.cur_pos
-            while i > 0 and self.buf[i - 1] == " ": i -= 1
-            while i > 0 and self.buf[i - 1] != " ": i -= 1
-            self.cur_pos = i; self._update_slash(); return
-        if key == "LEFT":
-            if getattr(self, "browser_visible", False):
-                parent = os.path.dirname(self.browser_cwd)
-                if parent != self.browser_cwd:
-                    self.browser_sel = 0; self.browser_cwd = parent; self._refresh_browser(); self.redraw()
-                    return
-            self.cur_pos = max(0, self.cur_pos - 1); self._update_slash(); return
-        if key == "RIGHT":
-            if getattr(self, "browser_visible", False): self._browser_select(); return
-            self.cur_pos = min(len(self.buf), self.cur_pos + 1); self._update_slash(); return
-        if key == "HOME": self.cur_pos = 0; self._update_slash(); return
-        if key == "END": self.cur_pos = len(self.buf); self._update_slash(); return
-
-        if len(key) == 1 and (key.isprintable() or ord(key) > 127):
-            self.buf = self.buf[:self.cur_pos] + key + self.buf[self.cur_pos:]; self.cur_pos += 1; self._update_slash()
+        controller_handle_key(
+            self,
+            key,
+            term_size_fn=_term_size,
+            registry=registry,
+            suggest_paths_fn=suggest_paths,
+        )
 
     def _update_slash(self):
-        if self.buf.startswith("/"):
-            q = self.buf.lower(); self.slash_hits = registry.get_hits(q); self.slash_sel = 0; self.slash_visible = bool(self.slash_hits)
-            self.path_visible = False
-            self.path_hits = []
-            return
-        self.slash_visible = False
-        suggestion = suggest_paths(self.buf[: self.cur_pos], Path.cwd())
-        if suggestion:
-            self.path_hits = suggestion["items"]
-            self.path_sel = 0
-            self.path_visible = bool(self.path_hits)
-            self._path_span = (suggestion["start"], suggestion["end"])
-        else:
-            self.path_visible = False
-            self.path_hits = []
+        controller_update_slash(self, registry=registry, suggest_paths_fn=suggest_paths)
 
     def _load_history(self) -> list:
         return self.history.entries
@@ -1227,21 +1079,15 @@ class LumiTUI:
             log.exception("Failed to save history entry")
 
     def _hist_nav(self, direction):
-        new_text = self.history.navigate(self.buf, direction)
-        if new_text is None:
-            return
-        self.buf = new_text
-        self.cur_pos = len(self.buf)
-        self._update_slash()
+        controller_hist_nav(self, direction, registry=registry, suggest_paths_fn=suggest_paths)
 
     def _apply_path_suggestion(self, suggestion: str) -> None:
-        start, end = self._path_span
-        replacement = suggestion[:-1] if suggestion.endswith("/") else suggestion
-        self.buf = self.buf[:start] + replacement + self.buf[end:]
-        self.cur_pos = start + len(replacement)
-        self.path_visible = False
-        self.path_hits = []
-        self._update_slash()
+        controller_apply_path_suggestion(
+            self,
+            suggestion,
+            registry=registry,
+            suggest_paths_fn=suggest_paths,
+        )
 
     # ── Master LLM Task Query Send Operation Routing  ───────────────────────
     def _run_message(self, user_input):
@@ -1327,156 +1173,70 @@ class LumiTUI:
             self._task_executor.submit(_bg_remember)
 
     def _run_file_agent(self, user_input, sp):
-        self._sys("◆  generating file plan…"); self.redraw()
-        home = os.path.expanduser("~")
-        plan = None
-        label = "File plan"
-        if is_delete_request(user_input):
-            plan = generate_delete_plan(user_input)
-            label = "Removal plan"
-        elif is_move_request(user_input) or is_copy_request(user_input) or is_rename_request(user_input):
-            plan = generate_transfer_plan(user_input)
-            label = "Transfer plan"
-        elif is_create_request(user_input):
-            label = "File plan"
+        controller_run_file_agent(
+            self,
+            user_input,
+            generate_delete_plan_fn=generate_delete_plan,
+            generate_transfer_plan_fn=generate_transfer_plan,
+            generate_file_plan_fn=generate_file_plan,
+            is_delete_request_fn=is_delete_request,
+            is_move_request_fn=is_move_request,
+            is_copy_request_fn=is_copy_request,
+            is_rename_request_fn=is_rename_request,
+            is_create_request_fn=is_create_request,
+            get_provider_fn=get_provider,
+            get_models_fn=get_models,
+        )
 
-        if plan is None and is_create_request(user_input):
-            try:
-                _fs_model = self.current_model
-                if _fs_model == "council": _fs_model = get_models(get_provider())[0]
-                plan = generate_file_plan(user_input, self.client, _fs_model)
-            except Exception as e: self._err(f"File plan failed: {e}"); self.set_busy(False); return
-            if plan:
-                plan["operation"] = "create"
-        if not plan:
-            self._err(f"Couldn't generate a {label.lower()}."); self.set_busy(False); return
-
-        try:
-            inspection = inspect_operation_plan(plan, home)
-        except Exception as exc:
-            self._err(f"{label} failed: {exc}")
-            self.set_busy(False)
-            return
-
-        lines = [f"{label} → {home}"]
-        lines.extend(f"  {line}" for line in inspection["summary_lines"])
-        lines.extend(f"  {line}" for line in inspection["detail_lines"])
-        if inspection["preview_lines"]:
-            lines.append("")
-            lines.append("  preview")
-            lines.extend(inspection["preview_lines"][:32])
-        lines.append("")
-        lines.append("Type 'y' or 'yes' to apply. Press Enter or type 'n' to cancel.")
-
-        self._sys("\n".join(lines)); self.set_busy(False); self._pending_file_plan = {"plan": plan, "base_dir": home, "inspection": inspection}
+    def _queue_filesystem_plan(self, plan: dict, *, base_dir: str | Path, label: str) -> bool:
+        return controller_queue_filesystem_plan(
+            self,
+            plan,
+            base_dir=base_dir,
+            label=label,
+            inspect_operation_plan_fn=inspect_operation_plan,
+        )
 
     def _consume_pending_file_plan(self, text: str) -> bool:
-        if self._pending_file_plan is None:
-            return False
-
-        payload = self._pending_file_plan
-        self._pending_file_plan = None
-        self.store.add(Msg("user", text))
-        if isinstance(payload, tuple):
-            plan, base_dir = payload
-            inspection = None
-        else:
-            plan = payload.get("plan", {})
-            base_dir = payload.get("base_dir", os.path.expanduser("~"))
-            inspection = payload.get("inspection")
-
-        accepted = {"y", "yes", "confirm", "apply"}
-        cancelled = {"", "n", "no", "cancel"}
-        normalized = text.strip().lower()
-        if normalized in cancelled:
-            action = "Removal" if plan.get("operation") == "delete" else "File plan"
-            self._sys(f"{action} cancelled.")
-            return True
-        if normalized not in accepted:
-            self._sys("Filesystem action cancelled.")
-            return True
-
-        try:
-            result = execute_operation_plan(plan, base_dir)
-        except Exception as exc:
-            action = {
-                "delete": "Removal",
-                "move": "Move",
-                "copy": "Copy",
-                "rename": "Rename",
-            }.get(plan.get("operation"), "File creation")
-            self._err(f"{action} failed: {exc}")
-            return True
-        detail_lines = result.get("details") or (inspection or {}).get("detail_lines") or []
-        rendered = [result["summary"]]
-        if detail_lines:
-            rendered.append("")
-            rendered.extend(detail_lines[:3])
-        self._sys("\n".join(rendered))
-        self._record_filesystem_action(result["summary"], result.get("undo"))
-        return True
+        return controller_consume_pending_file_plan(
+            self,
+            text,
+            execute_operation_plan_fn=execute_operation_plan,
+        )
 
     def _do_retry(self):
-        if self.busy: return
-        for m in reversed(self.memory.get()):
-            if m["role"] == "user":
-                text = m["content"]; self.memory.remove_last_exchange()
-                self.turns = max(0, self.turns - 1); self.set_busy(True)
-                self.store.add(Msg("user", text)); self.memory.add("user", text)
-
-                msgs = build_messages(self.system_prompt, self.memory.get())
-                raw = self._tui_stream(msgs, self.current_model)
-                self.memory.replace_last("user", text); self.memory.add("assistant", raw)
-                self.prev_reply = self.last_reply; self.last_reply = raw; self.turns += 1; self.set_busy(False); return
-        self._err("Nothing to retry.")
+        controller_do_retry(self, build_messages_fn=build_messages)
 
     def _open_picker(self):
-        items =[]
-        try:
-            avail = get_available_providers(); models = get_models(get_provider()) if self.current_model not in ("council", "unknown") else[]
-            items.append(("header", "", "Providers"))
-            for p in avail: items.append(("provider", p, PROV_NAME.get(p, p)))
-            if len(avail) >= 2: items.append(("provider", "council", "⚡ Council"))
-            if models:
-                items.append(("header", "", f"Models ({PROV_NAME.get(get_provider(), get_provider())})"))
-                for m in models[:16]: items.append(("model", m, m.split("/")[-1]))
-        except Exception:
-            log.exception("Picker open failed")
-        self.picker_items = items; self.picker_sel = 0; self.picker_visible = True
+        controller_open_picker(
+            self,
+            get_available_providers_fn=get_available_providers,
+            get_provider_fn=get_provider,
+            get_models_fn=get_models,
+            provider_names=PROV_NAME,
+            log=log,
+        )
 
     def _confirm_picker(self):
-        if not self.picker_items: self.picker_visible = False; return
-        kind, value, label = self.picker_items[self.picker_sel]
-        if kind == "header": return
-        if kind == "provider":
-            if value == "council": self.current_model = "council"
-            else:
-                try:
-                    set_provider(value); self.client = get_client(); ms = get_models(value); self.current_model = ms[0] if ms else ""
-                    self.little_notes.record_model(value, self.current_model)
-                    self._open_picker(); return
-                except Exception:
-                    log.exception("Provider switch failed")
-            self._sys(f"Provider → {PROV_NAME.get(self.current_model, self.current_model)}")
-        elif kind == "model": self.current_model = value; self._notify(f"Model → {value.split('/')[-1]}")
-        try:
-            provider_key = "council" if self.current_model == "council" else get_provider()
-        except Exception:
-            provider_key = "huggingface"
-        self.little_notes.record_model(provider_key, self.current_model)
-        self.picker_visible = False
+        controller_confirm_picker(
+            self,
+            get_available_providers_fn=get_available_providers,
+            set_provider_fn=set_provider,
+            get_client_fn=get_client,
+            get_models_fn=get_models,
+            get_provider_fn=get_provider,
+            provider_names=PROV_NAME,
+            log=log,
+        )
 
     def _execute_command(self, cmd, arg):
-        if cmd in registry.commands:
-            if cmd not in {"/help"}:
-                self.recent_commands = self.little_notes.record_command(cmd)[:3]
-            registry.commands[cmd]["func"](self, arg)
-        else:
-            handled, plug_result = plugin_dispatch(cmd, arg, client=self.client, model=self.current_model, memory=self.memory, system_prompt=self.system_prompt, name=self.name)
-            if handled:
-                self.recent_commands = self.little_notes.record_command(cmd)[:3]
-                if plug_result: self._sys(plug_result)
-            else: self._err(f"Unknown command: {cmd}  (try /help)")
+        controller_execute_command(
+            self,
+            cmd,
+            arg,
+            registry=registry,
+            plugin_dispatch_fn=plugin_dispatch,
+        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1508,16 +1268,17 @@ def cmd_browse(tui: LumiTUI, arg: str):
 @registry.register("/fs", "Filesystem tools: ls/cat/write/rm/mv/mkdir")
 def cmd_fs(tui: LumiTUI, arg: str):
     parts = arg.strip().split()
+    workspace = Path.cwd().resolve()
     if not parts or parts[0] in {"help", "?"}:
         usage = [
             "Filesystem tools:",
             "  /fs ls [path]              - list directory contents",
             "  /fs cat <file>             - show file contents (truncated)",
-            "  /fs mkdir <dir>            - create directory (parents ok)",
-            "  /fs mv <src> <dst>         - move/rename file",
-            "  /fs rm <file> --force      - delete file (no directories)",
-            "  /fs write <file> [text]    - overwrite file with text or last reply code",
-            "  /fs append <file> [text]   - append text or last reply code",
+            "  /fs mkdir <dir>            - queue directory creation with preview",
+            "  /fs mv <src> <dst>         - queue move/rename with preview",
+            "  /fs rm <path>              - queue file or folder removal with preview",
+            "  /fs write <file> [text]    - queue overwrite with diff preview",
+            "  /fs append <file> [text]   - queue append as a previewed overwrite",
         ]
         tui._sys("\n".join(usage))
         return
@@ -1574,53 +1335,29 @@ def cmd_fs(tui: LumiTUI, arg: str):
         if not rest:
             tui._err("Usage: /fs mkdir <dir>")
             return
-        target = _path(rest[0])
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-            tui._notify(f"Created directory: {target}")
-        except Exception as e:
-            tui._err(str(e))
+        plan = {"operation": "create", "root": rest[0], "files": []}
+        tui._queue_filesystem_plan(plan, base_dir=workspace, label="Filesystem plan")
         return
 
     if sub == "mv":
         if len(rest) != 2:
             tui._err("Usage: /fs mv <src> <dst>")
             return
-        src, dst = _path(rest[0]), _path(rest[1])
-        if not src.exists():
-            tui._err(f"Not found: {src}")
-            return
-        try:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            src.rename(dst)
-            tui._notify(f"Moved: {src.name} → {dst}")
-        except Exception as e:
-            tui._err(str(e))
+        plan = {
+            "operation": "move",
+            "items": [{"source": rest[0], "destination": rest[1], "link": "to"}],
+        }
+        tui._queue_filesystem_plan(plan, base_dir=workspace, label="Transfer plan")
         return
 
     if sub == "rm":
         if not rest:
-            tui._err("Usage: /fs rm <file> --force")
+            tui._err("Usage: /fs rm <path>")
             return
         target = _path(rest[0])
-        force = "--force" in rest[1:]
-        if not target.exists():
-            tui._err(f"Not found: {target}")
-            return
-        if target.is_dir():
-            tui._err("Refusing to delete directories. Use /shell for rm -r.")
-            return
-        if any(part.startswith(".git") for part in target.parts):
-            tui._err("Refusing to touch .git content for safety.")
-            return
-        if not force:
-            tui._err("Add --force to confirm: /fs rm <file> --force")
-            return
-        try:
-            target.unlink()
-            tui._notify(f"Deleted: {target}")
-        except Exception as e:
-            tui._err(str(e))
+        kind = "dir" if target.exists() and target.is_dir() else "path"
+        plan = {"operation": "delete", "targets": [{"path": rest[0], "kind": kind}]}
+        tui._queue_filesystem_plan(plan, base_dir=workspace, label="Removal plan")
         return
 
     def _code_from_last_reply():
@@ -1635,7 +1372,8 @@ def cmd_fs(tui: LumiTUI, arg: str):
         if not rest:
             tui._err(f"Usage: /fs {sub} <file> [text]")
             return
-        target = _path(rest[0])
+        target_arg = rest[0]
+        target = _path(target_arg)
         if len(rest) >= 2:
             content = " ".join(rest[1:])
         else:
@@ -1643,17 +1381,20 @@ def cmd_fs(tui: LumiTUI, arg: str):
             if not content:
                 tui._err("No text provided and no last reply to use.")
                 return
+        if target.exists() and target.is_dir():
+            tui._err(f"Not a file: {target}")
+            return
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if sub == "write":
-                target.write_text(content, encoding="utf-8")
-                tui._notify(f"Wrote file: {target}")
-            else:
-                with target.open("a", encoding="utf-8") as f:
-                    if target.stat().st_size > 0:
-                        f.write("\n")
-                    f.write(content)
-                tui._notify(f"Appended to: {target}")
+            if sub == "append" and target.exists():
+                existing = target.read_text(encoding="utf-8", errors="replace")
+                joiner = "\n" if existing and not existing.endswith("\n") else ""
+                content = existing + joiner + content
+            plan = {
+                "operation": "create",
+                "root": ".",
+                "files": [{"path": target_arg, "content": content}],
+            }
+            tui._queue_filesystem_plan(plan, base_dir=workspace, label="Filesystem plan")
         except Exception as e:
             tui._err(str(e))
         return
@@ -1754,16 +1495,6 @@ def cmd_tldr(tui: LumiTUI, arg: str):
     s = tui._silent_call(f"Summarize this in exactly ONE minimal sentence (under 16 words): {tui.last_reply}", m, 60)
     if s: tui._sys(f"tl;dr: {s}")
     tui.set_busy(False)
-
-@registry.register("/fix", "Fix pipeline code traces directly")
-@bg_task
-def cmd_fix(tui: LumiTUI, arg: str):
-    if not arg or not tui.last_reply: tui._err("Requires Exception error copy format context code"); return
-    tui.set_busy(True)
-    msg = f"Im crashing with stack trace error: ```{arg}``` context was previously:\n{tui.last_reply}\n1. Clarify Root cause\n2. Rewrite entire codeblock fix directly.\n3. Defenses?"
-    tui.memory.add("user", msg); raw = tui._tui_stream(build_messages(tui.system_prompt, tui.memory.get()), tui.current_model, f"◆ {tui.name}  [fix]")
-    tui.memory.replace_last("user", f"/fix: {arg[:100]}"); tui.memory.add("assistant", raw)
-    tui.last_reply = raw; tui.turns += 1; tui.set_busy(False)
 
 @registry.register("/search", "Internet browser fetching context tools")
 @bg_task
@@ -1991,7 +1722,14 @@ def cmd_data(tui: LumiTUI, arg: str):
         _context_cache.remember_text(f"data:{path}", path.name, content, kind="data")
         prompt = f"[data: {path.name}] Cached data snapshot. Give summary stats, patterns, insights."
         msgs = [{"role": "system", "content": tui.system_prompt}, {"role": "user", "content": prompt}]
-        msgs = optimize_messages(msgs, tui.current_model, mode="code", context_cache=_context_cache, telemetry=_session_telemetry)
+        msgs = optimize_messages(
+            msgs,
+            tui.current_model,
+            mode="code",
+            provider=get_provider(),
+            context_cache=_context_cache,
+            telemetry=_session_telemetry,
+        )
         reply = tui._tui_stream(msgs, tui.current_model, f"analyzing {path.name}")
         tui.last_reply = reply; tui.set_busy(False)
     threading.Thread(target=_go, daemon=True).start()
@@ -2119,25 +1857,98 @@ def cmd_timer(tui: LumiTUI, arg: str):
 @registry.register("/plugins", "List loaded plugins")
 def cmd_plugins(tui: LumiTUI, arg: str):
     details = describe_plugins()
-    if not details:
-        tui._sys("No plugins loaded. Drop .py files in ~/Lumi/plugins/")
+    inventory = describe_plugin_inventory()
+    parts = arg.strip().split(None, 1)
+    sub = parts[0].lower() if parts else ""
+    target = parts[1].strip() if len(parts) > 1 else ""
+
+    if sub == "audit":
+        tui._sys(render_plugin_audit_report())
         return
-    sub = arg.strip().lower()
+    if sub in {"approve", "trust"}:
+        if not target:
+            tui._err("Usage: /plugins approve <name>")
+            return
+        ok, message = approve_plugin(target)
+        if ok:
+            tui._loaded_plugins = reload_plugins()
+            tui._sys(message)
+        else:
+            tui._err(message)
+        return
+    if sub in {"revoke", "untrust"}:
+        if not target:
+            tui._err("Usage: /plugins revoke <name>")
+            return
+        ok, message = revoke_plugin(target)
+        if ok:
+            tui._loaded_plugins = reload_plugins()
+            tui._sys(message)
+        else:
+            tui._err(message)
+        return
+    if sub == "reload":
+        tui._loaded_plugins = reload_plugins()
+        tui._sys(
+            "Reloaded plugins."
+            if tui._loaded_plugins
+            else "Reloaded plugin inventory. No trusted plugins are currently loaded."
+        )
+        return
+    if sub == "pending":
+        pending = [item for item in inventory if item["status"] != "loaded"]
+        if not pending:
+            tui._sys("No pending plugins.")
+            return
+        lines = ["Pending plugins"]
+        for item in pending:
+            lines.append(f"  {item['name']}  [{item['status']}]")
+            if item["issues"]:
+                lines.append(f"    issues: {', '.join(item['issues'])}")
+            elif item["warnings"]:
+                lines.append(f"    warnings: {', '.join(item['warnings'])}")
+            else:
+                lines.append("    approval required before load")
+        tui._sys("\n".join(lines))
+        return
     if sub in {"inspect", "details", "verbose"}:
-        lines = ["Loaded plugins"]
-        for item in details:
+        if not inventory:
+            tui._sys("No plugins discovered. Drop .py files in ~/Lumi/plugins/")
+            return
+        lines = ["Plugin inventory"]
+        for item in inventory:
             perms = ", ".join(item["permissions"]) if item["permissions"] else "none declared"
-            commands = ", ".join(item["commands"])
-            lines.append(f"  {item['name']} v{item['version']}")
+            commands = ", ".join(item["commands"]) if item["commands"] else "none"
+            lines.append(f"  {item['name']} v{item['version']}  [{item['status']}]")
             lines.append(f"    {item['description']}")
             lines.append(f"    commands: {commands}")
             lines.append(f"    permissions: {perms}")
+            if item["issues"]:
+                lines.append(f"    issues: {', '.join(item['issues'])}")
+            if item["warnings"]:
+                lines.append(f"    warnings: {', '.join(item['warnings'])}")
         tui._sys("\n".join(lines))
         return
-    tui._sys(
-        "Loaded plugins:\n"
-        + "\n".join(f"  {item['name']}  ({', '.join(item['commands'])})" for item in details)
-    )
+
+    if not inventory:
+        tui._sys("No plugins discovered. Drop .py files in ~/Lumi/plugins/")
+        return
+    loaded = [item for item in details if item["loaded"]]
+    pending_count = sum(1 for item in inventory if item["status"] != "loaded")
+    lines = ["Plugins"]
+    if loaded:
+        lines.append("  loaded")
+        lines.extend(
+            f"    {item['name']}  ({', '.join(item['commands'])})"
+            for item in loaded
+        )
+    else:
+        lines.append("  loaded")
+        lines.append("    none")
+    lines.append("")
+    lines.append(f"  pending: {pending_count}")
+    lines.append("  use /plugins inspect, /plugins pending, /plugins approve <name>")
+    tui._sys("\n".join(lines))
 
 
 @registry.register("/permissions", "Show plugin permissions: /permissions [all|plugins]")
@@ -2184,493 +1995,14 @@ def cmd_doctor(tui: LumiTUI, arg: str):
     )
     tui._sys(report)
 
-
-@registry.register("/benchmark", "Show the built-in benchmark suite")
-def cmd_benchmark(tui: LumiTUI, arg: str):
-    if arg.strip() not in {"", "list"}:
-        tui._err("Usage: /benchmark [list]")
-        return
-    tui._sys(render_benchmark_catalog(load_benchmark_scenarios()))
-
-@registry.register("/comment", "Add inline comments to file")
-def cmd_comment(tui: LumiTUI, arg: str):
-    if not arg.strip(): tui._err("Usage: /comment <filepath>"); return
-    path = Path(arg.strip()).expanduser()
-    if not path.is_file(): tui._err(f"Not found: {path}"); return
-    content = path.read_text(errors="replace")
-    def _go():
-        tui.set_busy(True)
-        prompt = f"Add clear inline comments to this code. Return ONLY the commented code:\n\n```\n{content}\n```"
-        msgs = [{"role": "system", "content": tui.system_prompt}, {"role": "user", "content": prompt}]
-        reply = tui._tui_stream(msgs, tui.current_model, f"commenting {path.name}")
-        tui.last_reply = reply; tui.set_busy(False)
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/git", f"Git: /git {GIT_USAGE}|commit|commit-confirm")
-def cmd_git(tui: LumiTUI, arg: str):
-    sub = arg.strip().split()[0] if arg.strip() else "status"
-    if sub == "commit":
-        diff = subprocess.run(["git", "diff", "--cached", "--stat"], capture_output=True, text=True).stdout
-        if not diff.strip(): diff = subprocess.run(["git", "diff", "--stat"], capture_output=True, text=True).stdout
-        if not diff.strip(): tui._err("No changes to commit"); return
-        def _go():
-            tui.set_busy(True)
-            prompt = f"Generate a concise commit message for:\n{diff}\nReturn ONLY the message."
-            msgs = [{"role": "system", "content": tui.system_prompt}, {"role": "user", "content": prompt}]
-            reply = tui._tui_stream(msgs, tui.current_model, "git commit")
-            tui.last_reply = reply; tui.set_busy(False)
-        threading.Thread(target=_go, daemon=True).start(); return
-    if sub == "commit-confirm":
-        subprocess.run(["git", "add", "-A"], capture_output=True, text=True)
-        if tui.last_reply:
-            msg = tui.last_reply.strip().strip("`").strip()
-            r = subprocess.run(["git", "commit", "-m", msg], capture_output=True, text=True)
-            tui._sys(r.stdout.strip() or r.stderr.strip()); return
-        tui._err("Run /git commit first"); return
-    ok, output = run_git_subcommand(sub)
-    if ok:
-        tui._sys(output)
-    else:
-        tui._sys(f"Usage: /git {GIT_USAGE}|commit|commit-confirm")
-
-@registry.register("/pdf", "Load PDF text into context")
-def cmd_pdf(tui: LumiTUI, arg: str):
-    if not arg.strip(): tui._err("Usage: /pdf <path.pdf>"); return
-    tui._sys("PDF loading requires PyPDF2 — pip install PyPDF2")
-
-@registry.register("/project", "Load entire project into context")
-def cmd_project(tui: LumiTUI, arg: str):
-    target = Path(arg.strip() or ".").expanduser()
-    if not target.is_dir(): tui._err(f"Not a directory: {target}"); return
-    exts = {".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".md", ".toml", ".yaml", ".yml", ".json", ".sh"}
-    files = [f for f in target.rglob("*") if f.is_file() and f.suffix in exts and ".git" not in str(f) and "node_modules" not in str(f)][:30]
-    if not files: tui._sys("No recognizable source files found"); return
-    cached_parts: list[tuple[str, str]] = []
-    for f in files:
-        try:
-            cached_parts.append((str(f.relative_to(target)), f.read_text(errors='replace')[:3000]))
-        except Exception: pass
-    _context_cache.remember_project(target, cached_parts)
-    tui.memory.add("user", f"[project loaded: {target}] Cached project files for retrieval.")
-    tui._sys(f"Loaded {len(files)} files from {target} into context")
-
-# ── Help (redesigned) ────────────────────────────────────────────────────────
-
-HELP_CATEGORIES = {
-    "💬 Chat": ["/clear", "/retry", "/redo", "/undo", "/more", "/rewrite", "/tl;dr", "/summarize", "/translate", "/short", "/detailed", "/bullets", "/multi"],
-    "🔧 Code": ["/fix", "/debug", "/explain", "/review", "/improve", "/optimize", "/security", "/refactor", "/test", "/docs", "/types", "/comment", "/run", "/edit"],
-    "📁 Files": ["/file", "/browse", "/find", "/grep", "/tree", "/project", "/fs"],
-    "🔀 Git": ["/git", "/pr", "/changelog", "/standup", "/readme"],
-    "🌐 Web": ["/search", "/web", "/image", "/data"],
-    "🧠 Memory": ["/remember", "/memory", "/forget", "/save", "/load", "/sessions", "/export", "/tokens", "/context"],
-    "🛠️ Tools": ["/shell", "/scaffold", "/lint", "/fmt", "/todo", "/note", "/draft", "/weather", "/timer", "/copy", "/paste", "/diff", "/pdf"],
-    "⚙️ System": ["/status", "/doctor", "/benchmark", "/permissions", "/model", "/council", "/mode", "/offline", "/godmode", "/pane", "/apply", "/index", "/rag", "/voice", "/persona", "/sys", "/plugins", "/compact", "/help", "/exit"],
-}
-
-@registry.register("/help", "Show all commands organized by category")
-def cmd_help(tui: LumiTUI, arg: str):
-    lines = []
-    for cat, cmds in HELP_CATEGORIES.items():
-        lines.append(f"\n  {cat}")
-        for c in cmds:
-            data = registry.commands.get(c)
-            if data:
-                desc = data["desc"][:52]
-                lines.append(f"    {c:<16} {desc}")
-    lines.append(f"\n  {len(registry.commands)} commands available. Tab to autocomplete.")
-    lines.append("\n  Shortcuts: Ctrl+N=model picker | Ctrl+L=clear | Ctrl+R=retry | Tab=complete")
-    tui._sys("\n".join(lines))
-
-# ── Batch 2 Commands ──────────────────────────────────────────────────────────────
-
-@registry.register("/fix", "Diagnose error and fix it")
-def cmd_fix(tui: LumiTUI, arg: str):
-    if not arg: tui._err("Usage: /fix <error message>"); return
-    def _go():
-        tui.set_busy(True)
-        ctx = f"\n\nContext:\n{tui.last_reply}" if tui.last_reply else ""
-        msg = (f"I'm getting this error:\n\n```\n{arg}\n```{ctx}\n\n"
-               "1. What's causing it\n2. The exact fix\n3. How to avoid it next time")
-        tui.memory.add("user", msg)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [fix]")
-        tui.memory.replace_last("user", f"/fix: {arg[:200]}")
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/debug", "Deep debug with root cause + test")
-def cmd_debug(tui: LumiTUI, arg: str):
-    def _go():
-        tui.set_busy(True)
-        error = arg or "the issue in the last message"
-        ctx = f"\n\nLast reply:\n{tui.last_reply}" if tui.last_reply else ""
-        msg = (f"Deep debug:\n\n```\n{error}\n```{ctx}\n\n"
-               "1. Root cause\n2. Stack trace explanation\n"
-               "3. Step-by-step fix\n4. Regression test\n5. Alternative approaches")
-        tui.memory.add("user", msg)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [debug]")
-        tui.memory.replace_last("user", f"/debug: {error[:200]}")
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/improve", "Improve code quality and readability")
-def cmd_improve(tui: LumiTUI, arg: str):
-    def _go():
-        tui.set_busy(True)
-        target = arg.strip() if arg.strip() else None
-        if target and Path(target).expanduser().exists():
-            try: content = f"File: `{Path(target).name}`\n\n```\n{_read_file(target)}\n```"
-            except Exception as e: tui._err(str(e)); tui.set_busy(False); return
-        elif tui.last_reply: content = tui.last_reply
-        else: tui._err("Nothing to improve. Pass a file path or ask something first."); tui.set_busy(False); return
-        msg = (f"Improve this code. Fix bugs, improve readability, add error handling, "
-               f"clean up style. Output the COMPLETE improved version:\n\n{content}")
-        tui.memory.add("user", msg)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [improve]")
-        tui.memory.replace_last("user", "/improve")
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/optimize", "Performance optimize with before/after")
-def cmd_optimize(tui: LumiTUI, arg: str):
-    def _go():
-        tui.set_busy(True)
-        target = arg.strip() if arg.strip() else None
-        if target and Path(target).expanduser().exists():
-            try: content = f"```\n{_read_file(target)}\n```"
-            except Exception as e: tui._err(str(e)); tui.set_busy(False); return
-        elif tui.last_reply: content = tui.last_reply
-        else: tui._err("Nothing to optimize."); tui.set_busy(False); return
-        msg = (f"Optimize for performance. Find bottlenecks, improve algorithmic complexity, "
-               f"show before/after with estimates:\n\n{content}")
-        tui.memory.add("user", msg)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [optimize]")
-        tui.memory.replace_last("user", "/optimize")
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/security", "Security audit with severity ratings")
-def cmd_security(tui: LumiTUI, arg: str):
-    def _go():
-        tui.set_busy(True)
-        target = arg.strip() if arg.strip() else None
-        if target and Path(target).expanduser().exists():
-            try: content = f"```\n{_read_file(target)}\n```"
-            except Exception as e: tui._err(str(e)); tui.set_busy(False); return
-        elif tui.last_reply: content = tui.last_reply
-        else: tui._err("Nothing to audit."); tui.set_busy(False); return
-        msg = (f"Security audit. Find: injection, auth issues, data exposure, input validation gaps, "
-               f"hardcoded secrets. Rate each critical/high/medium/low:\n\n{content}")
-        tui.memory.add("user", msg)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [security]")
-        tui.memory.replace_last("user", "/security")
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/refactor", "Refactor with SOLID principles")
-def cmd_refactor(tui: LumiTUI, arg: str):
-    def _go():
-        tui.set_busy(True)
-        target = arg.strip() if arg.strip() else None
-        if target and Path(target).expanduser().exists():
-            try: content = f"```\n{_read_file(target)}\n```"
-            except Exception as e: tui._err(str(e)); tui.set_busy(False); return
-        elif tui.last_reply: content = tui.last_reply
-        else: tui._err("Nothing to refactor."); tui.set_busy(False); return
-        msg = (f"Refactor using SOLID principles and design patterns. Reduce duplication, improve abstractions. "
-               f"Output the complete refactored version with a brief explanation:\n\n{content}")
-        tui.memory.add("user", msg)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [refactor]")
-        tui.memory.replace_last("user", "/refactor")
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/test", "Generate pytest unit tests")
-def cmd_test(tui: LumiTUI, arg: str):
-    def _go():
-        tui.set_busy(True)
-        target = arg.strip() if arg.strip() else None
-        if target and Path(target).expanduser().exists():
-            try: content = f"```\n{_read_file(target)}\n```"
-            except Exception as e: tui._err(str(e)); tui.set_busy(False); return
-        elif tui.last_reply: content = tui.last_reply
-        else: tui._err("Nothing to test."); tui.set_busy(False); return
-        msg = (f"Write comprehensive pytest unit tests. Cover: happy path, edge cases, errors, "
-               f"boundary conditions. Include fixtures and mocks where needed:\n\n{content}")
-        tui.memory.add("user", msg)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [tests]")
-        tui.memory.replace_last("user", "/test")
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/explain", "Explain code line by line")
-def cmd_explain(tui: LumiTUI, arg: str):
-    def _go():
-        tui.set_busy(True)
-        target = arg.strip() if arg.strip() else None
-        if target and Path(target).expanduser().exists():
-            try: content = f"File `{Path(target).name}`:\n\n```\n{_read_file(target)}\n```"
-            except Exception as e: tui._err(str(e)); tui.set_busy(False); return
-        elif tui.last_reply: content = tui.last_reply
-        else: tui._err("Nothing to explain."); tui.set_busy(False); return
-        msg = f"Explain this code line by line. Walk through every function, why it's written that way, and what a developer needs to understand:\n\n{content}"
-        tui.memory.add("user", msg)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [explain]")
-        tui.memory.replace_last("user", "/explain")
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/review", "Full code review with specifics")
-def cmd_review(tui: LumiTUI, arg: str):
-    def _go():
-        tui.set_busy(True)
-        target = arg.strip() if arg.strip() else None
-        if target and Path(target).expanduser().exists():
-            try: content = f"File `{Path(target).name}`:\n\n```\n{_read_file(target)}\n```"
-            except Exception as e: tui._err(str(e)); tui.set_busy(False); return
-        elif tui.last_reply: content = tui.last_reply
-        else: tui._err("Nothing to review."); tui.set_busy(False); return
-        msg = (f"Thorough code review. Cover: correctness, edge cases, performance, security, "
-               f"readability, maintainability. Be specific with line numbers and variable names:\n\n{content}")
-        tui.memory.add("user", msg)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [review]")
-        tui.memory.replace_last("user", "/review")
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/scaffold", "Generate complete project scaffold")
-def cmd_scaffold(tui: LumiTUI, arg: str):
-    if not arg: tui._err("Usage: /scaffold <type>  e.g. fastapi, react, cli, flask"); return
-    def _go():
-        tui.set_busy(True)
-        msg = (f"Generate a complete, production-ready {arg} project scaffold. "
-               f"Full file contents — no placeholders, no TODOs. Include: folder structure, "
-               f"requirements/package.json, entry point, routes/components, README, .gitignore, tests.")
-        tui.memory.add("user", msg)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [scaffold: {arg}]")
-        tui.memory.replace_last("user", f"/scaffold: {arg}")
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/readme", "Generate README for project/path")
-def cmd_readme(tui: LumiTUI, arg: str):
-    def _go():
-        tui.set_busy(True)
-        path = arg.strip() if arg.strip() else "."
-        r = subprocess.run(
-            f"find {path} -maxdepth 2 -type f -not -path '*/.git/*' -not -path '*/__pycache__/*' | head -40",
-            shell=True, capture_output=True, text=True)
-        struct = r.stdout.strip()
-        main_code = ""
-        for fname in ["main.py", "app.py", "index.js", "src/main.py"]:
-            fp = Path(path) / fname
-            if fp.exists():
-                try: main_code = f"\n\n{fname}:\n```\n{fp.read_text()[:2000]}\n```"
-                except Exception:
-                    log.debug("Could not read main file for readme")
-                break
-        msg = (f"Generate a comprehensive README.md.\n\nFiles:\n{struct}{main_code}\n\n"
-               f"Include: title, description, features, installation, usage, API docs, contributing, license.")
-        tui.memory.add("user", msg)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [README]")
-        tui.memory.replace_last("user", "[readme]")
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/pr", "Write PR description from git diff")
-def cmd_pr(tui: LumiTUI, arg: str):
-    def _go():
-        tui.set_busy(True)
-        r1 = subprocess.run("git diff origin/HEAD...HEAD", shell=True, capture_output=True, text=True)
-        r2 = subprocess.run("git log origin/HEAD...HEAD --oneline", shell=True, capture_output=True, text=True)
-        diff = r1.stdout.strip(); log = r2.stdout.strip()
-        if not diff:
-            r1 = subprocess.run("git diff HEAD~1 HEAD", shell=True, capture_output=True, text=True)
-            r2 = subprocess.run("git log HEAD~1..HEAD --oneline", shell=True, capture_output=True, text=True)
-            diff = r1.stdout.strip(); log = r2.stdout.strip()
-        if not diff and not log:
-            tui._err("No diff found. Commit something first."); tui.set_busy(False); return
-        msg = (f"Write a GitHub PR description.\n\nCommits:\n{log}\n\nDiff:\n{diff[:3000]}\n\n"
-               f"Include: Title, What changed, Why, How to test. Use Markdown.")
-        tui.memory.add("user", msg)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [PR]")
-        tui.memory.replace_last("user", "[pr]")
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/changelog", "Generate CHANGELOG from git log")
-def cmd_changelog(tui: LumiTUI, arg: str):
-    def _go():
-        tui.set_busy(True)
-        r = subprocess.run("git log --oneline -60", shell=True, capture_output=True, text=True)
-        log = r.stdout.strip()
-        if not log: tui._err("No git history found."); tui.set_busy(False); return
-        msg = f"Generate a CHANGELOG from these git commits. Group by: Added, Changed, Fixed, Removed. Use Markdown:\n\n{log}"
-        tui.memory.add("user", msg)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [CHANGELOG]")
-        tui.memory.replace_last("user", "[changelog]")
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/standup", "Daily standup from git + todos")
-def cmd_standup(tui: LumiTUI, arg: str):
-    def _go():
-        tui.set_busy(True)
-        r = subprocess.run("git log --oneline --since='24 hours ago'", shell=True, capture_output=True, text=True)
-        log = r.stdout.strip() or "No commits in the last 24 hours"
-        try:
-            from src.utils.todo import todo_list as _tlist
-            todos = [t for t in _tlist() if not t.get("done")]
-            todo_txt = "\n".join(f"- {t['text']}" for t in todos[:10]) or "No pending todos"
-        except Exception:
-            log.debug("Could not read todo file")
-            todo_txt = "No pending todos"
-        msg = (f"Generate a short daily standup (Yesterday / Today / Blockers).\n\n"
-               f"Recent commits:\n{log}\n\nPending todos:\n{todo_txt}")
-        tui.memory.add("user", msg)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [standup]")
-        tui.memory.replace_last("user", "[standup]")
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/grep", "Search codebase for pattern")
-def cmd_grep(tui: LumiTUI, arg: str):
-    if not arg: tui._err("Usage: /grep <pattern> [path]"); return
-    parts = arg.split(None, 1); pattern = parts[0]; path = parts[1] if len(parts) > 1 else "."
-    r = subprocess.run(
-        ["grep", "-rn",
-         "--include=*.py", "--include=*.js", "--include=*.ts",
-         "--include=*.go", "--include=*.rs", "--include=*.md",
-         pattern, path],
-        capture_output=True, text=True)
-    out = r.stdout.strip()
-    tui.store.add(Msg("shell", out[:3000] if out else "No matches found.", f"grep -rn '{pattern}' {path}"))
-
-@registry.register("/tree", "Directory tree view")
-def cmd_tree(tui: LumiTUI, arg: str):
-    path = arg.strip() if arg.strip() else "."
-    if shutil.which("tree"):
-        r = subprocess.run(
-            ["tree", path, "-L", "3", "--noreport",
-             "-I", "__pycache__|*.pyc|.git|node_modules|.venv|venv"],
-            capture_output=True, text=True)
-        out = r.stdout.strip()
-    else:
-        lines = [path + "/"]
-        def _t(p, prefix="", depth=0):
-            if depth > 3: return
-            try: entries = sorted(Path(p).iterdir(), key=lambda x: (x.is_file(), x.name))
-            except Exception:
-                log.debug("Timer parse failed")
-                return
-            for i, e in enumerate(entries):
-                if e.name in (".git", "__pycache__", "node_modules", ".venv", "venv"): continue
-                conn = "└── " if i == len(entries)-1 else "├── "
-                lines.append(prefix + conn + e.name + ("/" if e.is_dir() else ""))
-                if e.is_dir(): _t(e, prefix + ("    " if i == len(entries)-1 else "│   "), depth+1)
-        _t(path); out = "\n".join(lines[:80])
-    tui.store.add(Msg("shell", out, f"tree {path}"))
-
-@registry.register("/lint", "Lint with ruff or flake8")
-def cmd_lint(tui: LumiTUI, arg: str):
-    path = arg.strip() if arg.strip() else "."
-    if shutil.which("ruff"):
-        r = subprocess.run(["ruff", "check", path, "--output-format=concise"], capture_output=True, text=True)
-        out = (r.stdout + r.stderr).strip()
-    elif shutil.which("flake8"):
-        r = subprocess.run(["flake8", path, "--max-line-length=120"], capture_output=True, text=True)
-        out = (r.stdout + r.stderr).strip()
-    else:
-        tui._err("ruff or flake8 not installed. Run: pip install ruff"); return
-    tui.store.add(Msg("shell", out if out else "✓ No lint errors.", f"lint {path}"))
-
-@registry.register("/fmt", "Format with black or prettier")
-def cmd_fmt(tui: LumiTUI, arg: str):
-    path = arg.strip() if arg.strip() else "."
-    if shutil.which("black"):
-        r = subprocess.run(["black", path, "--quiet"], capture_output=True, text=True)
-        out = (r.stdout + r.stderr).strip()
-        tui.store.add(Msg("shell", out if out else "✓ Formatted.", f"black {path}"))
-    elif shutil.which("prettier"):
-        r = subprocess.run(f"prettier --write {path} 2>&1 | tail -5", shell=True, capture_output=True, text=True)
-        tui.store.add(Msg("shell", r.stdout.strip() or "✓ Formatted.", f"prettier {path}"))
-    else:
-        tui._err("black or prettier not found. Run: pip install black")
-
-@registry.register("/redo", "Regenerate with different approach")
-def cmd_redo(tui: LumiTUI, arg: str):
-    if not tui.last_msg: tui._err("Nothing to redo."); return
-    def _go():
-        tui.set_busy(True)
-        alt = arg.strip()
-        q = (f"{tui.last_msg}\n\n[This time: {alt}]" if alt
-             else f"{tui.last_msg}\n\n[Rephrase — different approach, same quality.]")
-        if tui.memory.remove_last_exchange():
-            tui.turns = max(0, tui.turns - 1)
-        tui.store.add(Msg("user", f"↺ redo{' — '+alt if alt else ''}"))
-        tui.memory.add("user", q)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model)
-        tui.memory.replace_last("user", tui.last_msg)
-        tui.memory.add("assistant", raw)
-        tui.prev_reply = tui.last_reply; tui.last_reply = raw
-        tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/translate", "Translate last reply to a language")
-def cmd_translate(tui: LumiTUI, arg: str):
-    if not arg: tui._err("Usage: /translate <language>"); return
-    if not tui.last_reply: tui._err("No reply to translate yet."); return
-    def _go():
-        tui.set_busy(True)
-        q = f"Translate your last response into {arg}. Output only the translation."
-        tui.memory.add("user", q)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [→ {arg}]")
-        tui.memory.replace_last("user", f"Translate to {arg}")
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
-
-@registry.register("/summarize", "Summarize the conversation")
-def cmd_summarize(tui: LumiTUI, arg: str):
-    def _go():
-        tui.set_busy(True)
-        q = "Summarize our conversation so far in concise bullet points."
-        tui.memory.add("user", q)
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
-        raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [summarize]")
-        tui.memory.replace_last("user", q)
-        tui.memory.add("assistant", raw)
-        tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
-    threading.Thread(target=_go, daemon=True).start()
+HELP_CATEGORIES = register_command_groups(
+    registry,
+    build_messages=build_messages,
+    read_file=_read_file,
+    context_cache=_context_cache,
+    get_available_providers=get_available_providers,
+    log=log,
+)
 
 @registry.register("/mode", "/mode [cli]  Launch an AI coding CLI (claude, codex, gemini, opencode, aider, goose, qwen, plandex, kilo, amp, continue)")
 def cmd_mode(tui: LumiTUI, arg: str):

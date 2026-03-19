@@ -31,6 +31,7 @@ from datetime import datetime
 from src.agents.benchmark import load_benchmark_scenarios, render_benchmark_catalog
 from src.agents.council import council_ask
 from src.chat.hf_client import (
+    chat_stream,
     get_available_providers,
     get_client,
     get_models,
@@ -41,8 +42,9 @@ from src.chat.optimizer import (
     get_global_context_cache,
     get_global_telemetry,
     optimize_messages,
-    route_model,
 )
+from src.chat.runtime import build_runtime_messages
+from src.chat.runtime import route_helper_model as _shared_route_helper_model
 from src.config import PLUGINS_DIR, SESSIONS_DIR, ensure_dirs
 from src.memory.conversation_store import list_sessions, load_by_name, load_latest, save
 from src.memory.longterm import (
@@ -57,9 +59,6 @@ from src.memory.longterm import (
     set_persona_override,
 )
 from src.memory.short_term import ShortTermMemory
-from src.prompts.builder import (
-    build_messages as _base_build_messages,
-)
 from src.prompts.builder import (
     build_system_prompt,
     is_file_generation_task,
@@ -90,9 +89,15 @@ from src.utils.intelligence import (
 )
 from src.utils.markdown import render as md_render
 from src.utils.notes import note_add, note_list, note_remove, note_search, notes_to_markdown
-from src.utils.plugins import describe_plugins, get_commands, load_plugins, render_permission_report
+from src.utils.plugins import (
+    describe_plugins,
+    get_commands,
+    load_plugins,
+    render_permission_report,
+    render_plugin_audit_report,
+)
 from src.utils.plugins import dispatch as plugin_dispatch
-from src.utils.system_reports import build_doctor_report, build_status_report
+from src.utils.system_reports import build_doctor_report, build_onboarding_report, build_status_report
 from src.utils.themes import get_theme, list_themes, load_theme_name, save_theme_name
 from src.utils.todo import todo_add, todo_clear_done, todo_done, todo_list, todo_remove
 from src.utils.tools import (
@@ -129,32 +134,18 @@ _context_cache = get_global_context_cache()
 _session_telemetry = get_global_telemetry()
 
 
-def _infer_message_mode(history: list[dict[str, str]]) -> str:
-    text = next((m.get("content", "") for m in reversed(history) if m.get("role") == "user"), "")
-    lowered = str(text).lower()
-    if any(token in lowered for token in ("/review", "review", "security review")):
-        return "review"
-    if any(token in lowered for token in ("traceback", "stack trace", "assert", "test failed", "/fix", "mypy", "ruff")):
-        return "debug"
-    if any(token in lowered for token in ("/search", "/web", "page content", "url:")):
-        return "search"
-    if any(token in lowered for token in ("/tl;dr", "summarize", "summary")):
-        return "summary"
-    if any(token in lowered for token in ("/file", "/project", "loaded file", "project loaded", "create a folder", "<file path=")):
-        return "files"
-    return "code" if is_file_generation_task(lowered) or "```" in lowered else "chat"
-
-
 def build_messages(system_prompt: str, history: list[dict[str, str]], *, model: str = "") -> list[dict[str, str]]:
-    base = _base_build_messages(system_prompt, history)
-    mode = _infer_message_mode(history)
-    active_model = model or "unknown"
-    if active_model == "unknown":
-        try:
-            active_model = get_models(get_provider())[0]
-        except Exception:
-            active_model = "unknown"
-    return optimize_messages(base, active_model, mode=mode, context_cache=_context_cache, telemetry=_session_telemetry)
+    return build_runtime_messages(
+        system_prompt,
+        history,
+        model=model,
+        get_provider_fn=get_provider,
+        get_models_fn=get_models,
+        context_cache=_context_cache,
+        telemetry=_session_telemetry,
+        search_markers=("page content", "url:"),
+        file_markers=("loaded file", "project loaded", "create a folder"),
+    )
 
 
 def _remember_context_text(label: str, content: str, *, kind: str) -> None:
@@ -162,17 +153,12 @@ def _remember_context_text(label: str, content: str, *, kind: str) -> None:
 
 
 def _route_helper_model(current_model: str, mode: str) -> str:
-    if current_model == "council":
-        try:
-            available = get_models(get_provider())
-        except Exception:
-            return current_model
-        return route_model(current_model, available, mode)
-    try:
-        available = get_models(get_provider())
-    except Exception:
-        return current_model
-    return route_model(current_model, available, mode)
+    return _shared_route_helper_model(
+        current_model,
+        mode,
+        get_provider_fn=get_provider,
+        get_models_fn=get_models,
+    )
 
 
 # ── ANSI reset ────────────────────────────────────────────────────────────────
@@ -249,6 +235,7 @@ def print_help() -> None:
     cmd("/context",                  "show token usage and context window")
     cmd("/status",                   "session + workspace status summary")
     cmd("/doctor",                   "check Lumi setup and workspace health")
+    cmd("/onboard",                  "show first-run and workspace guidance")
     cmd("/benchmark [list]",         "show built-in benchmark scenarios")
     cmd("/redo [hint]",              "regenerate last answer, optionally with a hint")
     cmd("/help",                     "show this")
@@ -309,7 +296,7 @@ def print_help() -> None:
     cmd("/mcp call <srv> <tool>",    "call a tool directly")
 
     section("PLUGINS")
-    cmd("/plugins [inspect]",        "list loaded plugins or inspect metadata")
+    cmd("/plugins [inspect|audit]",  "list loaded plugins, inspect metadata, or audit permissions")
     cmd("/permissions [all|plugins]", "show plugin permission model")
     cmd("/plugins reload",           f"reload plugins from {PLUGINS_DIR}")
 
@@ -547,21 +534,23 @@ def stream_and_render(
     first     = True
 
     try:
-        stream = client.chat.completions.create(
-            model=model, messages=messages,
-            max_tokens=1024, temperature=0.7, stream=True,
+        def _on_delta(delta: str) -> None:
+            nonlocal first, raw_reply
+            if first:
+                spinner.stop()
+                print_lumi_label(name)
+                first = False
+            print(delta, end="", flush=True)
+            raw_reply += delta
+
+        chat_stream(
+            client,
+            messages,
+            model=model,
+            max_tokens=1024,
+            temperature=0.7,
+            on_delta=_on_delta,
         )
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta.content
-            if delta:
-                if first:
-                    spinner.stop()
-                    print_lumi_label(name)
-                    first = False
-                print(delta, end="", flush=True)
-                raw_reply += delta
         if first:
             spinner.stop()
         print()
@@ -613,10 +602,12 @@ def stream_with_fallback(
 def silent_call(client, prompt: str, model: str, max_tokens: int = 300) -> str:
     """Single non-streaming call with no display output."""
     routed_model = _route_helper_model(model, "summary")
+    provider = get_provider()
     messages = optimize_messages(
         [{"role": "system", "content": "You are Lumi. Return only the requested result."}, {"role": "user", "content": prompt}],
         routed_model,
         mode="summary",
+        provider=provider,
         context_cache=_context_cache,
         telemetry=_session_telemetry,
     )
@@ -629,7 +620,9 @@ def silent_call(client, prompt: str, model: str, max_tokens: int = 300) -> str:
             stream=False,
         )
         reply = r.choices[0].message.content.strip()
-        _session_telemetry.record_response(reply)
+        usage = getattr(r, "usage", None)
+        completion_tokens = getattr(usage, "completion_tokens", None) if usage is not None else None
+        _session_telemetry.record_response(reply, actual_tokens=completion_tokens)
         return reply
     except Exception:
         return ""
@@ -2551,6 +2544,8 @@ def main() -> None:  # noqa: C901
             if sub == "reload":
                 loaded = load_plugins()
                 ok(f"Reloaded: {', '.join(loaded) or 'none'}")
+            elif sub == "audit":
+                print("\n  " + render_plugin_audit_report().replace("\n", "\n  ") + "\n")
             elif sub in {"inspect", "details", "verbose"}:
                 details = describe_plugins()
                 if not details:
@@ -2612,6 +2607,17 @@ def main() -> None:  # noqa: C901
                     base_dir=pathlib.Path.cwd(),
                     provider=provider_name,
                     model=current_model,
+                    configured_providers=get_available_providers(),
+                ).replace("\n", "\n  ")
+                + "\n"
+            )
+            continue
+
+        if cmd == "/onboard":
+            print(
+                "\n  "
+                + build_onboarding_report(
+                    base_dir=pathlib.Path.cwd(),
                     configured_providers=get_available_providers(),
                 ).replace("\n", "\n  ")
                 + "\n"

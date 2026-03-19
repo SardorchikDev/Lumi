@@ -8,6 +8,7 @@ import sys
 
 from src.agents.council import _get_available_agents as get_council_agents
 from src.agents.council import council_ask
+from src.chat.hf_client import chat_stream
 from src.utils.markdown import render as md_render
 
 from .render import (
@@ -89,21 +90,23 @@ def stream_and_render(
     first     = True
 
     try:
-        stream = client.chat.completions.create(
-            model=model, messages=messages,
-            max_tokens=1024, temperature=0.7, stream=True,
+        def _on_delta(delta: str) -> None:
+            nonlocal first, raw_reply
+            if first:
+                spinner.stop()
+                print_lumi_label(name)
+                first = False
+            print(delta, end="", flush=True)
+            raw_reply += delta
+
+        chat_stream(
+            client,
+            messages,
+            model=model,
+            max_tokens=1024,
+            temperature=0.7,
+            on_delta=_on_delta,
         )
-        for chunk in stream:
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta.content
-            if delta:
-                if first:
-                    spinner.stop()
-                    print_lumi_label(name)
-                    first = False
-                print(delta, end="", flush=True)
-                raw_reply += delta
         if first:
             spinner.stop()
         print()

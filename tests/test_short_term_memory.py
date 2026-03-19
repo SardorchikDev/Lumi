@@ -82,3 +82,15 @@ class TestShortTermMemory:
         assert stats["user_messages"] == 1
         assert stats["assistant_messages"] == 1
         assert stats["system_messages"] == 1
+
+    def test_relevant_slice_prefers_matching_messages(self):
+        mem = ShortTermMemory()
+        mem.add("user", "general note")
+        mem.add("assistant", "general reply")
+        mem.add("user", "bug is in src/api.py auth flow")
+        mem.add("assistant", "Focus on src/api.py for the auth bug")
+
+        relevant = mem.relevant_slice("review src/api.py auth", limit=2)
+
+        assert len(relevant) == 2
+        assert all("src/api.py" in item["content"] or "auth" in item["content"] for item in relevant)

@@ -3,6 +3,7 @@
 from src.chat.providers import (
     get_configured_providers,
     pick_default_provider,
+    provider_health_snapshot,
     provider_label,
     provider_supports,
 )
@@ -45,3 +46,11 @@ def test_provider_capabilities_and_labels():
     assert provider_label("github") == "GitHub Models"
     assert provider_label("airforce") == "Airforce"
     assert provider_label("pollinations") == "Pollinations"
+
+
+def test_provider_health_snapshot_reports_missing_env(monkeypatch):
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    snapshot = provider_health_snapshot()
+    huggingface = next(item for item in snapshot if item.key == "huggingface")
+    assert huggingface.configured is False
+    assert "HF_TOKEN" in huggingface.missing_env_vars

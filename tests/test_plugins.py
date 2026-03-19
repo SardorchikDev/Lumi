@@ -1,4 +1,4 @@
-"""Tests for Lumi plugin metadata and validation."""
+"""Tests for Lumi plugin validation, approval, and audit flows."""
 
 from __future__ import annotations
 
@@ -8,11 +8,21 @@ from src.utils import plugins
 def _reset_plugins() -> None:
     plugins._registry.clear()
     plugins._plugin_meta.clear()
+    plugins._plugin_inventory.clear()
 
 
-def test_load_plugins_tracks_metadata(tmp_path, monkeypatch):
+def _configure_plugin_env(tmp_path, monkeypatch):
     plugin_dir = tmp_path / "plugins"
     plugin_dir.mkdir()
+    trust_file = tmp_path / "plugin_trust.json"
+    monkeypatch.setattr(plugins, "PLUGIN_DIR", plugin_dir)
+    monkeypatch.setattr(plugins, "PLUGIN_TRUST_FILE", trust_file)
+    _reset_plugins()
+    return plugin_dir
+
+
+def test_load_plugins_requires_explicit_approval(tmp_path, monkeypatch):
+    plugin_dir = _configure_plugin_env(tmp_path, monkeypatch)
     (plugin_dir / "greet.py").write_text(
         """
 PLUGIN_META = {
@@ -21,57 +31,104 @@ PLUGIN_META = {
     "description": "Friendly greetings",
     "permissions": ["read_workspace"],
 }
+DESCRIPTION = {"/greet": "Say hi"}
 
 def greet(args, **kwargs):
     return f"hi {args}".strip()
 
 COMMANDS = {"/greet": greet}
-DESCRIPTION = {"/greet": "Say hi"}
         """.strip(),
         encoding="utf-8",
     )
-    monkeypatch.setattr(plugins, "PLUGIN_DIR", plugin_dir)
-    _reset_plugins()
 
-    loaded = plugins.load_plugins()
+    inventory = plugins.scan_plugins()
+    assert inventory[0]["status"] == "untrusted"
+
+    loaded_before = plugins.load_plugins()
+    assert loaded_before == []
+
+    ok, message = plugins.approve_plugin("Greeter")
+    assert ok is True
+    assert "Approved plugin" in message
+
+    loaded_after = plugins.reload_plugins()
     described = plugins.describe_plugins()
 
-    assert "Greeter" in loaded
+    assert "Greeter" in loaded_after
     assert described[0]["name"] == "Greeter"
     assert described[0]["permissions"] == ["read_workspace"]
     assert described[0]["commands"] == ["/greet"]
+    assert described[0]["loaded"] is True
 
 
-def test_load_plugins_rejects_unknown_permissions(tmp_path, monkeypatch):
-    plugin_dir = tmp_path / "plugins"
-    plugin_dir.mkdir()
-    (plugin_dir / "bad.py").write_text(
+def test_scan_plugins_handles_empty_directory_without_recursing(tmp_path, monkeypatch):
+    _configure_plugin_env(tmp_path, monkeypatch)
+
+    inventory = plugins.scan_plugins()
+    described = plugins.describe_plugin_inventory()
+
+    assert inventory == []
+    assert described == []
+
+
+def test_file_change_invalidates_plugin_trust(tmp_path, monkeypatch):
+    plugin_dir = _configure_plugin_env(tmp_path, monkeypatch)
+    plugin_path = plugin_dir / "greet.py"
+    plugin_path.write_text(
         """
-PLUGIN_META = {"permissions": ["admin"]}
-def bad(args, **kwargs):
-    return "nope"
-COMMANDS = {"/bad": bad}
+PLUGIN_META = {
+    "name": "Greeter",
+    "version": "1.0.0",
+    "description": "Friendly greetings",
+    "permissions": ["read_workspace"],
+}
+DESCRIPTION = {"/greet": "Say hi"}
+
+def greet(args, **kwargs):
+    return f"hi {args}".strip()
+
+COMMANDS = {"/greet": greet}
         """.strip(),
         encoding="utf-8",
     )
-    monkeypatch.setattr(plugins, "PLUGIN_DIR", plugin_dir)
-    _reset_plugins()
+    assert plugins.approve_plugin("Greeter")[0] is True
+    assert plugins.reload_plugins() == ["Greeter"]
 
-    loaded = plugins.load_plugins()
+    plugin_path.write_text(
+        """
+PLUGIN_META = {
+    "name": "Greeter",
+    "version": "1.0.1",
+    "description": "Friendly greetings",
+    "permissions": ["read_workspace"],
+}
+DESCRIPTION = {"/greet": "Say hi"}
 
-    assert loaded == []
-    assert plugins.describe_plugins() == []
+def greet(args, **kwargs):
+    return f"hello {args}".strip()
+
+COMMANDS = {"/greet": greet}
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    inventory = plugins.scan_plugins()
+    assert inventory[0]["trusted"] is False
+    assert inventory[0]["status"] == "untrusted"
+    assert plugins.reload_plugins() == []
 
 
-def test_render_permission_report_includes_catalog_and_loaded_plugins(tmp_path, monkeypatch):
-    plugin_dir = tmp_path / "plugins"
-    plugin_dir.mkdir()
+def test_render_permission_report_includes_loaded_plugins_after_approval(tmp_path, monkeypatch):
+    plugin_dir = _configure_plugin_env(tmp_path, monkeypatch)
     (plugin_dir / "greet.py").write_text(
         """
 PLUGIN_META = {
     "name": "Greeter",
+    "version": "1.0.0",
+    "description": "Friendly greetings",
     "permissions": ["read_workspace", "network"],
 }
+DESCRIPTION = {"/greet": "Say hi"}
 
 def greet(args, **kwargs):
     return f"hi {args}".strip()
@@ -80,9 +137,8 @@ COMMANDS = {"/greet": greet}
         """.strip(),
         encoding="utf-8",
     )
-    monkeypatch.setattr(plugins, "PLUGIN_DIR", plugin_dir)
-    _reset_plugins()
-    plugins.load_plugins()
+    assert plugins.approve_plugin("Greeter")[0] is True
+    plugins.reload_plugins()
 
     report = plugins.render_permission_report("all")
 
@@ -92,3 +148,54 @@ COMMANDS = {"/greet": greet}
     assert "network: Make network requests to external services." in report
     assert "loaded plugins" in report
     assert "Greeter: network, read_workspace" in report
+
+
+def test_render_plugin_audit_report_flags_permission_mismatches(tmp_path, monkeypatch):
+    plugin_dir = _configure_plugin_env(tmp_path, monkeypatch)
+    (plugin_dir / "risky.py").write_text(
+        """
+PLUGIN_META = {
+    "name": "Risky",
+    "version": "0.1.0",
+    "description": "Runs shell commands",
+    "permissions": ["read_workspace"],
+}
+DESCRIPTION = {"/risky": "Risky"}
+
+def risky(args, **kwargs):
+    import subprocess
+    subprocess.run(["echo", args or "hi"], check=False)
+    return "ok"
+
+COMMANDS = {"/risky": risky}
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    report = plugins.render_plugin_audit_report()
+
+    assert "Plugin audit" in report
+    assert "Risky" in report
+    assert "blocked" in report
+    assert "uses shell APIs without declaring shell" in report
+
+
+def test_manifest_is_required_for_approval(tmp_path, monkeypatch):
+    plugin_dir = _configure_plugin_env(tmp_path, monkeypatch)
+    (plugin_dir / "legacy.py").write_text(
+        """
+def legacy(args, **kwargs):
+    return "hi"
+
+COMMANDS = {"/legacy": legacy}
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    inventory = plugins.scan_plugins()
+    assert inventory[0]["status"] == "blocked"
+    assert "PLUGIN_META must declare" in inventory[0]["issues"][0]
+
+    ok, message = plugins.approve_plugin("legacy")
+    assert ok is False
+    assert "cannot be approved" in message

@@ -1,6 +1,6 @@
 # lumi
 
-Minimal terminal AI with a council mode, grounded agent mode, memory, and a cleaner TUI.
+Minimal terminal AI for coding, repo work, file management, and agent tasks.
 
 ```text
                                   \
@@ -28,7 +28,7 @@ Minimal terminal AI with a council mode, grounded agent mode, memory, and a clea
                                  /`
 ```
 
-[Install](#install) · [Quick Start](#quick-start) · [Modes](#modes) · [Commands](#commands) · [Config](#config) · [Development](#development) · [Roadmap](ROADMAP.md)
+[Install](#install) · [Quick Start](#quick-start) · [What Lumi Does](#what-lumi-does) · [Agent Mode](#agent-mode) · [Commands](#commands) · [Plugins](#plugins) · [Development](#development) · [Roadmap](ROADMAP.md)
 
 ## Install
 
@@ -37,178 +37,227 @@ curl -fsSL https://raw.githubusercontent.com/SardorchikDev/lumi/main/install.sh 
 ```
 
 The installer:
+
 - clones Lumi into `~/Lumi`
-- creates a virtual environment
+- creates `venv`
 - installs dependencies
 - creates a `lumi` launcher in `~/.local/bin`
 - creates `~/Lumi/.env` if it does not exist
 
 ## Quick Start
 
-1. Add at least one API key to `~/Lumi/.env`
-2. Reload your shell or open a new terminal
+1. Add at least one provider key to `~/Lumi/.env`
+2. Open a new shell or reload your shell config
 3. Run:
 
 ```bash
 lumi
 ```
 
-Useful first commands:
+Recommended first steps inside Lumi:
 
-```bash
+```text
+/onboard
+/doctor
 /model
-/council explain async vs threads
+/status
+```
+
+Useful first prompts:
+
+```text
 /agent add tests for this module
+/review src/main.py
+/git status
 /search latest FastAPI release notes
 ```
 
-## What Lumi Does
-
-- Interactive terminal chat with TUI and classic CLI modes
-- Council mode that asks multiple models in parallel and synthesizes a response
-- Grounded agent mode with structured actions, preflight checks, diff previews, and rollback support
-- Long-term memory, saved sessions, notes, and todos
-- File loading, project context, web search, PDF/image/data helpers
-- MCP server support and a simple plugin system
-
-## Modes
-
-### TUI
-
-The default interface is a minimal full-screen terminal UI with:
-- compact status bar
-- prompt history
-- transcript scrolling
-- code block rendering
-- slash-command picker
-- optional side pane output
-
-If you want the classic CLI instead:
+If you want the classic non-TUI mode:
 
 ```bash
 lumi --no-tui
 ```
 
-### Council
-
-Council mode asks the available council agents in parallel, then returns a synthesized answer.
-
-```bash
-lumi --model council
-```
-
-Or inside Lumi:
-
-```bash
-/council explain Rust ownership simply
-```
-
-### Agent
-
-Agent mode is built around structured actions rather than arbitrary shell execution.
-
-Current safe actions include:
-- `list_dir`
-- `read_file`
-- `search_code`
-- `mkdir`
-- `write_json`
-- `patch_file`
-- `patch_lines`
-- `run_tests`
-- `run_ruff`
-- `run_mypy`
-- `git_status`
-- `git_diff`
-
-Typical flow:
-- inspect workspace
-- build grounded plan
-- show preflight summary
-- preview file changes
-- execute
-- roll back file mutations if the run fails
-
-Use:
-
-```bash
-/agent add login validation and tests
-```
-
-Use `--yolo` if you want to skip confirmations:
+If you want to skip confirmations:
 
 ```bash
 lumi --yolo
 ```
 
+## What Lumi Does
+
+- terminal chat with a full-screen TUI and classic CLI mode
+- council mode for multi-model answers
+- grounded agent mode with structured actions, previews, and rollback
+- natural-language file and folder operations
+- repo-aware workflows with git helpers, project context, and session memory
+- cached web, file, PDF, image, and data context
+- local notes, todos, saved sessions, and long-term memory
+- optional plugins with explicit approval
+
+## TUI
+
+The default interface is a minimal terminal UI built for keyboard-first use:
+
+- stable prompt and transcript layout
+- slash-command picker
+- prompt history
+- transcript scrolling
+- side pane support
+- starter panel with recent commands and actions
+- confirmation flow for file operations
+
+Useful keys:
+
+- `Esc` closes transient UI and cancels pending file plans
+- `Ctrl+G` toggles the starter panel
+- `Up` / `Down` navigate prompt history
+- `Shift+Up` / `Shift+Down` scroll the transcript
+- `Tab` accepts slash-command or path suggestions
+
+## Agent Mode
+
+Lumi agent mode is built around structured actions, not arbitrary shell execution.
+
+Current agent capabilities include:
+
+- inspect the repo before acting
+- read files and search code
+- create folders and structured files
+- patch files with previews
+- run repo-aware verification
+- show grouped preflight summaries
+- roll back file mutations on failure
+
+Typical agent flow:
+
+1. inspect workspace and relevant files
+2. build a grounded plan
+3. show preflight summary
+4. preview edits
+5. execute
+6. verify
+7. roll back if the run fails
+
+Example:
+
+```text
+/agent add login validation and tests
+```
+
+## File Workflows
+
+Lumi can handle natural-language file operations directly in chat, and you can also use `/fs`.
+
+Examples:
+
+```text
+create a folder named api and add main.py inside it
+delete the folder docs
+rename app.py to main.py
+move config.yaml into app/config
+```
+
+Useful slash commands:
+
+- `/fs ls [path]`
+- `/fs cat <file>`
+- `/fs mkdir <dir>`
+- `/fs mv <src> <dst>`
+- `/fs rm <path>`
+- `/fs write <file> [text]`
+- `/fs append <file> [text]`
+- `/undo`
+
+## Git Workflows
+
+Lumi includes git helpers inside the TUI:
+
+- `/git status`
+- `/git diff`
+- `/git log`
+- `/git remote`
+- `/git fetch`
+- `/git sync`
+- `/git branches`
+- `/git summary`
+- `/git review`
+- `/git prepare`
+- `/git commit`
+- `/git commit-confirm`
+
 ## Commands
 
-Core commands:
+### Core
 
 | Command | Description |
 |---|---|
-| `/model` | Pick provider and model |
-| `/clear` | Clear the current chat |
-| `/undo` | Remove the last exchange |
+| `/model` | Switch provider and model |
+| `/clear` | Clear the current conversation |
 | `/save [name]` | Save the current session |
 | `/load [name]` | Load a saved session |
 | `/sessions` | List saved sessions |
-| `/context` | Show context usage |
-| `/quit` | Save and exit |
+| `/status` | Show Lumi session and workspace status |
+| `/doctor` | Check provider and workspace health |
+| `/onboard` | Show first-run guidance |
+| `/benchmark` | Show benchmark scenarios |
+| `/exit` | Exit Lumi |
 
-Chat and writing:
+### Chat and Writing
 
 | Command | Description |
 |---|---|
-| `/council <prompt>` | Ask all council agents |
-| `/redo [hint]` | Retry with a different angle |
+| `/council <prompt>` | Ask council mode |
+| `/retry` | Retry the last prompt |
+| `/redo [hint]` | Retry from a different angle |
 | `/more` | Expand the last answer |
-| `/tl;dr` | Summarize the last answer |
 | `/rewrite` | Rewrite the last answer |
-| `/short` | Shorter responses |
-| `/detailed` | More detailed responses |
-| `/bullets` | Bullet-style responses |
+| `/tl;dr` | Summarize the last answer |
+| `/short` | Make the next answer concise |
+| `/detailed` | Make the next answer detailed |
+| `/bullets` | Make the next answer bullet-based |
+| `/draft <prompt>` | Draft a message |
+| `/translate <text>` | Translate text |
+| `/summarize [file]` | Summarize content |
 
-Code and files:
+### Code and Context
 
 | Command | Description |
 |---|---|
-| `/agent <task>` | Grounded agent execution |
+| `/agent <task>` | Run grounded agent mode |
+| `/review [file]` | Review code |
+| `/fix <problem>` | Diagnose and fix an issue |
+| `/debug <problem>` | Debug a failure |
+| `/test [file]` | Generate tests |
+| `/docs [file]` | Generate docs/comments |
+| `/types [file]` | Add typing hints |
+| `/comment <file>` | Add inline comments |
 | `/file <path>` | Load a file into context |
 | `/project <dir>` | Load a project into context |
-| `/edit <path>` | AI-assisted file rewrite |
-| `/review [file]` | Code review |
-| `/fix <error>` | Diagnose and fix an error |
-| `/test [file]` | Generate tests |
-| `/run` | Run code from the last reply |
-| `/git status|commit|log|remote|fetch|sync|branches` | Git helpers |
-
-Search and tools:
-
-| Command | Description |
-|---|---|
+| `/browse [dir]` | Open the file browser |
 | `/search <query>` | Search the web |
-| `/web <url> [question]` | Fetch a page and analyze it |
-| `/image <path> [question]` | Analyze an image |
-| `/pdf <path>` | Analyze a PDF |
+| `/web <url> [question]` | Fetch and analyze a page |
+| `/pdf <path>` | Load PDF text |
 | `/data <path>` | Analyze CSV or JSON |
-| `/pane <cmd>` | Open a side pane command |
 
-Memory and productivity:
+### Productivity
 
 | Command | Description |
 |---|---|
-| `/remember <fact>` | Save a memory |
+| `/remember <fact>` | Save a long-term memory |
 | `/memory` | View stored memories |
 | `/forget` | Remove memories |
 | `/note add|list|search` | Notes |
 | `/todo add|list|done|rm` | Todos |
-| `/export` | Export the current session |
-| `/find <keyword>` | Search past sessions |
+| `/export` | Export the current chat |
+| `/tokens` | Show token telemetry |
+| `/context` | Show prompt/context usage |
+| `/permissions [all|plugins]` | Show plugin permission info |
+| `/plugins` | Show plugin status |
 
 ## Config
 
-API keys live in:
+Provider keys live in:
 
 ```bash
 ~/Lumi/.env
@@ -218,17 +267,25 @@ Example:
 
 ```env
 GEMINI_API_KEY=
+HF_TOKEN=
 GROQ_API_KEY=
 OPENROUTER_API_KEY=
 MISTRAL_API_KEY=
-HF_TOKEN=
+AIRFORCE_API_KEY=
+POLLINATIONS_API_KEY=
 ```
 
-Lumi also supports additional providers and local models depending on your setup.
+Lumi can also work with local providers like Ollama depending on your setup.
+
+After changing `.env`, run:
+
+```text
+/doctor
+```
 
 ## Project Context
 
-If a project contains a `LUMI.md`, Lumi loads it as project context.
+If a repo contains `LUMI.md`, Lumi loads it as project context.
 
 Example:
 
@@ -244,24 +301,66 @@ Python 3.11, FastAPI, PostgreSQL
 - Keep functions small
 ```
 
-You can create one with:
-
-```bash
-/lumi.md create
-```
-
 ## Plugins
 
-Drop a Python file into `~/Lumi/plugins/` and Lumi loads it on startup.
+Plugins live in:
 
-Minimal example:
+```bash
+~/Lumi/plugins/
+```
+
+Plugin loading is approval-based now:
+
+- Lumi scans plugin files before import
+- plugins must declare `PLUGIN_META`
+- plugins are not imported until approved
+- changing a plugin file invalidates its approval
+
+Useful commands:
+
+```text
+/plugins inspect
+/plugins pending
+/plugins approve <name>
+/plugins revoke <name>
+/plugins audit
+/permissions all
+```
+
+Minimal plugin example:
 
 ```python
-COMMANDS = {"/deploy": deploy}
-DESCRIPTION = {"/deploy": "Deploy to staging"}
+PLUGIN_META = {
+    "name": "Greeter",
+    "version": "0.1.0",
+    "description": "Simple greeting helper",
+    "permissions": ["read_workspace"],
+}
 
-def deploy(args, client, model, memory, system_prompt, name):
-    print("deploying...")
+DESCRIPTION = {"/greet": "Say hello"}
+
+def greet(args, client, model, memory, system_prompt, name):
+    return f"hello {args or 'there'}"
+
+COMMANDS = {"/greet": greet}
+```
+
+## Benchmarks
+
+Lumi includes a small benchmark harness for agent work.
+
+It now scores real outcomes instead of summary text only:
+
+- temp workspaces per scenario
+- setup files per scenario
+- expected file and patch outcomes
+- optional verification commands
+- changed-file tracking
+
+Use:
+
+```text
+/benchmark
 ```
 
 ## Development
@@ -278,7 +377,7 @@ pre-commit install
 Checks:
 
 ```bash
-pytest tests/ -q
+pytest tests -q
 ruff check .
 ruff format .
 ```

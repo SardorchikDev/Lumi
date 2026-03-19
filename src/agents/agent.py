@@ -28,6 +28,7 @@ from src.agents.task_memory import (
     start_active_run,
     update_active_run,
 )
+from src.utils.repo_profile import build_planning_context, find_relevant_paths, inspect_workspace
 
 R = "\033[0m"
 B = "\033[1m"
@@ -487,217 +488,23 @@ def _build_filesystem_scaffold_plan(task: str, base_dir: Path) -> list[dict] | N
     return steps if parsed_any else None
 
 
-def _search_relevant_paths(base_dir: Path, task: str) -> list[Path]:
-    keywords = _task_keywords(task)
-    if not keywords:
-        return []
-    matches: list[tuple[int, Path]] = []
-    for path in base_dir.rglob("*"):
-        if not path.is_file():
-            continue
-        if any(part in {".git", "__pycache__", "node_modules", "venv", ".venv"} for part in path.parts):
-            continue
-        score = 0
-        lower_name = str(path.relative_to(base_dir)).lower()
-        for word in keywords:
-            if word in lower_name:
-                score += 3
-        if score == 0:
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")[:4000].lower()
-            except OSError:
-                continue
-            for word in keywords:
-                if word in text:
-                    score += 1
-        if score:
-            matches.append((score, path))
-    matches.sort(key=lambda item: (-item[0], str(item[1])))
-    return [path for _, path in matches[:MAX_CONTEXT_MATCHES]]
-
-
-def _command_available(cmd: str) -> bool:
-    return bool(shutil.which(cmd))
-
-
-def _detect_package_manager(base_dir: Path) -> str | None:
-    if (base_dir / "pnpm-lock.yaml").exists() and _command_available("pnpm"):
-        return "pnpm"
-    if (base_dir / "yarn.lock").exists() and _command_available("yarn"):
-        return "yarn"
-    if (base_dir / "bun.lockb").exists() and _command_available("bun"):
-        return "bun"
-    if (base_dir / "package-lock.json").exists() and _command_available("npm"):
-        return "npm"
-    if (base_dir / "package.json").exists():
-        for candidate in ("pnpm", "yarn", "bun", "npm"):
-            if _command_available(candidate):
-                return candidate
-    return None
-
-
-def _load_package_scripts(base_dir: Path) -> dict[str, str]:
-    package_json = base_dir / "package.json"
-    if not package_json.exists():
-        return {}
-    try:
-        data = json.loads(package_json.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    scripts = data.get("scripts", {})
-    if not isinstance(scripts, dict):
-        return {}
-    return {
-        key: value
-        for key, value in scripts.items()
-        if isinstance(key, str) and isinstance(value, str)
-    }
-
-
-def _has_test_targets(base_dir: Path) -> bool:
-    tests_dir = base_dir / "tests"
-    if tests_dir.exists():
-        for path in tests_dir.rglob("*"):
-            if path.is_file() and path.name.startswith("test"):
-                return True
-    return any(base_dir.glob("test_*.py"))
-
-
-def _detect_verification_commands(base_dir: Path) -> dict[str, tuple[str, ...]]:
-    commands: dict[str, tuple[str, ...]] = {}
-    scripts = _load_package_scripts(base_dir)
-    package_manager = _detect_package_manager(base_dir)
-
-    if _has_test_targets(base_dir):
-        commands["tests"] = (sys.executable, "-m", "pytest")
-    if (base_dir / "pyproject.toml").exists() and _command_available(sys.executable):
-        pyproject_text = (base_dir / "pyproject.toml").read_text(encoding="utf-8", errors="replace").lower()
-        if "[tool.ruff" in pyproject_text or "ruff" in pyproject_text:
-            commands["lint"] = (sys.executable, "-m", "ruff", "check", ".")
-        if "mypy" in pyproject_text:
-            commands["types"] = (sys.executable, "-m", "mypy", ".")
-
-    if package_manager and scripts:
-        if "test" in scripts:
-            commands["tests"] = (package_manager, "test")
-        elif "check" in scripts:
-            commands.setdefault("tests", (package_manager, "run", "check"))
-        if "lint" in scripts:
-            commands["lint"] = (package_manager, "run", "lint")
-        if "typecheck" in scripts:
-            commands["types"] = (package_manager, "run", "typecheck")
-        elif "types" in scripts:
-            commands["types"] = (package_manager, "run", "types")
-
-    if (base_dir / "Cargo.toml").exists() and _command_available("cargo"):
-        commands.setdefault("tests", ("cargo", "test"))
-        commands.setdefault("lint", ("cargo", "fmt", "--", "--check"))
-        commands.setdefault("types", ("cargo", "check"))
-
-    if (base_dir / "go.mod").exists() and _command_available("go"):
-        commands.setdefault("tests", ("go", "test", "./..."))
-        commands.setdefault("types", ("go", "test", "./..."))
-
-    if not commands and (base_dir / "pyproject.toml").exists():
-        commands["tests"] = (sys.executable, "-m", "pytest")
-
-    return commands
-
-
-def _detect_entrypoints(base_dir: Path) -> tuple[str, ...]:
-    candidates = (
-        "main.py",
-        "app.py",
-        "manage.py",
-        "src/main.py",
-        "src/app.py",
-        "package.json",
-        "Cargo.toml",
-        "go.mod",
-    )
-    found = [candidate for candidate in candidates if (base_dir / candidate).exists()]
-    return tuple(found[:6])
-
-
-def _detect_frameworks(base_dir: Path) -> tuple[str, ...]:
-    found: list[str] = []
-    pyproject = (base_dir / "pyproject.toml").read_text(encoding="utf-8", errors="replace").lower() if (base_dir / "pyproject.toml").exists() else ""
-    requirements = (base_dir / "requirements.txt").read_text(encoding="utf-8", errors="replace").lower() if (base_dir / "requirements.txt").exists() else ""
-    package_json = (base_dir / "package.json").read_text(encoding="utf-8", errors="replace").lower() if (base_dir / "package.json").exists() else ""
-    cargo = (base_dir / "Cargo.toml").read_text(encoding="utf-8", errors="replace").lower() if (base_dir / "Cargo.toml").exists() else ""
-
-    def has_token(*tokens: str) -> bool:
-        haystacks = (pyproject, requirements, package_json, cargo)
-        return any(token in haystack for haystack in haystacks for token in tokens)
-
-    framework_rules = (
-        ("fastapi", ("fastapi",)),
-        ("django", ("django",)),
-        ("flask", ("flask",)),
-        ("pytest", ("pytest",)),
-        ("react", ('"react"', '"next"', '"vite"', "react-dom")),
-        ("vue", ('"vue"', "nuxt")),
-        ("svelte", ('"svelte"',)),
-        ("node", ('"express"', '"nestjs"', '"koa"', '"hono"')),
-        ("rust", ("[package]", "tokio", "axum", "actix")),
-        ("go", ("module ",)),
-    )
-    for label, tokens in framework_rules:
-        if has_token(*tokens):
-            found.append(label)
-    return tuple(found[:6])
-
-
-def _detect_config_files(base_dir: Path) -> tuple[str, ...]:
-    candidates = (
-        ".env.example",
-        ".env",
-        "pyproject.toml",
-        "requirements.txt",
-        "package.json",
-        "tsconfig.json",
-        "Cargo.toml",
-        "go.mod",
-        "ruff.toml",
-        "mypy.ini",
-        ".github/workflows",
-    )
-    found: list[str] = []
-    for candidate in candidates:
-        path = base_dir / candidate
-        if path.exists():
-            found.append(candidate)
-    return tuple(found[:8])
-
-
 def inspect_repo(base_dir: Path | None = None, task: str = "") -> RepoProfile:
     base_dir = (base_dir or Path.cwd()).resolve()
-    relevant_paths = tuple(str(path.relative_to(base_dir)) for path in _search_relevant_paths(base_dir, task))
-    git_ok, git_status = _run_command(["git", "status", "--short"], base_dir, timeout=15)
-    changed_files: list[str] = []
-    notes: list[str] = []
-    if git_ok:
-        for line in git_status.splitlines():
-            trimmed = line.strip()
-            if not trimmed:
-                continue
-            path_text = trimmed[3:] if len(trimmed) > 3 else trimmed
-            changed_files.append(path_text)
-    elif "not a git repository" not in git_status.lower():
-        notes.append("git status unavailable")
-
-    verification = _detect_verification_commands(base_dir)
-    if not verification:
+    shared = inspect_workspace(base_dir)
+    relevant_paths = find_relevant_paths(base_dir, task, limit=MAX_CONTEXT_MATCHES)
+    notes = list(shared.notes)
+    verification = shared.verification_commands
+    if not verification and "no verification commands detected" not in notes:
         notes.append("no verification commands detected")
 
     return RepoProfile(
         base_dir=base_dir,
-        package_manager=_detect_package_manager(base_dir),
-        frameworks=_detect_frameworks(base_dir),
-        entrypoints=_detect_entrypoints(base_dir),
-        config_files=_detect_config_files(base_dir),
+        package_manager=shared.package_manager,
+        frameworks=shared.frameworks,
+        entrypoints=shared.entrypoints,
+        config_files=shared.config_files,
         relevant_files=relevant_paths,
-        changed_files=tuple(changed_files[:12]),
+        changed_files=shared.changed_files,
         verification_commands=verification,
         notes=tuple(notes),
     )
@@ -706,86 +513,19 @@ def inspect_repo(base_dir: Path | None = None, task: str = "") -> RepoProfile:
 def collect_planning_context(task: str, base_dir: Path | None = None) -> str:
     """Gather lightweight repo facts before asking the model to plan."""
     base_dir = (base_dir or Path.cwd()).resolve()
-    profile = inspect_repo(base_dir, task)
-    lines = [f"Workspace root: {base_dir}", ""]
-
-    top_entries = sorted(base_dir.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
-    if top_entries:
-        lines.append("Top-level entries:")
-        for entry in top_entries[:40]:
-            suffix = "/" if entry.is_dir() else ""
-            lines.append(f"- {entry.name}{suffix}")
-        lines.append("")
-
-    key_files = [
-        "LUMI.md",
-        "README.md",
-        "pyproject.toml",
-        "requirements.txt",
-        "package.json",
-        "Cargo.toml",
-        "go.mod",
-    ]
-    mentioned = sorted(set(re.findall(r"[\w./-]+\.\w+", task)))
-    candidates = [base_dir / name for name in key_files + mentioned]
-    readable = [path for path in candidates if path.exists() and path.is_file()]
-    if readable:
-        lines.append("Relevant workspace files:")
-        for path in readable[:MAX_CONTEXT_FILES]:
-            lines.append(_read_context_file(path, base_dir))
-            lines.append("")
-
-    if profile.entrypoints:
-        lines.append("Likely entrypoints:")
-        for entry in profile.entrypoints:
-            lines.append(f"- {entry}")
-        lines.append("")
-
-    if profile.frameworks:
-        lines.append("Detected frameworks and tools:")
-        for framework in profile.frameworks:
-            lines.append(f"- {framework}")
-        lines.append("")
-
-    if profile.config_files:
-        lines.append("Key config files:")
-        for config_path in profile.config_files:
-            lines.append(f"- {config_path}")
-        lines.append("")
-
-    if profile.package_manager:
-        lines.append(f"Detected package manager: {profile.package_manager}")
-        lines.append("")
-
-    if profile.relevant_files:
-        lines.append("Likely relevant files:")
-        for rel_path in profile.relevant_files:
-            lines.append(f"- {rel_path}")
-        lines.append("")
-
-    if profile.changed_files:
-        lines.append("Changed files:")
-        for rel_path in profile.changed_files:
-            lines.append(f"- {rel_path}")
-        lines.append("")
-
-    if profile.verification_commands:
-        lines.append("Verification commands detected:")
-        for kind, command in sorted(profile.verification_commands.items()):
-            lines.append(f"- {kind}: {' '.join(command)}")
-        lines.append("")
-
-    task_memory = render_task_memory_context(task)
-    if task_memory:
-        lines.append(task_memory)
-        lines.append("")
-
-    git_ok, git_status = _run_command(["git", "status", "--short"], base_dir, timeout=15)
-    if git_ok or "not a git repository" not in git_status.lower():
-        lines.append("Git status:")
-        lines.append(git_status or "(clean)")
-
-    return "\n".join(lines).strip()
+    workspace_profile = inspect_workspace(base_dir)
+    task_memory = render_task_memory_context(
+        task,
+        base_dir=base_dir,
+        branch=workspace_profile.git_branch,
+    )
+    return build_planning_context(
+        base_dir,
+        task=task,
+        max_context_files=MAX_CONTEXT_FILES,
+        max_context_file_chars=MAX_CONTEXT_FILE_CHARS,
+        task_memory=task_memory,
+    )
 
 
 def _default_execution_policy(task: str) -> ExecutionPolicy:
@@ -1050,9 +790,11 @@ def make_recovery_plan(
 ) -> list[dict]:
     """Ask AI for a bounded recovery plan after a step fails."""
     workspace_context = collect_planning_context(task, base_dir)
+    failure_kind = _classify_failure_output(failure_output)
     failure_context = (
         f"Original objective:\n{task}\n\n"
         f"Failed step:\n{json.dumps(failed_step, indent=2, ensure_ascii=False)}\n\n"
+        f"Failure kind:\n{failure_kind}\n\n"
         f"Failure output:\n{failure_output[:1200]}\n\n"
         "Return a JSON array of up to 3 recovery steps that could fix or diagnose the failure. "
         "Prefer structured actions and safe file patches. Do not repeat the failed verification command unless a fix step comes first."
@@ -1372,6 +1114,21 @@ def _summarize_verification_output(command: tuple[str, ...], output: str) -> str
     if preview:
         summary_bits.append(preview)
     return " | ".join(summary_bits)
+
+
+def _classify_failure_output(output: str) -> str:
+    lowered = (output or "").lower()
+    if any(token in lowered for token in ("timed out", "timeout")):
+        return "timeout"
+    if any(token in lowered for token in ("not found", "no such file", "does not exist")):
+        return "missing_path"
+    if any(token in lowered for token in ("syntaxerror", "parse error", "yamlerror", "jsondecodeerror")):
+        return "syntax_or_parse_error"
+    if any(token in lowered for token in ("ambiguous", "matched multiple", "old_text was not found", "old_block does not match")):
+        return "stale_patch_context"
+    if any(token in lowered for token in ("failed", "error", "assert", "traceback", "exception")):
+        return "verification_or_runtime_error"
+    return "unknown"
 
 
 def compute_step_file_change(step: dict, base_dir: Path) -> tuple[bool, str, Path | None, str | None]:
@@ -1962,8 +1719,9 @@ def run_agent(
     from src.utils.markdown import render as md_render
 
     base_dir = Path.cwd().resolve()
+    workspace_profile = inspect_workspace(base_dir)
     journal = ChangeJournal()
-    start_active_run(task)
+    start_active_run(task, base_dir=base_dir, branch=workspace_profile.git_branch)
     policy = _default_execution_policy(task)
     if review_only:
         policy = ExecutionPolicy(
@@ -1980,12 +1738,18 @@ def run_agent(
         steps = make_plan(task, client, model, base_dir=base_dir, policy=policy)
     except RuntimeError as exc:
         clear_active_run()
-        record_run(task, status="planning_failed", summary=str(exc))
+        record_run(task, status="planning_failed", summary=str(exc), base_dir=base_dir, branch=workspace_profile.git_branch)
         return str(exc)
 
     if not steps:
         clear_active_run()
-        record_run(task, status="planning_failed", summary="No steps generated.")
+        record_run(
+            task,
+            status="planning_failed",
+            summary="No steps generated.",
+            base_dir=base_dir,
+            branch=workspace_profile.git_branch,
+        )
         return "No steps generated."
 
     print(f"  {B}{WH}Plan  ({len(steps)} steps){R}\n")
@@ -2000,20 +1764,36 @@ def run_agent(
     invalid = [item for item in inspected if item.get("ok") is False]
     if invalid:
         reason = invalid[0].get("reason", "Plan preflight failed")
-        update_active_run(status="preflight_failed", summary=reason)
-        record_run(task, status="preflight_failed", summary=reason)
+        update_active_run(status="preflight_failed", summary=reason, base_dir=base_dir, branch=workspace_profile.git_branch)
+        record_run(task, status="preflight_failed", summary=reason, base_dir=base_dir, branch=workspace_profile.git_branch)
         return f"Plan rejected during preflight: {reason}"
 
     if policy.review_only:
-        summary = f"Review-only plan generated with {len(steps)} steps; no changes executed."
-        update_active_run(status="review_only", summary=summary)
-        record_run(task, status="review_only", summary=summary)
+        review_files = sum(1 for item in inspected if item.get("kind") in {"file", "patch", "mkdir"})
+        review_checks = sum(1 for item in inspected if item.get("kind") == "verify")
+        summary = (
+            f"Review-only plan generated with {len(steps)} steps; "
+            f"{review_files} change(s), {review_checks} check(s), no changes executed."
+        )
+        update_active_run(status="review_only", summary=summary, base_dir=base_dir, branch=workspace_profile.git_branch)
+        record_run(task, status="review_only", summary=summary, base_dir=base_dir, branch=workspace_profile.git_branch)
         return summary
 
     print()
     if not yolo and not confirm(f"Execute {len(steps)} preflighted steps?"):
-        update_active_run(status="cancelled", summary="Agent cancelled before execution.")
-        record_run(task, status="cancelled", summary="Agent cancelled before execution.")
+        update_active_run(
+            status="cancelled",
+            summary="Agent cancelled before execution.",
+            base_dir=base_dir,
+            branch=workspace_profile.git_branch,
+        )
+        record_run(
+            task,
+            status="cancelled",
+            summary="Agent cancelled before execution.",
+            base_dir=base_dir,
+            branch=workspace_profile.git_branch,
+        )
         return "Agent cancelled."
 
     results = []
@@ -2024,7 +1804,7 @@ def run_agent(
     completed_plan_steps = 0
     failed_plan_steps = 0
 
-    update_active_run(status="running", summary=f"Planned {len(steps)} steps")
+    update_active_run(status="running", summary=f"Planned {len(steps)} steps", base_dir=base_dir, branch=workspace_profile.git_branch)
 
     for step in steps:
         stype = step.get("type", "?")
@@ -2055,6 +1835,8 @@ def run_agent(
                 summary=f"Completed step {step['id']}/{len(steps)}: {step['description']}",
                 touched_files=touched_files,
                 failed_checks=failed_checks,
+                base_dir=base_dir,
+                branch=workspace_profile.git_branch,
             )
             print(f"  {GN}✓{R}  ", end="")
             if output and len(output) < 300:
@@ -2073,6 +1855,8 @@ def run_agent(
                     for record in journal.records
                     if record.kind == "file"
                 ],
+                base_dir=base_dir,
+                branch=workspace_profile.git_branch,
             )
             print(f"  {RE}✗{R}  {output}")
             if step.get("type") == "action" and step.get("action") in VERIFY_ACTIONS | {"run_verify"}:
@@ -2173,5 +1957,7 @@ def run_agent(
         touched_files=touched_files,
         failed_checks=failed_checks,
         recovery_used=recovery_used,
+        base_dir=base_dir,
+        branch=workspace_profile.git_branch,
     )
     return summary

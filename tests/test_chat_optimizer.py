@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from src.agents import task_memory
 from src.chat.optimizer import (
     ContextCache,
     SessionTelemetry,
@@ -107,3 +108,39 @@ def test_optimize_messages_keeps_relevant_older_history():
     )
 
     assert any("src/api.py" in msg["content"] for msg in optimized if msg["role"] != "system")
+
+
+def test_optimize_messages_includes_task_memory_when_relevant(tmp_path, monkeypatch):
+    monkeypatch.setattr(task_memory, "TASK_MEMORY_PATH", tmp_path / "task_memory.json")
+    task_memory.start_active_run("fix src/api.py auth flow")
+    cache = ContextCache()
+    telemetry = SessionTelemetry()
+    messages = [
+        {"role": "system", "content": "You are Lumi."},
+        {"role": "user", "content": "Review src/api.py auth flow and fix the bug."},
+    ]
+
+    optimized = optimize_messages(
+        messages,
+        "meta-llama/Llama-3.3-70B-Instruct",
+        mode="review",
+        context_cache=cache,
+        telemetry=telemetry,
+    )
+
+    assert any("Relevant task memory" in msg["content"] for msg in optimized if msg["role"] == "system")
+    assert telemetry.last_budget is not None
+    assert telemetry.last_budget.task_memory_tokens > 0
+
+
+def test_context_cache_retrieves_relevant_chunk_instead_of_full_document():
+    cache = ContextCache()
+    filler = "\n".join(f"line {idx} filler" for idx in range(120))
+    content = f"{filler}\n\ncritical payment_token refresh logic lives here\n\n{filler}"
+    cache.remember_file("src/payments.py", content)
+
+    retrieved = cache.retrieve("payment_token refresh", limit=1, max_chars=300)
+
+    assert len(retrieved) == 1
+    assert "payment_token refresh logic" in retrieved[0].content
+    assert len(retrieved[0].content) <= 300

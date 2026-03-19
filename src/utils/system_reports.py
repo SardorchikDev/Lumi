@@ -5,12 +5,16 @@ from __future__ import annotations
 from pathlib import Path
 
 from src.agents.task_memory import get_active_run, get_recent_runs
-from src.chat.providers import provider_label
+from src.chat.providers import provider_health_snapshot, provider_label
 from src.config import LUMI_HOME
 from src.memory.longterm import memory_stats
 from src.utils.git_tools import summarize_git_state
-from src.utils.plugins import describe_plugins
-from src.utils.repo_profile import inspect_workspace
+from src.utils.plugins import audit_plugins, describe_plugins
+from src.utils.repo_profile import (
+    build_onboarding_hints,
+    inspect_workspace,
+    render_workspace_overview,
+)
 
 
 def _env_candidates(base_dir: Path) -> list[Path]:
@@ -41,7 +45,7 @@ def build_status_report(
     longterm = memory_stats()
     git_summary = summarize_git_state(root)
     plugins = describe_plugins()
-    active_run = get_active_run()
+    active_run = get_active_run(root)
 
     lines = ["Lumi status", f"  Workspace: {root}"]
     if provider or model:
@@ -69,7 +73,7 @@ def build_status_report(
             f"{active_run.get('status', '?')} · {active_run.get('objective', '')}"
         )
     else:
-        recent_runs = get_recent_runs(limit=1)
+        recent_runs = get_recent_runs(limit=1, base_dir=root)
         if recent_runs:
             last = recent_runs[0]
             lines.append(
@@ -79,8 +83,14 @@ def build_status_report(
 
     if profile.frameworks:
         lines.append(f"  Stack:     {', '.join(profile.frameworks)}")
+    if profile.languages:
+        lines.append(f"  Languages: {', '.join(profile.languages)}")
     if profile.package_manager:
         lines.append(f"  Packages:  {profile.package_manager}")
+    if profile.source_directories:
+        lines.append(f"  Source:    {', '.join(profile.source_directories)}")
+    if profile.test_directories:
+        lines.append(f"  Tests:     {', '.join(profile.test_directories)}")
     if profile.verification_commands:
         checks = ", ".join(sorted(profile.verification_commands))
         lines.append(f"  Checks:    {checks}")
@@ -112,8 +122,10 @@ def build_doctor_report(
     root = (base_dir or Path.cwd()).resolve()
     profile = inspect_workspace(root)
     plugins = describe_plugins()
+    plugin_audit = audit_plugins()
     env_file = _find_env_file(root)
     configured = configured_providers or []
+    provider_health = provider_health_snapshot(has_ollama="ollama" in configured)
 
     lines = ["Lumi doctor", f"  Workspace: {root}"]
     if provider or model:
@@ -124,6 +136,9 @@ def build_doctor_report(
         + (", ".join(provider_label(name) for name in configured) if configured else "none configured")
     )
     lines.append(f"  Plugins:   {len(plugins)} loaded")
+    suspicious_plugins = sum(1 for item in plugin_audit if item["warnings"])
+    if suspicious_plugins:
+        lines.append(f"  Plugin audit: {suspicious_plugins} plugin(s) need attention")
     lines.append("")
     lines.append("Checks")
 
@@ -144,15 +159,27 @@ def build_doctor_report(
         suggestions.append("Add tests or lint/typecheck config so agent runs can verify changes.")
     if not plugins:
         suggestions.append("Use ~/Lumi/plugins for safe custom commands if you extend Lumi often.")
+    elif suspicious_plugins:
+        warnings.append("Some plugins use risky APIs without matching declared permissions.")
+        suggestions.append("Run /plugins audit and align plugin metadata with actual capabilities.")
 
     if profile.frameworks:
         lines.append(f"  Detected stack: {', '.join(profile.frameworks)}")
+    if profile.languages:
+        lines.append(f"  Detected languages: {', '.join(profile.languages)}")
     if profile.package_manager:
         lines.append(f"  Package manager: {profile.package_manager}")
+    if profile.source_directories:
+        lines.append(f"  Source dirs: {', '.join(profile.source_directories)}")
+    if profile.test_directories:
+        lines.append(f"  Test dirs: {', '.join(profile.test_directories)}")
     if profile.entrypoints:
         lines.append(f"  Entrypoints: {', '.join(profile.entrypoints)}")
     if profile.config_files:
         lines.append(f"  Config files: {', '.join(profile.config_files)}")
+    configured_labels = [item.label for item in provider_health if item.configured]
+    if configured_labels:
+        lines.append(f"  Ready providers: {', '.join(configured_labels)}")
 
     lines.append("")
     lines.append("Warnings")
@@ -170,4 +197,38 @@ def build_doctor_report(
     else:
         lines.append("  - Lumi looks healthy for this workspace.")
 
+    return "\n".join(lines)
+
+
+def build_onboarding_report(
+    *,
+    base_dir: Path | None = None,
+    configured_providers: list[str] | None = None,
+) -> str:
+    root = (base_dir or Path.cwd()).resolve()
+    profile = inspect_workspace(root)
+    configured = configured_providers or []
+    provider_health = provider_health_snapshot(has_ollama="ollama" in configured)
+    ready = [item.label for item in provider_health if item.configured]
+    hints = build_onboarding_hints(profile)
+
+    lines = ["Lumi onboarding", ""]
+    lines.append(render_workspace_overview(profile))
+    lines.append("")
+    lines.append("Ready now")
+    lines.append("  Providers: " + (", ".join(ready) if ready else "none configured"))
+    lines.append("  Env file:  " + (str(_find_env_file(root)) if _find_env_file(root) else "missing"))
+    lines.append("  Commands:  /status, /doctor, /model, /agent, /git review")
+    lines.append("")
+    lines.append("Next steps")
+    if hints:
+        for hint in hints:
+            lines.append(f"  - {hint}")
+    else:
+        lines.append("  - Workspace shape looks healthy for Lumi.")
+    lines.append("")
+    lines.append("Starter prompts")
+    lines.append("  - review the repo and tell me where to start")
+    lines.append("  - inspect the changed files and summarize risks")
+    lines.append("  - create a folder named api and add main.py inside it")
     return "\n".join(lines)

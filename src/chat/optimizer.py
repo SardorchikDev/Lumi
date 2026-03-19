@@ -9,17 +9,22 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.agents.task_memory import render_task_memory_context
+from src.chat.providers import provider_context_limit, provider_model_hints
+
 
 def estimate_tokens(text: str) -> int:
     text = text or ""
-    return max(1, math.ceil(len(text) / 4))
+    char_estimate = len(text) / 4
+    word_estimate = len(text.split()) * 1.3
+    return max(1, math.ceil(max(char_estimate, word_estimate)))
 
 
 def estimate_message_tokens(messages: list[dict[str, str]]) -> int:
     return sum(estimate_tokens(str(message.get("content", ""))) + 4 for message in messages)
 
 
-def model_context_limit(model: str) -> int:
+def model_context_limit(model: str, provider: str = "") -> int:
     lowered = (model or "").lower()
     limits = (
         ("gemini-2.5-pro", 1_000_000),
@@ -44,7 +49,8 @@ def model_context_limit(model: str) -> int:
         ("phi", 128_000),
         ("default", 8_192),
     )
-    return next((value for needle, value in limits if needle in lowered), limits[-1][1])
+    model_limit = next((value for needle, value in limits if needle in lowered), limits[-1][1])
+    return max(model_limit, provider_context_limit(provider)) if provider else model_limit
 
 
 def infer_request_mode(text: str) -> str:
@@ -126,7 +132,7 @@ def augment_system_prompt(base_prompt: str, mode: str, failure_digest: str = "")
     return (base_prompt.rstrip() + "\n\n" + suffix).strip()
 
 
-def route_model(current_model: str, available_models: list[str], mode: str) -> str:
+def route_model(current_model: str, available_models: list[str], mode: str, provider: str = "") -> str:
     if not available_models:
         return current_model
     if current_model == "council":
@@ -137,6 +143,9 @@ def route_model(current_model: str, available_models: list[str], mode: str) -> s
 
     helper_needles = ("lite", "mini", "flash", "small", "8b", "instant")
     heavy_needles = ("pro", "70b", "120b", "72b", "large", "coder", "reasoning", "r1", "4o", "3.3")
+    provider_helper_needles, provider_heavy_needles = provider_model_hints(provider)
+    helper_needles = tuple(dict.fromkeys(helper_needles + provider_helper_needles))
+    heavy_needles = tuple(dict.fromkeys(heavy_needles + provider_heavy_needles))
 
     def has_signal(lowered: str, needles: tuple[str, ...]) -> bool:
         parts = set(re.split(r"[^a-z0-9]+", lowered))
@@ -185,6 +194,24 @@ def _compact_summary(text: str) -> str:
     if not lines:
         return ""
     return " | ".join(lines[:5])[:240]
+
+
+def _chunk_text(content: str, *, chunk_chars: int = 900, overlap_chars: int = 160) -> list[str]:
+    if not content.strip():
+        return []
+    lines = content.splitlines(keepends=True)
+    chunks: list[str] = []
+    current = ""
+    for line in lines:
+        if current and len(current) + len(line) > chunk_chars:
+            chunks.append(current)
+            carry = current[-overlap_chars:] if overlap_chars and len(current) > overlap_chars else current
+            current = carry + line
+        else:
+            current += line
+    if current:
+        chunks.append(current)
+    return chunks[:64] or [content[:chunk_chars]]
 
 
 @dataclass(frozen=True)
@@ -241,24 +268,33 @@ class ContextCache:
             docs = list(self._docs.values())
         if not docs:
             return []
-        scored: list[tuple[int, CachedContext]] = []
+        scored: list[tuple[int, CachedContext, str]] = []
         for doc in docs:
             haystack = f"{doc.label}\n{doc.summary}\n{' '.join(doc.symbols)}\n{' '.join(doc.imports)}".lower()
-            score = 0
+            base_score = 0
             for word in words:
                 if word in doc.label.lower():
-                    score += 4
+                    base_score += 4
                 if word in haystack:
-                    score += 2
-                if word in doc.content[:4000].lower():
-                    score += 1
-            if score:
-                scored.append((score, doc))
+                    base_score += 2
+            best_chunk = ""
+            best_score = 0
+            for chunk in _chunk_text(doc.content, chunk_chars=min(900, max_chars), overlap_chars=160):
+                score = base_score
+                lowered_chunk = chunk.lower()
+                for word in words:
+                    if word in lowered_chunk:
+                        score += 3 if "." in word or "/" in word else 2
+                if score > best_score:
+                    best_score = score
+                    best_chunk = chunk
+            if best_score:
+                scored.append((best_score, doc, best_chunk))
         scored.sort(key=lambda item: (-item[0], item[1].label))
-        picked = [doc for _, doc in scored[:limit]]
+        picked = scored[:limit]
         trimmed: list[CachedContext] = []
-        for doc in picked:
-            snippet = doc.content[:max_chars].rstrip()
+        for _, doc, snippet in picked:
+            snippet = snippet[:max_chars].rstrip()
             trimmed.append(
                 CachedContext(
                     key=doc.key,
@@ -341,6 +377,7 @@ class BudgetSnapshot:
     system_tokens: int
     history_tokens: int
     summary_tokens: int
+    task_memory_tokens: int
     retrieval_tokens: int
     total_prompt_tokens: int
     kept_messages: int
@@ -372,12 +409,24 @@ class SessionTelemetry:
             self.records.append(TelemetryRecord(timestamp=time.time(), budget=budget))
             self.records = self.records[-50:]
 
-    def record_response(self, output_text: str) -> None:
-        output_tokens = estimate_tokens(output_text)
+    def record_response(self, output_text: str, *, actual_tokens: int | None = None) -> None:
+        output_tokens = actual_tokens if actual_tokens is not None else estimate_tokens(output_text)
         with self._lock:
             self.output_tokens += output_tokens
             if self.records:
                 self.records[-1].output_tokens = output_tokens
+
+    def suggest_response_budget(self, mode: str, fallback: int) -> int:
+        with self._lock:
+            relevant = [
+                record.output_tokens
+                for record in self.records[-12:]
+                if record.budget.mode == mode and record.output_tokens
+            ]
+        if not relevant:
+            return fallback
+        average = sum(relevant) / len(relevant)
+        return max(fallback, int(average * 1.4))
 
     def render_usage_report(self) -> str:
         with self._lock:
@@ -404,6 +453,7 @@ class SessionTelemetry:
             f"  System:     ~{budget.system_tokens:,}tk\n"
             f"  History:    ~{budget.history_tokens:,}tk\n"
             f"  Summary:    ~{budget.summary_tokens:,}tk\n"
+            f"  Task mem:   ~{budget.task_memory_tokens:,}tk\n"
             f"  Retrieval:  ~{budget.retrieval_tokens:,}tk\n"
             f"  Prompt:     ~{budget.total_prompt_tokens:,}tk\n"
             f"  Messages:   kept {budget.kept_messages}, dropped {budget.dropped_messages}\n"
@@ -485,6 +535,7 @@ def optimize_messages(
     model: str,
     *,
     mode: str = "",
+    provider: str = "",
     context_cache: ContextCache | None = None,
     telemetry: SessionTelemetry | None = None,
 ) -> list[dict[str, str]]:
@@ -503,11 +554,15 @@ def optimize_messages(
     system_prompt = augment_system_prompt(system_prompt, mode, failure_digest=failure_digest)
     system_tokens = estimate_tokens(system_prompt)
 
-    limit = model_context_limit(model)
-    response_budget = MODE_RESPONSE_BUDGETS.get(mode, MODE_RESPONSE_BUDGETS["chat"])
+    limit = model_context_limit(model, provider)
+    base_response_budget = MODE_RESPONSE_BUDGETS.get(mode, MODE_RESPONSE_BUDGETS["chat"])
+    response_budget = min(limit // 3, telemetry.suggest_response_budget(mode, base_response_budget))
     prompt_budget = max(1_024, limit - response_budget)
 
     retrieval_docs = context_cache.retrieve(query, limit=3)
+    task_memory_block = ""
+    if mode in {"code", "debug", "review", "files"} and query.strip():
+        task_memory_block = render_task_memory_context(query, limit=2, base_dir=Path.cwd())
     retrieval_block = ""
     if retrieval_docs:
         parts = []
@@ -522,9 +577,10 @@ def optimize_messages(
             detail.append(doc.content)
             parts.append("\n".join(detail))
         retrieval_block = "Relevant cached context:\n\n" + "\n\n---\n\n".join(parts)
+    task_memory_tokens = estimate_tokens(task_memory_block) if task_memory_block else 0
     retrieval_tokens = estimate_tokens(retrieval_block) if retrieval_block else 0
 
-    reserved = system_tokens + retrieval_tokens
+    reserved = system_tokens + task_memory_tokens + retrieval_tokens
     selected_history, summary, _, dropped_messages = _select_history(
         history,
         prompt_budget,
@@ -537,6 +593,8 @@ def optimize_messages(
     optimized = [{"role": "system", "content": system_prompt}]
     if summary:
         optimized.append({"role": "system", "content": summary})
+    if task_memory_block:
+        optimized.append({"role": "system", "content": "Relevant task memory:\n" + task_memory_block})
     if retrieval_block:
         optimized.append({"role": "system", "content": retrieval_block})
     optimized.extend(selected_history)
@@ -551,6 +609,7 @@ def optimize_messages(
         system_tokens=system_tokens,
         history_tokens=history_tokens,
         summary_tokens=summary_tokens,
+        task_memory_tokens=task_memory_tokens,
         retrieval_tokens=retrieval_tokens,
         total_prompt_tokens=total_prompt_tokens,
         kept_messages=len(selected_history),

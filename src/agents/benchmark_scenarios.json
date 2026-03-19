@@ -4,33 +4,46 @@
     "category": "filesystem",
     "task": "create a folder named api and add a file named main.py inside that folder",
     "expected_files": ["api/main.py"],
-    "expected_substrings": ["completed"]
+    "setup_files": {
+      "README.md": "# temp\n"
+    }
   },
   {
     "name": "scaffold-docs",
     "category": "filesystem",
     "task": "create a folder named docs and add a file named README.md inside that folder",
-    "expected_files": ["docs/README.md"],
-    "expected_substrings": ["completed"]
+    "expected_files": ["docs/README.md"]
   },
   {
     "name": "rename-file",
     "category": "filesystem",
     "task": "rename app.py to main.py",
     "expected_files": ["main.py"],
-    "expected_substrings": ["completed"]
+    "expected_absent_files": ["app.py"],
+    "setup_files": {
+      "app.py": "print('hi')\n"
+    }
   },
   {
     "name": "delete-folder",
     "category": "filesystem",
     "task": "delete the folder docs",
     "expected_absent_files": ["docs"],
-    "expected_substrings": ["completed"]
+    "setup_files": {
+      "docs/README.md": "# docs\n"
+    }
   },
   {
     "name": "patch-bug",
     "category": "agent",
     "task": "fix the failing calculation and run verification",
-    "expected_substrings": ["completed", "passed"]
+    "expected_file_contents": {
+      "calc.py": "return a + b"
+    },
+    "verification_commands": ["python -m pytest -q"],
+    "setup_files": {
+      "calc.py": "def add(a, b):\n    return a - b\n",
+      "test_calc.py": "from calc import add\n\n\ndef test_add():\n    assert add(1, 2) == 3\n"
+    }
   }
 ]
