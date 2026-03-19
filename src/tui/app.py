@@ -789,14 +789,13 @@ class Renderer:
         for i, item in enumerate(disp_items):
             itype, iname, ipath = item
             is_sel = (i == local_sel)
-            bg_ = _bg(BG_HL) if is_sel else _bg(BG)
 
             if iname == "..":
-                icon = "󰜄"; color = _fg(MUTED); name_color = _fg(FG_HI) if is_sel else _fg(FG)
+                icon = "󰜄"
             elif itype == "dir":
-                icon = "󰉋"; color = _fg(BLUE); name_color = _fg(FG_HI) if is_sel else _fg(FG)
+                icon = "󰉋"
             else:
-                icon = "󰈔"; color = _fg(FG_DIM); name_color = _fg(FG_HI) if is_sel else _fg(MUTED)
+                icon = "󰈔"
 
             disp_name = iname[:pop_w - 10]
             pointer = "› " if is_sel else "  "

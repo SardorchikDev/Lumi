@@ -1,7 +1,6 @@
 """Terminal color themes for Lumi."""
 
 import json
-from pathlib import Path
 
 from src.config import MEMORY_DIR
 

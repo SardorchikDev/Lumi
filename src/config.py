@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-
 # Base directory - use LUMI_HOME env var or default to ~/Lumi
 LUMI_HOME = Path(os.environ.get("LUMI_HOME", Path.home() / "Lumi")).expanduser().resolve()
 

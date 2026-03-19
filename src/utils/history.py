@@ -1,6 +1,5 @@
 """Input history — up/down arrow key cycling via readline."""
 
-from pathlib import Path
 
 from src.config import MEMORY_DIR
 

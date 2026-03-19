@@ -4,58 +4,22 @@ CLI command implementations for Lumi.
 All cmd_* functions are moved here from main.py to modularize the codebase.
 """
 
-import os
 import sys
-import pathlib
-import textwrap
-import threading
-import time
-import itertools
-import json
-import subprocess
-from typing import Optional, Any
 
-from src.chat.hf_client import get_client, get_provider, set_provider, get_models
-from src.memory.short_term import ShortTermMemory
+from src.agents.council import _get_available_agents as get_council_agents
+from src.agents.council import council_ask
 from src.utils.markdown import render as md_render
-from src.utils.intelligence import classify_request, is_complex_coding_task
-from src.utils.filesystem import (
-    generate_file_plan,
-    write_file_plan,
-    format_creation_summary,
-    is_create_request,
-)
-from src.utils.tools import (
-    analyze_data_file,
-    clipboard_get,
-    clipboard_set,
-    encode_image_base64,
-    get_weather,
-    load_project,
-    read_pdf,
-    take_screenshot,
-)
-from src.utils.voice import record_audio, speak, transcribe_groq
-from src.utils.web import fetch_url
-from src.utils.autoremember import auto_extract_facts
-from src.utils.history import save as history_save
-from src.utils.notes import note_add, note_list, note_remove, note_search, notes_to_markdown
-from src.utils.todo import todo_add, todo_clear_done, todo_done, todo_list, todo_remove
-from src.utils.plugins import dispatch as plugin_dispatch
-from src.utils.themes import get_theme
-from src.tools.mcp import get_session as mcp_session
-from src.tools.mcp import list_servers as mcp_list
-from src.tools.mcp import add_server as mcp_add
-from src.tools.mcp import remove_server as mcp_remove
-from src.tools.search import search, search_display
-from src.agents.council import council_ask, _get_available_agents as get_council_agents
 
 from .render import (
-    ok,
-    print_lumi_label,
+    DG,
+    GR,
+    MU,
+    R,
     Spinner,
+    print_lumi_label,
+)
+from .render import (
     word_count as wc,
-    DG, GR, MU, R,
 )
 
 # Re-export for backward compatibility

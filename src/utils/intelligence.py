@@ -164,8 +164,19 @@ def _fallback_classification(text: str) -> dict:
     }
 
 
-_DEBUG_WORDS = ("traceback", "error:", "exception:", "attributeerror", "typeerror",
-                "syntaxerror", "valueerror", "keyerror", "indexerror")
+_DEBUG_WORDS = (
+    "traceback",
+    "error",
+    "exception",
+    "debug",
+    "bug",
+    "attributeerror",
+    "typeerror",
+    "syntaxerror",
+    "valueerror",
+    "keyerror",
+    "indexerror",
+)
 
 
 def _is_debug_query(text: str) -> bool:
@@ -182,9 +193,7 @@ def _is_high_confidence(text: str, fallback: dict) -> bool:
         return True
     if intent == "search" and should_search(text):
         return True
-    if intent == "chat" and len(text.split()) <= 5:
-        return True
-    return False
+    return bool(intent == "chat" and len(text.split()) <= 5)
 
 
 def classify_request(text: str, client, model: str) -> dict:

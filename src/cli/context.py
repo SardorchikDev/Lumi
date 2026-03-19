@@ -5,16 +5,13 @@ Contains all the mutable state that commands need to access.
 """
 
 from __future__ import annotations
-from typing import Any, Optional, Callable
-import os
-import sys
+
 import pathlib
 
-from src.chat.hf_client import get_client, get_provider, set_provider, get_models
-from src.memory.short_term import ShortTermMemory
-from src.memory.conversation_store import save as save_session
-from src.prompts.builder import load_persona, build_system_prompt
+from src.chat.hf_client import get_client, get_models, get_provider, set_provider
 from src.memory.longterm import get_persona_override
+from src.memory.short_term import ShortTermMemory
+from src.prompts.builder import load_persona
 
 
 class SessionContext:
@@ -29,12 +26,12 @@ class SessionContext:
         self.system_prompt: str = ""
         self.turns: int = 0
         self.multiline: bool = False
-        self.last_msg: Optional[str] = None
-        self.last_reply: Optional[str] = None
-        self.prev_reply: Optional[str] = None
-        self.response_mode: Optional[str] = None
+        self.last_msg: str | None = None
+        self.last_reply: str | None = None
+        self.prev_reply: str | None = None
+        self.response_mode: str | None = None
         self.current_theme: str = "default"
-        self.max_turns: Optional[int] = None
+        self.max_turns: int | None = None
 
         # Derived state
         self.persona = load_persona()
@@ -53,8 +50,8 @@ class SessionContext:
 
     def update_system_prompt(self) -> None:
         """Rebuild system prompt based on current persona and overrides."""
-        from src.prompts.builder import build_system_prompt as build_sp
         from src.memory.longterm import build_memory_block
+        from src.prompts.builder import build_system_prompt as build_sp
         merged = {**self.persona, **(self.persona_override or {})}
         mem = build_memory_block()
         self.system_prompt = build_sp(merged, mem, False, False)

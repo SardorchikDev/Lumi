@@ -14,7 +14,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import difflib
-import itertools
 import json
 import os
 import pathlib
@@ -36,7 +35,7 @@ from src.chat.hf_client import (
     get_provider,
     set_provider,
 )
-from src.config import LUMI_HOME, PLUGINS_DIR, SESSIONS_DIR, ensure_dirs
+from src.config import PLUGINS_DIR, SESSIONS_DIR, ensure_dirs
 from src.memory.conversation_store import list_sessions, load_by_name, load_latest, save
 from src.memory.longterm import (
     add_fact,
@@ -46,7 +45,6 @@ from src.memory.longterm import (
     clear_persona_override,
     get_facts,
     get_persona_override,
-    get_related_episodes,
     remove_fact,
     set_persona_override,
 )
@@ -116,34 +114,36 @@ def make_system_prompt(
 
 
 # ── ANSI reset ────────────────────────────────────────────────────────────────
-from src.cli.render import R, B, D
-
 # ── Theme globals (populated by reload_theme) ─────────────────────────────────
-from src.cli.render import C1, C2, C3, PU, BL, CY, GR, DG, MU, GN, RE, YE, WH
-
-# ── Terminal helpers ──────────────────────────────────────────────────────────
 from src.cli.render import (
-    terminal_width as W,
-    clear_screen as clear,
-    current_time as ts,
-    word_count as wc,
-    ok,
+    BL,
+    C2,
+    CY,
+    DG,
+    GN,
+    GR,
+    MU,
+    PU,
+    RE,
+    WH,
+    YE,
+    B,
+    R,
+    Spinner,
+    div,
+    draw_header,
     fail,
     info,
-    warn,
-    div,
-    reload_theme,
-    draw_header,
-    print_you,
+    ok,
     print_lumi_label,
     print_welcome,
-    Spinner,
-    provider_color as _pcolor,
-    visual_length as _vlen,
-    center_visual as _center,
-    PROV_COL,
-    LOGO,
-    LOGO_WIDTH as LOGO_W,
+    print_you,
+    reload_theme,
+    terminal_width,
+    warn,
+)
+from src.cli.render import (
+    word_count as wc,
 )
 
 reload_theme()
@@ -168,7 +168,7 @@ reload_theme()
 # ── Help ──────────────────────────────────────────────────────────────────────
 
 def print_help() -> None:
-    w    = W()
+    w    = terminal_width()
     line = f"  {DG}{'─' * (w - 4)}{R}"
 
     def section(title: str) -> None:
@@ -433,6 +433,8 @@ def stream_and_render(
     if model == "council":
         from src.agents.council import (
             _get_available_agents as _gav,
+        )
+        from src.agents.council import (
             council_ask as _ca,
         )
         user_q = next(
@@ -992,7 +994,7 @@ def cmd_find(keyword: str) -> None:
     for fname, role, snippet in hits[:20]:
         label = f"{PU}Lumi{R}" if role == "assistant" else f"{BL}you{R}"
         print(f"  {DG}{fname}{R}  {label}")
-        print(f"{GR}{textwrap.fill(snippet, W()-6, initial_indent='    ', subsequent_indent='    ')}{R}\n")
+        print(f"{GR}{textwrap.fill(snippet, terminal_width()-6, initial_indent='    ', subsequent_indent='    ')}{R}\n")
 
 
 # ── /persona ──────────────────────────────────────────────────────────────────
@@ -2528,7 +2530,7 @@ def main() -> None:  # noqa: C901
                 print(f"  {CY}{i}.{R}  {WH}{r['title']}{R}")
                 print(f"      {MU}{r['url']}{R}")
                 if r.get("snippet"):
-                    print(f"{GR}{textwrap.fill(r['snippet'], W()-8, initial_indent='      ', subsequent_indent='      ')}{R}")
+                    print(f"{GR}{textwrap.fill(r['snippet'], terminal_width()-8, initial_indent='      ', subsequent_indent='      ')}{R}")
                 print()
             ctx = search(query, fetch_top=True)
             memory.add("user", f"I searched for: {query}\n\n{ctx}\n\nSummarize the key findings briefly.")

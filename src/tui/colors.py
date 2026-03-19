@@ -1,7 +1,6 @@
 """
 Centralized color definitions for Lumi TUI.
 """
-import re
 
 ESC = "\033"
 CSI = ESC + "["

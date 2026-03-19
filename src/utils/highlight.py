@@ -6,16 +6,13 @@ Maps Pygments tokens to Lumi TUI colors.
 from __future__ import annotations
 
 try:
-    from pygments import lexers, token
-    from pygments.lexers import get_lexer_by_name, guess_lexer, TextLexer
+    from pygments import token
+    from pygments.lexers import TextLexer, get_lexer_by_name, guess_lexer
     HAS_PYGMENTS = True
 except ImportError:
     HAS_PYGMENTS = False
 
-from src.tui.colors import (
-    FG_HI, FG_DIM, PURPLE, YELLOW, COMMENT, ORANGE,
-    BLUE, CYAN, B, _fg, R, _italic, BG_DARK, _bg
-)
+from src.tui.colors import BLUE, COMMENT, CYAN, FG_DIM, FG_HI, ORANGE, PURPLE, YELLOW, B, R, _fg, _italic
 
 if HAS_PYGMENTS:
     TOKEN_COLORS = {
@@ -43,15 +40,17 @@ def _get_color(ttype):
     # Fast path
     if ttype in TOKEN_COLORS:
         return TOKEN_COLORS[ttype]
-    
+
     # Walk up the parent chain
     curr = ttype
     while curr is not None:
         if curr in TOKEN_COLORS:
             return TOKEN_COLORS[curr]
         curr = curr.parent
-        
+
     return _fg(FG_HI)
+
+
 
 def highlight_line(code: str, lang: str = "") -> str:
     """
@@ -96,10 +95,10 @@ def highlight_line(code: str, lang: str = "") -> str:
         # That's what we want!
         # What about `token.Text`? It usually means whitespace or plain text.
         # We need to explicitly color it FG_HI so it doesn't inherit the previous token's color.
-        
+
         c = _get_color(ttype)
         out += c + value
-        
+
     # We explicitly return R at the end so the caller knows we are done with colors,
     # although the caller appends `_bg(BG_DARK)` right after, which sets BG but maybe not FG?
     # The caller appends `+ R` at the very end of the line.
@@ -123,7 +122,7 @@ def highlight_line(code: str, lang: str = "") -> str:
     # So the old regex code produced "striped" backgrounds (Dark, Default, Dark, Default...).
     # If I want to fix this, I should NOT emit R.
     # Instead, I should emit `_fg(FG_HI)` for plain text.
-    
+
     return out + R
 
 
