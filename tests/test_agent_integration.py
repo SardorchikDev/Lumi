@@ -112,3 +112,22 @@ def test_run_agent_surfaces_make_plan_error(monkeypatch, tmp_path):
     client = SequenceClient(["not json at all"])
     summary = run_agent("do something", client, "fake-model", DummyMemory(), "system", yolo=True)
     assert summary.startswith("Could not generate plan:")
+
+
+def test_run_agent_auto_appends_verification_for_mutations(monkeypatch, tmp_path, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "tests").mkdir()
+    client = SequenceClient(
+        [
+            """
+            [
+              {"type": "file_write", "path": "notes.txt", "content": "done\\n", "description": "Write notes"}
+            ]
+            """
+        ]
+    )
+    summary = run_agent("write notes", client, "fake-model", DummyMemory(), "system", yolo=True)
+    captured = capsys.readouterr().out
+    assert "Plan  (2 steps)" in captured
+    assert "Verify the workspace after changes" in captured
+    assert summary.startswith("Agent completed")

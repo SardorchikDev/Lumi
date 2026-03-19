@@ -40,6 +40,7 @@ MAX_DIFF_CHARS = 4000
 MAX_READ_CHARS = 4000
 MAX_CONTEXT_FILES = 6
 MAX_CONTEXT_FILE_CHARS = 1200
+MAX_CONTEXT_MATCHES = 8
 
 SAFE_ACTIONS = {
     "list_dir",
@@ -234,6 +235,41 @@ def _read_context_file(path: Path, base_dir: Path) -> str:
     return f"## {path.relative_to(base_dir)}\n{text}"
 
 
+def _task_keywords(task: str) -> list[str]:
+    words = re.findall(r"[a-zA-Z_][a-zA-Z0-9_.-]{2,}", task.lower())
+    stop = {"the", "and", "for", "with", "into", "from", "that", "this", "add", "make", "build", "update"}
+    return [word for word in words if word not in stop][:8]
+
+
+def _search_relevant_paths(base_dir: Path, task: str) -> list[Path]:
+    keywords = _task_keywords(task)
+    if not keywords:
+        return []
+    matches: list[tuple[int, Path]] = []
+    for path in base_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        if any(part in {".git", "__pycache__", "node_modules", "venv", ".venv"} for part in path.parts):
+            continue
+        score = 0
+        lower_name = str(path.relative_to(base_dir)).lower()
+        for word in keywords:
+            if word in lower_name:
+                score += 3
+        if score == 0:
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")[:4000].lower()
+            except OSError:
+                continue
+            for word in keywords:
+                if word in text:
+                    score += 1
+        if score:
+            matches.append((score, path))
+    matches.sort(key=lambda item: (-item[0], str(item[1])))
+    return [path for _, path in matches[:MAX_CONTEXT_MATCHES]]
+
+
 def collect_planning_context(task: str, base_dir: Path | None = None) -> str:
     """Gather lightweight repo facts before asking the model to plan."""
     base_dir = (base_dir or Path.cwd()).resolve()
@@ -265,12 +301,47 @@ def collect_planning_context(task: str, base_dir: Path | None = None) -> str:
             lines.append(_read_context_file(path, base_dir))
             lines.append("")
 
+    relevant_paths = _search_relevant_paths(base_dir, task)
+    if relevant_paths:
+        lines.append("Likely relevant files:")
+        for path in relevant_paths:
+            lines.append(f"- {path.relative_to(base_dir)}")
+        lines.append("")
+
     git_ok, git_status = _run_command(["git", "status", "--short"], base_dir, timeout=15)
     if git_ok or "not a git repository" not in git_status.lower():
         lines.append("Git status:")
         lines.append(git_status or "(clean)")
 
     return "\n".join(lines).strip()
+
+
+def _append_verification_step(steps: list[dict], base_dir: Path) -> list[dict]:
+    has_mutation = any(
+        step.get("type") == "file_write"
+        or (step.get("type") == "action" and step.get("action") in FILE_MUTATION_ACTIONS | DIR_MUTATION_ACTIONS)
+        for step in steps
+    )
+    has_verification = any(
+        step.get("type") == "action" and step.get("action") in VERIFY_ACTIONS
+        for step in steps
+    )
+    if not has_mutation or has_verification:
+        return steps
+
+    verify_action = "run_tests" if (base_dir / "tests").exists() else "run_ruff"
+    if verify_action == "run_ruff" and not (base_dir / "pyproject.toml").exists():
+        return steps
+
+    step = {
+        "id": len(steps) + 1,
+        "description": "Verify the workspace after changes",
+        "type": "action",
+        "action": verify_action,
+        "target": ".",
+        "risky": False,
+    }
+    return steps + [step]
 
 
 def _infer_action_from_step(step: dict) -> str:
@@ -394,7 +465,11 @@ def make_plan(task: str, client: Any, model: str, base_dir: Path | None = None) 
         raw = resp.choices[0].message.content.strip()
         raw = re.sub(r"^```[a-z]*\n?", "", raw)
         raw = re.sub(r"\n?```$", "", raw).strip()
-        return normalize_plan(json.loads(raw))
+        normalized = normalize_plan(json.loads(raw))
+        normalized = _append_verification_step(normalized, base_dir)
+        for index, step in enumerate(normalized, start=1):
+            step["id"] = index
+        return normalized
     except Exception as exc:
         raise RuntimeError(f"Could not generate plan: {exc}") from exc
 

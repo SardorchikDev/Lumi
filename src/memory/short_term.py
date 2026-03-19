@@ -36,6 +36,11 @@ class ShortTermMemory:
         with self._lock:
             self._history = []
 
+    def snapshot(self) -> list[dict[str, str]]:
+        """Return a copy for callers that need an isolated snapshot."""
+        with self._lock:
+            return list(self._history)
+
     # ── Mutation helpers (replaces direct _history access) ───────────────────
 
     def pop_last(self) -> dict[str, str] | None:
@@ -60,10 +65,27 @@ class ShortTermMemory:
             if n > 0 and self._history:
                 self._history = self._history[:-n] if len(self._history) >= n else []
 
+    def remove_last_exchange(self) -> bool:
+        """Remove the most recent user/assistant pair if present."""
+        with self._lock:
+            if len(self._history) < 2:
+                return False
+            self._history = self._history[:-2]
+            return True
+
     def set_history(self, history: list[dict[str, str]]) -> None:
         """Replace the entire history (e.g. when loading a saved session)."""
         with self._lock:
             self._history = list(history)
+
+    def replace_with_summary(self, summary: str, tail_messages: int = 4) -> bool:
+        """Compress history into a summary plus the most recent messages."""
+        if not summary.strip():
+            return False
+        with self._lock:
+            tail = self._history[-tail_messages:] if tail_messages > 0 else []
+            self._history = [{"role": "system", "content": f"[Summary]: {summary.strip()}"}] + tail
+            return True
 
     def append_to_last(self, chunk: str) -> None:
         """Append *chunk* to the content of the last message (streaming helper)."""

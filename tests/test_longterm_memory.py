@@ -15,6 +15,7 @@ from src.memory.longterm import (
     get_persona_override,
     remove_fact,
     set_persona_override,
+    update_fact,
 )
 
 
@@ -55,6 +56,17 @@ class TestFactMemory:
         add_fact("  padded fact  ")
         facts = get_facts()
         assert facts[0] == "padded fact"
+
+    def test_add_fact_dedupes_case_insensitively(self):
+        add_fact("User prefers Python")
+        count = add_fact("user prefers python")
+        assert count == 1
+        assert get_facts() == ["User prefers Python"]
+
+    def test_update_fact_rewrites_existing_value(self):
+        add_fact("old fact")
+        assert update_fact(0, "new fact") is True
+        assert get_facts() == ["new fact"]
 
     def test_remove_fact_valid_index(self):
         add_fact("keep me")

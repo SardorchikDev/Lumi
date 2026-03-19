@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import pickle
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -26,16 +28,45 @@ def _load() -> dict[str, Any]:
 
 def _save(data: dict[str, Any]) -> None:
     MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-    MEMORY_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    serialized = json.dumps(data, indent=2, ensure_ascii=False)
+    with tempfile.NamedTemporaryFile("w", delete=False, dir=MEMORY_FILE.parent, encoding="utf-8") as handle:
+        handle.write(serialized)
+        temp_name = handle.name
+    tempfile_path = Path(temp_name)
+    tempfile_path.replace(MEMORY_FILE)
 
 def get_facts() -> list[str]:
     return _load().get("facts", [])
 
 def add_fact(fact: str) -> int:
     data = _load()
-    data["facts"].append(fact.strip())
+    normalized = " ".join(fact.strip().split())
+    if not normalized:
+        return len(data["facts"])
+    existing = {item.casefold() for item in data.get("facts", [])}
+    if normalized.casefold() not in existing:
+        data["facts"].append(normalized)
     _save(data)
     return len(data["facts"])
+
+
+def update_fact(idx: int, fact: str) -> bool:
+    data = _load()
+    facts = data.get("facts", [])
+    normalized = " ".join(fact.strip().split())
+    if not normalized or not (0 <= idx < len(facts)):
+        return False
+    facts[idx] = normalized
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in facts:
+        key = item.casefold()
+        if key not in seen:
+            deduped.append(item)
+            seen.add(key)
+    data["facts"] = deduped
+    _save(data)
+    return True
 
 def remove_fact(idx: int) -> bool:
     data = _load()
@@ -114,8 +145,11 @@ def save_episode(summary: str, vector: np.ndarray) -> None:
 
     episodes[summary] = vector
 
-    with open(EPISODIC_DB_PATH, "wb") as f:
-        pickle.dump(episodes, f)
+    with tempfile.NamedTemporaryFile("wb", delete=False, dir=EPISODIC_DB_PATH.parent) as handle:
+        pickle.dump(episodes, handle)
+        temp_name = handle.name
+    tempfile_path = Path(temp_name)
+    tempfile_path.replace(EPISODIC_DB_PATH)
 
 SUMMARIZE_PROMPT = """You are a summarization agent. Read the following conversation and create a concise, one-paragraph summary of what was discussed and accomplished. Focus on the key topics, decisions, and outcomes.
 
@@ -161,4 +195,3 @@ def auto_summarize_and_save(history: list[dict[str, str]], client: Any, model: s
 
     except Exception as e:
         print(f"\n  [memory] Failed to save session summary: {e}")
-

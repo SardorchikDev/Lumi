@@ -14,6 +14,8 @@ import urllib.request
 
 from openai import OpenAI
 
+from src.chat.providers import get_configured_providers, pick_default_provider
+
 # ── Model lists ───────────────────────────────────────────────────────────────
 
 # ── Gemini models — paid API, smartest first ──────────────────────────────────
@@ -448,19 +450,9 @@ def get_provider() -> str:
     global _active_provider
     if _active_provider:
         return _active_provider
-    # Auto-detect from available keys
-    if os.getenv("HF_TOKEN"):            return "huggingface"
-    if os.getenv("GEMINI_API_KEY"):      return "gemini"
-    if os.getenv("GROQ_API_KEY"):        return "groq"
-    if os.getenv("OPENROUTER_API_KEY"):  return "openrouter"
-    if os.getenv("MISTRAL_API_KEY"):     return "mistral"
-    if os.getenv("GITHUB_API_KEY"):      return "github"
-    if os.getenv("COHERE_API_KEY"):      return "cohere"
-    if os.getenv("BYTEZ_API_KEY"):       return "bytez"
-    if os.getenv("VERCEL_API_KEY"):         return "vercel"
-    if os.getenv("CLOUDFLARE_API_KEY") and os.getenv("CLOUDFLARE_ACCOUNT_ID"): return "cloudflare"
-    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS") and os.getenv("VERTEX_PROJECT_ID"): return "vertex"
-    if _has_ollama():                    return "ollama"
+    detected = pick_default_provider(has_ollama=_has_ollama())
+    if detected:
+        return detected
     raise OSError(
         "No API key found in .env\n"
         "  GEMINI_API_KEY=...      https://aistudio.google.com/apikey\n"
@@ -487,20 +479,7 @@ def set_provider(provider: str):
 
 def get_available_providers() -> list:
     """Return list of providers that have a key configured."""
-    providers = []
-    if os.getenv("GEMINI_API_KEY"):      providers.append("gemini")
-    if os.getenv("GROQ_API_KEY"):        providers.append("groq")
-    if os.getenv("OPENROUTER_API_KEY"):  providers.append("openrouter")
-    if os.getenv("MISTRAL_API_KEY"):     providers.append("mistral")
-    if os.getenv("HF_TOKEN"):            providers.append("huggingface")
-    if os.getenv("GITHUB_API_KEY"):      providers.append("github")
-    if os.getenv("COHERE_API_KEY"):      providers.append("cohere")
-    if os.getenv("BYTEZ_API_KEY"):       providers.append("bytez")
-    if os.getenv("VERCEL_API_KEY"):         providers.append("vercel")
-    if os.getenv("CLOUDFLARE_API_KEY") and os.getenv("CLOUDFLARE_ACCOUNT_ID"): providers.append("cloudflare")
-    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS") and os.getenv("VERTEX_PROJECT_ID"): providers.append("vertex")
-    if _has_ollama():                    providers.append("ollama")
-    return providers
+    return get_configured_providers(has_ollama=_has_ollama())
 
 
 def _make_client(provider: str) -> OpenAI:

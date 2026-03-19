@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import re
-import select
 import shutil
 import signal
 import subprocess
@@ -53,10 +52,7 @@ from src.chat.hf_client import (
     get_provider,
     set_provider,
 )
-from src.memory.conversation_store import (
-    load_by_name,
-    load_latest,
-)
+from src.memory.conversation_store import load_by_name, load_latest
 from src.memory.conversation_store import (
     save as session_save,
 )
@@ -75,6 +71,8 @@ from src.prompts.builder import (
     load_persona,
 )
 from src.tools.search import search, search_display
+from src.tui.input import InputHistory, read_key
+from src.tui.state import AgentState, Msg, Store
 from src.utils.autoremember import auto_extract_facts
 from src.utils.filesystem import generate_file_plan, is_create_request
 from src.utils.intelligence import (
@@ -154,7 +152,7 @@ def _rule(width, label=""):
     return _fg(BORDER) + "─" * left + R + _fg(MUTED) + plain + R + _fg(BORDER) + "─" * right + R
 
 def _popup_frame(top, left, width, title=""):
-    header = _move(top, left) + _fg(BORDER) + "┌" + "─" * (width - 2) + "┐" + R
+    header = _move(top, left) + _fg(BORDER) + " " + "─" * (width - 2) + " " + R
     if title:
         title_text = f" {title} "
         title_len = min(len(title_text), max(0, width - 4))
@@ -169,9 +167,9 @@ def _popup_line(row, left, width, content="", tone=FG_DIM, selected=False):
     bg = _bg(BG_HL if selected else BG_POP)
     return (
         _move(row, left)
-        + _fg(BORDER) + "│ " + R
+        + _fg(BORDER) + "  " + R
         + bg + _fg(tone) + plain + " " * max(0, inner_w - len(plain)) + R
-        + _fg(BORDER) + " │" + R
+        + _fg(BORDER) + "  " + R
     )
 
 def _rule(width, label=""):
@@ -234,83 +232,7 @@ def _syntax_hi(line):
 #  Robust OS Controls (UTF-8 Compatible / Resize Handling)
 # ══════════════════════════════════════════════════════════════════════════════
 def _read_key():
-    fd = sys.stdin.fileno()
-    while True:
-        try:
-            ch = os.read(fd, 1)
-            if not ch: return ""
-            if ch == b"\x1b":
-                r, _, _ = select.select([fd], [],[], 0.05)
-                if r:
-                    seq = os.read(fd, 16)
-                    full = ch + seq
-                    if full.startswith(b"\x1b["):
-                        if full.endswith(b"A"):
-                            if b";2" in full or b"[a" in full:
-                                return "SHIFT_UP"
-                            if b";5" in full:
-                                return "CTRL_UP"
-                            return "UP"
-                        if full.endswith(b"B"):
-                            if b";2" in full or b"[b" in full:
-                                return "SHIFT_DOWN"
-                            if b";5" in full:
-                                return "CTRL_DOWN"
-                            return "DOWN"
-                        if full.endswith(b"C"):
-                            if b";5" in full:
-                                return "CTRL_RIGHT"
-                            return "RIGHT"
-                        if full.endswith(b"D"):
-                            if b";5" in full:
-                                return "CTRL_LEFT"
-                            return "LEFT"
-                        if full.endswith(b"H"): return "HOME"
-                        if full.endswith(b"F"): return "END"
-                        if full.endswith(b"~"):
-                            if b"[3~" in full: return "DELETE"
-                            if b"[5~" in full: return "PGUP"
-                            if b"[6~" in full: return "PGDN"
-                    if full == b"\x1b[A": return "UP"
-                    if full == b"\x1b[B": return "DOWN"
-                    if full == b"\x1b[C": return "RIGHT"
-                    if full == b"\x1b[D": return "LEFT"
-                    if full == b"\x1b[1;2A": return "SHIFT_UP"
-                    if full == b"\x1b[1;2B": return "SHIFT_DOWN"
-                    if full == b"\x1b[1;5A": return "CTRL_UP"
-                    if full == b"\x1b[1;5B": return "CTRL_DOWN"
-                    if full == b"\x1b[H": return "HOME"
-                    if full == b"\x1b[F": return "END"
-                    if full == b"\x1b[3~": return "DELETE"
-                    if full == b"\x1b[5~": return "PGUP"
-                    if full == b"\x1b[6~": return "PGDN"
-                    if full == b"\x1b[1;5C": return "CTRL_RIGHT"
-                    if full == b"\x1b[1;5D": return "CTRL_LEFT"
-                    return ""
-                return "ESC"
-
-            if ch in (b"\r", b"\n"): return "ENTER"
-            if ch in (b"\x7f", b"\x08"): return "BACKSPACE"
-            if ch == b"\x09": return "TAB"
-            if ch == b"\x0c": return "CTRL_L"
-            if ch == b"\x11": return "CTRL_Q"
-            if ch == b"\x03": return "CTRL_C"
-            if ch == b"\x0e": return "CTRL_N"
-            if ch == b"\x17": return "CTRL_W"
-            if ch == b"\x01": return "HOME"
-            if ch == b"\x05": return "END"
-            if ch == b"\x15": return "CTRL_U"
-            if ch == b"\x12": return "CTRL_R"
-
-            buf = ch
-            while True:
-                try: return buf.decode("utf-8")
-                except UnicodeDecodeError:
-                    r, _, _ = select.select([fd], [],[], 0.1)
-                    if r: buf += os.read(fd, 1)
-                    else: return ""
-        except InterruptedError:
-            continue
+    return read_key(sys.stdin.fileno())
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Command Infrastructure
@@ -318,44 +240,51 @@ def _read_key():
 class CommandRegistry:
     def __init__(self):
         self.commands = {}
-    def register(self, name, desc):
+    def register(self, name, desc, aliases=None):
         def decorator(func):
-            self.commands[name] = {"func": func, "desc": desc}
+            self.commands[name] = {
+                "func": func,
+                "desc": desc,
+                "category": self._infer_category(name),
+                "aliases": tuple(aliases or ()),
+            }
+            for alias in aliases or ():
+                self.commands[alias] = {
+                    "func": func,
+                    "desc": f"{desc} (alias)",
+                    "category": self._infer_category(name),
+                    "aliases": (),
+                }
             return func
         return decorator
+
+    def _infer_category(self, name):
+        if name in {"/model", "/theme", "/persona", "/mode", "/offline", "/plugins", "/quit", "/exit"}:
+            return "settings"
+        if name in {"/agent", "/scaffold", "/edit", "/review", "/fix", "/debug", "/improve", "/optimize", "/security", "/refactor", "/test", "/explain"}:
+            return "code"
+        if name in {"/search", "/web", "/image", "/data", "/pdf", "/rag", "/index"}:
+            return "research"
+        if name in {"/remember", "/memory", "/forget", "/save", "/load", "/sessions", "/export", "/find", "/note", "/todo"}:
+            return "memory"
+        if name in {"/browse", "/fs", "/file", "/project", "/shell", "/grep", "/tree", "/lint", "/fmt", "/run", "/apply", "/pane"}:
+            return "workspace"
+        return "chat"
+
     def get_hits(self, query):
-        return [(cmd, data["desc"]) for cmd, data in self.commands.items() if query in cmd]
+        q = query.lower().strip()
+        hits = []
+        seen = set()
+        for cmd, data in self.commands.items():
+            if cmd in seen:
+                continue
+            if q in cmd.lower() or q in data["desc"].lower():
+                hits.append((cmd, data["desc"], data.get("category", "chat")))
+                seen.add(cmd)
+        hits.sort(key=lambda item: (0 if item[0].startswith(q) else 1, item[2], item[0]))
+        return [(cmd, f"[{category}] {desc}") for cmd, desc, category in hits]
 
 registry = CommandRegistry()
-
-class Msg:
-    __slots__ = ("role", "text", "ts", "label")
-    def __init__(self, role, text, label=""):
-        self.role, self.text, self.ts, self.label = role, text, _hm(), label
-
-class Store:
-    def __init__(self):
-        self._lock, self._data = threading.Lock(),[]
-    def add(self, m):
-        with self._lock: self._data.append(m); return len(self._data) - 1
-    def append(self, idx, chunk):
-        with self._lock: self._data[idx].text += chunk
-    def set_text(self, idx, text):
-        with self._lock: self._data[idx].text = text
-    def finalize(self, idx):
-        with self._lock:
-            if self._data[idx].role == "streaming": self._data[idx].role = "assistant"
-    def clear(self):
-        with self._lock: self._data.clear()
-    def snapshot(self):
-        with self._lock: return list(self._data)
-
-class AgentState:
-    def __init__(self, aid, name, lead=False):
-        self.aid, self.name, self.lead = aid, name, lead
-        self.st, self.conf, self.t, self.frame = "spin", "", "", 0
-    def done(self, ok, conf, t):
-        self.st, self.conf, self.t = ("ok" if ok else "fail"), conf, t
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  Rendering Graphics & Bounding Boxes
@@ -379,17 +308,22 @@ class Renderer:
 
         w(_hide_cur())
 
-        # Rows 1..2 = header, rows-1..rows = prompt area
-        # Chat occupies rows 3 .. rows-2
-        chat_rows = rows - 4
+        # Keep the top area quiet; the welcome panel owns the empty state.
+        w(_move(1, 1) + _bg(BG) + _erase_line())
+        w(_move(2, 1) + _bg(BG) + _erase_line())
 
-        # Draw top bar first
-        if not (self.tui.picker_visible or getattr(self.tui, "browser_visible", False)):
-            w(self._top_bar(rows, cols, chat_w))
-        else:
-            w(_move(1, 1) + _bg(BG) + _erase_line())
+        starter_lines = self._build_starter_lines(chat_w)
+        starter_rows = len(starter_lines)
+        for i, line in enumerate(starter_lines, start=3):
+            if i > rows:
+                break
+            w(_move(i, 1))
+            w(_bg(BG) + _erase_line() + line + _bg(BG))
 
-        # Build and render chat area (rows 3..rows-2)
+        transcript_top = 3 + starter_rows
+        chat_rows = max(0, rows - transcript_top + 1)
+
+        # Build and render chat area below the starter panel
         chat_lines = self._build_chat_lines(chat_w)
         total = len(chat_lines)
         offset = max(0, min(self.tui.scroll_offset, max(0, total - chat_rows)))
@@ -401,7 +335,7 @@ class Renderer:
             chat_lines.insert(0, "")
 
         for i in range(chat_rows):
-            w(_move(i + 3, 1))
+            w(_move(i + transcript_top, 1))
             cl = chat_lines[i] if i < len(chat_lines) else ""
 
             if pane_active:
@@ -421,80 +355,119 @@ class Renderer:
             else:
                 w(_bg(BG) + _erase_line() + cl + _bg(BG))
 
-        # Prompt area at bottom rows
-        if self.tui.picker_visible or getattr(self.tui, "browser_visible", False):
-            w(_move(rows - 1, 1) + _bg(BG) + _erase_line())
-            w(_move(rows, 1) + _bg(BG) + _erase_line())
-        else:
-            w(self._prompt_bar(rows, cols, chat_w))
+        # Clear any rows below the transcript region
+        for clear_row in range(transcript_top + chat_rows, rows + 1):
+            w(_move(clear_row, 1) + _bg(BG) + _erase_line())
 
         if getattr(self.tui, "browser_visible", False): w(self._browser_popup(rows, cols))
         if self.tui.slash_visible and self.tui.slash_hits: w(self._slash_popup(rows, cols))
         if self.tui.picker_visible and self.tui.picker_items: w(self._picker_popup(rows, cols))
         if self.tui.notification: w(self._notification_bar(rows, cols))
 
-        disp_w = chat_w - 7
+        inline_prefix = getattr(self.tui, "_inline_prompt_prefix", 4)
+        disp_w = max(10, chat_w - inline_prefix - 2)
         scroll = max(0, self.tui.cur_pos - disp_w + 1)
-        cur_col = 5 + (self.tui.cur_pos - scroll)
-
-        # Keep inside matrix range so automatic Line feeds don't kill buffer UI natively!
-        w(_move(rows, min(cur_col, cols - 1)))
+        cur_col = inline_prefix + self.tui.cur_pos - scroll
+        cursor_row = min(rows, 3 + getattr(self.tui, "_inline_prompt_row", 0))
+        w(_move(cursor_row, min(cur_col, cols - 1)))
         w(_show_cur())
 
         sys.stdout.write("".join(buf))
         sys.stdout.flush()
+
+    def _build_starter_lines(self, width):
+        if not getattr(self.tui, "show_starter_panel", True):
+            txt = self.tui.buf
+            prompt_prefix = " " * 4
+            disp_w = max(10, width - len(prompt_prefix) - 4)
+            scroll = max(0, self.tui.cur_pos - disp_w + 1)
+            shown = txt[scroll:scroll + disp_w]
+            lines = ["", ""]
+            if self.tui.busy:
+                frame = int(time.time() * 10) % len(SPINNER_FRAMES)
+                sym = _fg(CYAN) + SPINNER_FRAMES[frame] + " " + R
+                tail = _fg(MUTED) + _italic() + "thinking softly" + R if not shown else ""
+            else:
+                sym = _fg(FG_HI) + _bold() + "> " + R
+                tail = _fg(MUTED) + "say something nice" + R if not shown else ""
+            lines.append(prompt_prefix + sym + _fg(FG_HI) + shown + tail + R)
+            self.tui._inline_prompt_row = len(lines) - 1
+            self.tui._inline_prompt_prefix = len(prompt_prefix) + 3
+            lines.append("")
+            return lines
+
+        provider = PROV_NAME.get(self.tui.current_model if self.tui.current_model == "council" else get_provider(), get_provider())
+        model = self.tui.current_model.split("/")[-1][:24]
+        cwd = os.getcwd()
+        cwd_short = cwd if len(cwd) <= 28 else "..." + cwd[-25:]
+        panel_w = min(max(74, width - 10), 108)
+        panel_pad = " " * max(2, (width - panel_w - 2) // 2)
+        left_w = max(28, panel_w // 2)
+        right_w = panel_w - left_w - 1
+
+        border = _fg(BORDER)
+        lines = []
+
+        def pad(text, width_):
+            return text[:width_].ljust(width_)
+
+        def center(text, width_):
+            return text[:width_].center(width_)
+
+        def row(left="", right="", left_tone=FG_HI, right_tone=FG_HI):
+            return (
+                panel_pad
+                + border + "│" + R
+                + " " + _fg(left_tone) + pad(left, left_w - 2) + R + " "
+                + border + "│" + R
+                + " " + _fg(right_tone) + pad(right, right_w - 2) + R + " "
+                + border + "│" + R
+            )
+
+        logo = "[˶ᵔ ᵕ ᵔ˶]"
+        recent_commands = [cmd for cmd in getattr(self.tui, "recent_commands", []) if cmd]
+        recent_items = ["little notes"] + recent_commands[:3]
+        while len(recent_items) < 4:
+            recent_items.append("")
+        help_items = ["", "", "", ""]
+
+        lines.append(panel_pad + border + "╭" + "─" * panel_w + "╮" + R)
+        lines.append(row(center("welcome to lumi", left_w - 2), center(recent_items[0], right_w - 2), FG_HI, FG_HI))
+        lines.append(row("", recent_items[1], FG_DIM, FG_DIM))
+        lines.append(row(center(logo, left_w - 2), recent_items[2], FG_HI, FG_DIM))
+        lines.append(row("", recent_items[3], FG_DIM, FG_DIM))
+        lines.append(row("", ""))
+        lines.append(row(center(f"{provider}  ·  {model}", left_w - 2), center(help_items[0], right_w - 2), MUTED, FG_HI))
+        lines.append(row(center(cwd_short, left_w - 2), help_items[1], MUTED, FG_DIM))
+        lines.append(row("", help_items[2], FG_DIM, FG_DIM))
+        lines.append(row("", help_items[3], FG_DIM, FG_DIM))
+        lines.append(panel_pad + border + "╰" + "─" * panel_w + "╯" + R)
+        lines.append("")
+        lines.append("")
+
+        txt = self.tui.buf
+        disp_w = width - 7
+        scroll = max(0, self.tui.cur_pos - disp_w + 1)
+        shown = txt[scroll:scroll + disp_w]
+        if self.tui.busy:
+            frame = int(time.time() * 10) % len(SPINNER_FRAMES)
+            sym = _fg(CYAN) + SPINNER_FRAMES[frame] + " " + R
+            tail = _fg(MUTED) + _italic() + "thinking softly" + R if not shown else ""
+        else:
+            sym = _fg(FG_HI) + _bold() + "> " + R
+            tail = _fg(MUTED) + "say something nice" + R if not shown else ""
+        prompt_prefix = panel_pad + "  "
+        lines.append(prompt_prefix + sym + _fg(FG_HI) + shown + tail + R)
+        self.tui._inline_prompt_row = len(lines) - 1
+        self.tui._inline_prompt_prefix = len(prompt_prefix) + 3
+        lines.append("")
+        return lines
 
     def _build_chat_lines(self, width):
         msgs = self.tui.store.snapshot()
         lines =[]
         inner = max(30, width - 8)
         if not msgs:
-            ver = "v0.3.4"
-
-            # ── Ant logo — top left, Tokyo Night colors ──────────────────────
-            #          ,
-            #         _o_
-            #    ._ ,'   `o'
-            # ----(_)      :       ^aNT
-            #     '  `.   .o
-            #          ~o~  `
-            #           '
-            P  = _fg(PURPLE)
-            C  = _fg(CYAN)
-            DM = _fg(MUTED)
-            ant = [
-                (DM + "         ,"  + R,),
-                (C  + "        _o_" + R,),
-                (P  + "   ._ ," + C + "'" + P + "   " + C + "`o'" + R,),
-                (DM + "----" + P + "(_)" + DM + "      :" + C + "       ^sAdI" + R,),
-                (P  + "    '  `" + DM + ".   .o" + R,),
-                (C  + "         ~o~  `" + R,),
-                (DM + "          '" + R,),
-            ]
-            # wordmark right of logo
-            word_row = 3   # row index to place "lumi" inline (0-based)
-
-            top_pad = max(1, (_term_size()[0] - 18) // 3)
-            lines.extend([""] * top_pad)
-            for i, row_tuple in enumerate(ant):
-                row_str = row_tuple[0]
-                if i == word_row:
-                    row_str = row_str  # already has ^aNT embedded
-                lines.append(" " * 8 + row_str)
-
-            lines.append("")
-            lines.append(
-                " " * 8 + _fg(FG_HI) + _bold() + "lumi" + R +
-                _fg(MUTED) + "  terminal workspace" + R
-            )
-            provider = PROV_NAME.get(self.tui.current_model if self.tui.current_model == "council" else get_provider(), get_provider())
-            model = self.tui.current_model.split("/")[-1][:24]
-            lines.append(" " * 8 + _fg(MUTED) + ver + "  ·  " + provider + "  ·  " + model + R)
-            lines.append(" " * 8 + _fg(FG_DIM) + "/help  ·  /mode  ·  /search" + R)
-            lines.append("")
-            # fill rest with empty lines
-            chat_rows = _term_size()[0] - 4
-            lines += [""] * max(0, chat_rows - len(lines))
             return lines
 
         # Optional pinned agent plan panel (from /agent)
@@ -511,11 +484,10 @@ class Renderer:
 
         for msg in msgs:
             if msg.role == "user":
-                u_rail = _fg(BLUE) + "│" + R
-                lines.append("  " + u_rail + " " + _fg(MUTED) + "you" + R + "  " + _fg(COMMENT) + msg.ts + R)
+                rail = _fg(BORDER) + "|" + R
+                lines.append("  " + rail + " " + _fg(MUTED) + "you" + R)
                 for ln in textwrap.wrap(msg.text, inner) or [msg.text]:
-                    lines.append("  " + u_rail + " " + _fg(FG_HI) + ln + R)
-                lines.append("  " + _fg(BORDER) + "┈" * max(8, min(inner, 30)) + R)
+                    lines.append("  " + rail + " " + _fg(FG_HI) + ln + R)
                 lines.append("")
 
             elif msg.role in ("assistant", "streaming"):
@@ -530,20 +502,17 @@ class Renderer:
                     cursor = ""
 
                 if self.tui.vessel_mode and self.tui.active_vessel:
-                    rail_col = RED
                     hdr_col = _fg(RED) + _bold()
                     if "vessel" not in label:
                         label = f"vessel [{self.tui.active_vessel}]"
                 else:
-                    rail_col = CYAN
                     hdr_col = _fg(FG_HI) + _bold()
 
-                a_rail = _fg(rail_col) + "│" + R
-                a_pre  = "  " + a_rail + " "
+                rail = _fg(BORDER) + "|" + R
+                a_pre  = "  " + rail + " "
                 lines.append(
-                    "  " + a_rail + " " +
-                    hdr_col + label + R +
-                    "  " + _fg(COMMENT) + msg.ts + R
+                    "  " + rail + " " +
+                    hdr_col + label + R
                 )
                 raw_lines = msg.text.split("\n") if msg.text else [""]
 
@@ -561,17 +530,14 @@ class Renderer:
                             bar_fill = "─" * max(0, code_w - len(lt) - 3)
                             lines.append(
                                 lpre +
-                                _fg(BORDER) + "┌─ " + R +
+                                _fg(BORDER) + "  " + R +
                                 lang_badge +
-                                _fg(BORDER) + " " + bar_fill + "┐" + R
+                                _fg(BORDER) + " " + bar_fill + R
                             )
                             _code_lineno = [0]  # mutable counter
                         else:
                             in_code = False
-                            bar_fill = "─" * max(0, code_w)
-                            lines.append(
-                                lpre + _fg(BORDER) + "└" + bar_fill + "┘" + R
-                            )
+                            lines.append(lpre)
                         continue
 
                     if in_code:
@@ -621,22 +587,21 @@ class Renderer:
                             for wl in (textwrap.wrap(_strip_ansi(ln), inner) or [ln]):
                                 lines.append(lpre + _fg(FG) + wl + R)
 
-                if in_code: lines.append(lpre + _bg(BG_POP) + _fg(RED) + "[STREAM PAUSED]" + " " * (code_w - 15) + R)
+                if in_code: lines.append(lpre + _bg(BG_POP) + _fg(RED) + "[stream paused]" + " " * (code_w - 15) + R)
                 if cursor: lines[-1] += cursor
 
-                lines.append("  " + _fg(BORDER) + "┈" * max(8, min(inner, 30)) + R)
                 lines.append("")
 
             elif msg.role == "system":
-                sys_rail = _fg(TEAL) + "│" + R
+                rail = _fg(BORDER) + "|" + R
                 for sln in msg.text.split("\n"):
                     for wl in (textwrap.wrap(sln, inner) if sln.strip() else [""]):
-                        lines.append("  " + sys_rail + " " + _fg(FG_DIM) + wl + R)
+                        lines.append("  " + rail + " " + _fg(FG_DIM) + wl + R)
                 lines.append("")
 
             elif msg.role == "error":
-                err_rail = _fg(RED) + "│" + R
-                lines.append("  " + err_rail + " " + _fg(RED) + "warning" + R + "  " + _fg(FG_HI) + msg.text + R)
+                rail = _fg(RED) + "|" + R
+                lines.append("  " + rail + " " + _fg(RED) + "warning" + R + "  " + _fg(FG_HI) + msg.text + R)
                 lines.append("")
 
         return lines
@@ -700,57 +665,32 @@ class Renderer:
                 names_plain.append(nm)
                 rail_segments.append(_fg(col) + ico + " " + nm + R)
             stat_str     = "Council " + " ".join(names_plain) + mode
-            stat_colored = _fg(COMMENT) + "council" + _fg(FG_DIM) + " · " + _fg(FG) + "  ".join(rail_segments) + R
+            stat_colored = _fg(COMMENT) + "council" + _fg(FG_DIM) + " · " + _fg(FG_DIM) + "  ".join(rail_segments) + R
 
         return stat_str, stat_colored
 
     def _top_bar(self, rows, cols, chat_w):
-        """Row 1: hint on left, model/status on right."""
-        stat_str, stat_colored = self._stat_info(chat_w)
-        hint_plain   = "  lumi · /help · tab complete · shift+↑↓ scroll"
-        hint_colored = _fg(BORDER) + "  " + _fg(FG_HI) + _bold() + "lumi" + R + _fg(MUTED) + " · /help · tab complete · shift+↑↓ scroll" + R
-
-        hint_len = _visible_len(hint_plain)
-        stat_len = _visible_len(stat_str)
-
-        if hint_len + stat_len + 4 <= chat_w:
-            gap      = min(max(1, chat_w - hint_len - stat_len - 2), 16)
-            top_line = " " + hint_colored + " " * gap + stat_colored
-        else:
-            top_w    = max(0, chat_w - stat_len - 2)
-            top_line = " " * top_w + stat_colored
-
-        return (
-            _move(1, 1) + _bg(BG) + _erase_line() + top_line + R +
-            _move(2, 1) + _bg(BG) + _erase_line() + "  " + _rule(chat_w) + R
-        )
+        return _move(1, 1) + _bg(BG) + _erase_line() + _move(2, 1) + _bg(BG) + _erase_line()
 
     def _prompt_bar(self, rows, cols, chat_w):
-        """Bottom row: spinner/chevron + input buffer."""
+        """Bottom row: single-line prompt."""
         tui   = self.tui
         t_now = time.time()
         if tui.busy:
             frame = int(t_now * 10) % len(SPINNER_FRAMES)
-            sym  = _fg(CYAN) + SPINNER_FRAMES[frame] + " " + R
+            sym  = _fg(CYAN) + SPINNER_FRAMES[frame] + R
             hint = _fg(MUTED) + _italic() + "thinking" + PULSE_DOTS[int(t_now * 2) % len(PULSE_DOTS)] + R
         else:
-            sym  = _fg(BLUE) + _bold() + "> " + R
+            sym  = _fg(FG_HI) + _bold() + ">" + R
             hint = ""
 
         txt    = tui.buf
-        disp_w = chat_w - 7
+        disp_w = max(10, chat_w - 7)
         scroll = max(0, tui.cur_pos - disp_w + 1)
         shown  = txt[scroll:scroll + disp_w]
-        placeholder = _fg(MUTED) + "ask lumi to code, explain, or search..." + R if not shown and not tui.busy else ""
-        mode_hint = self._mode_hint()
-        status_line = mode_hint if mode_hint else ("thinking" if tui.busy else "ready")
-
-        bar = "  " + _fg(BORDER) + "─" * max(0, chat_w - 4) + R
-        prompt = _move(rows - 1, 1) + _bg(BG) + _erase_line() + bar
-        status_prefix = _fg(MUTED) + status_line + R
-        status_room = max(0, chat_w - _visible_len(status_line) - 4)
-        prompt = _move(rows - 1, 1) + _bg(BG) + _erase_line() + "  " + status_prefix + " " * status_room + R
-        prompt += _move(rows, 1) + _bg(BG) + _erase_line() + "  " + sym + _fg(FG_HI) + shown + (placeholder if not shown else hint) + R
+        placeholder = _fg(MUTED) + "ask lumi anything" + R if not shown and not tui.busy else ""
+        prompt = _move(rows - 1, 1) + _bg(BG) + _erase_line() + "  " + _fg(BORDER) + "─" * max(0, chat_w - 4) + R
+        prompt += _move(rows, 1) + _bg(BG) + _erase_line() + "  " + sym + " " + _fg(FG_HI) + shown + (placeholder if not shown else hint) + R
         return prompt
 
     # kept for any external callers; delegates to the two new methods
@@ -783,7 +723,7 @@ class Renderer:
         cwd = tui.browser_cwd
         if len(cwd) > pop_w - 6: cwd = "..." + cwd[-(pop_w - 9):]
         out.append(_popup_line(top + 1, left, pop_w, cwd, tone=FG_HI))
-        out.append(_move(top + 2, left) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
+        out.append(_move(top + 2, left) + _fg(BORDER) + "  " + "─" * (pop_w - 4) + "  " + R)
 
         row = top + 3
         for i, item in enumerate(disp_items):
@@ -808,12 +748,12 @@ class Renderer:
             out.append(_popup_line(row, left, pop_w, "", tone=FG_DIM))
             row += 1
 
-        out.append(_move(row, left) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
+        out.append(_move(row, left) + _fg(BORDER) + "  " + "─" * (pop_w - 4) + "  " + R)
         row += 1
         bot_txt = "Esc Close  ·  ↑↓ Move  ·  Enter/→ Open  ·  ← Back"
         out.append(_popup_line(row, left, pop_w, bot_txt, tone=MUTED))
         row += 1
-        out.append(_move(row, left) + _fg(BORDER) + "└" + "─" * (pop_w - 2) + "┘" + R)
+        out.append(_move(row, left) + _fg(BORDER) + "  " + "─" * (pop_w - 4) + "  " + R)
 
         return "".join(out)
 
@@ -828,7 +768,7 @@ class Renderer:
             pointer = "› " if is_sel else "  "
             content = f"{pointer}{d_cmd} {d_desc}"
             out.append(_popup_line(top + 1 + i, left, pop_w, content, tone=FG_HI if is_sel else FG_DIM, selected=is_sel))
-        out.append(_move(top + 1 + n, left) + _fg(BORDER) + "└" + "─" * (pop_w - 2) + "┘" + R)
+        out.append(_move(top + 1 + n, left) + _fg(BORDER) + "  " + "─" * (pop_w - 4) + "  " + R)
         return "".join(out)
 
     def _picker_popup(self, rows, cols):
@@ -838,7 +778,7 @@ class Renderer:
         out = [_popup_frame(top, left, pop_w, "picker")]
         header_txt = " model · provider"
         out.append(_popup_line(top + 1, left, pop_w, header_txt.strip(), tone=MUTED))
-        out.append(_move(top + 2, left) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
+        out.append(_move(top + 2, left) + _fg(BORDER) + "  " + "─" * (pop_w - 4) + "  " + R)
         row = top + 3
         for i, (kind, value, label) in enumerate(items):
             if kind == "header":
@@ -852,12 +792,12 @@ class Renderer:
                 content = f"{pointer}{dot} {lbl}"
                 out.append(_popup_line(row, left, pop_w, content, tone=FG_HI if is_sel else FG_DIM, selected=is_sel))
             row += 1
-        out.append(_move(row, left) + _fg(BORDER) + "├" + "─" * (pop_w - 2) + "┤" + R)
+        out.append(_move(row, left) + _fg(BORDER) + "  " + "─" * (pop_w - 4) + "  " + R)
         row += 1
         bot_txt = "Esc Close  ·  ↑↓ Navigate  ·  Enter Mount"
         out.append(_popup_line(row, left, pop_w, bot_txt, tone=MUTED))
         row += 1
-        out.append(_move(row, left) + _fg(BORDER) + "└" + "─" * (pop_w - 2) + "┘" + R)
+        out.append(_move(row, left) + _fg(BORDER) + "  " + "─" * (pop_w - 4) + "  " + R)
         return "".join(out)
 
     def _notification_bar(self, rows, cols):
@@ -866,8 +806,7 @@ class Renderer:
         left = max(2, cols - len(inner) - 10)
         return (
             _move(rows - 3, left) +
-            _fg(BORDER) + "┌─ " + _fg(CYAN) + "info" + R + _fg(BORDER) + " · " + _fg(FG_HI) + inner +
-            _fg(BORDER) + " ─┐" + R
+            _fg(MUTED) + inner + R
         )
 
 
@@ -887,8 +826,7 @@ class LumiTUI:
         self.picker_items =[]; self.picker_sel = 0; self.picker_visible = False
         self.notification = ""; self._notif_timer = None; self._running = False
         self._hist_file = _LOG_DIR / "history"
-        self._input_hist = self._load_history()
-        self._hist_idx = -1; self._hist_draft = ""
+        self.history = InputHistory(self._hist_file)
 
         self.memory = ShortTermMemory(max_turns=20); self.persona = {}
         self.persona_override = {}; self.system_prompt = ""; self.client = None
@@ -910,6 +848,8 @@ class LumiTUI:
         self.original_termios = None
         self.pane_active = False
         self.pane_lines_output = []
+        self.show_starter_panel = True
+        self.recent_commands: list[str] = []
 
         # ── Browser Mode ──────────────────────────────────────────────────────
         self.browser_visible = False
@@ -1238,6 +1178,10 @@ class LumiTUI:
         if key in ("CTRL_Q", "CTRL_C"):
             with self._state_lock: self._running = False
             return
+        if key == "CTRL_G":
+            self.show_starter_panel = not self.show_starter_panel
+            self.redraw()
+            return
         if key == "CTRL_N":
             if not self.slash_visible: self._open_picker()
             return
@@ -1295,11 +1239,9 @@ class LumiTUI:
                 cmd = self.slash_hits[self.slash_sel][0]
                 self.slash_visible = False; self.buf = ""; self.cur_pos = 0
                 self._execute_command(cmd, ""); return
-            text = self.buf.strip(); self.buf = ""; self.cur_pos = 0; self.slash_visible = False; self._hist_idx = -1
+            text = self.buf.strip(); self.buf = ""; self.cur_pos = 0; self.slash_visible = False; self.history.reset_navigation()
             if text and not self.busy:
-                if text not in (self._input_hist[-1:] or [""]):
-                    self._input_hist.append(text)
-                    self._save_history_entry(text)
+                self.history.append(text)
                 if text.startswith("/"):
                     parts = text.split(None, 1)
                     self._execute_command(parts[0].lower(), parts[1] if len(parts) > 1 else "")
@@ -1360,27 +1302,20 @@ class LumiTUI:
         else: self.slash_visible = False
 
     def _load_history(self) -> list:
-        try:
-            if self._hist_file.exists():
-                lines = self._hist_file.read_text(encoding="utf-8").splitlines()
-                return [l for l in lines if l.strip()][-500:]
-        except Exception:
-            log.exception("Failed to load history")
-        return []
+        return self.history.entries
 
     def _save_history_entry(self, text: str):
         try:
-            with self._hist_file.open("a", encoding="utf-8") as f:
-                f.write(text.replace("\n", " ") + "\n")
+            self.history.append(text)
         except Exception:
             log.exception("Failed to save history entry")
 
     def _hist_nav(self, direction):
-        if not self._input_hist: return
-        if self._hist_idx == -1: self._hist_draft = self.buf
-        new = self._hist_idx + direction
-        if new < -1 or new >= len(self._input_hist): return
-        self._hist_idx = new; self.buf = (self._hist_draft if new == -1 else self._input_hist[-(new + 1)]); self.cur_pos = len(self.buf)
+        new_text = self.history.navigate(self.buf, direction)
+        if new_text is None:
+            return
+        self.buf = new_text
+        self.cur_pos = len(self.buf)
 
     # ── Master LLM Task Query Send Operation Routing  ───────────────────────
     def _run_message(self, user_input):
@@ -1430,12 +1365,8 @@ class LumiTUI:
                         "\n".join(f"{x['role']}: {x['content'][:200]}" for x in snapshot), m, 200
                     )
                     if summ:
-                        # Lock before mutating shared history
                         with self._state_lock:
-                            self.memory._history = (
-                                [{"role": "system", "content": f"[Summary]: {summ}"}]
-                                + self.memory._history[-4:]
-                            )
+                            self.memory.replace_with_summary(summ, tail_messages=4)
                             self._cached_tok_len = -1  # invalidate token cache
                         log.debug("Memory compressed to summary + last 4 messages")
                 except Exception:
@@ -1448,7 +1379,7 @@ class LumiTUI:
         self.redraw()
 
         raw_reply = self._tui_stream(messages, self.current_model)
-        self.memory._history[-1] = {"role": "user", "content": user_input}
+        self.memory.replace_last("user", user_input)
         self.memory.add("assistant", raw_reply)
 
         self.prev_reply = self.last_reply; self.last_reply = raw_reply
@@ -1487,13 +1418,13 @@ class LumiTUI:
         if self.busy: return
         for m in reversed(self.memory.get()):
             if m["role"] == "user":
-                text = m["content"]; self.memory._history = self.memory._history[:-2] if len(self.memory._history) >= 2 else[]
+                text = m["content"]; self.memory.remove_last_exchange()
                 self.turns = max(0, self.turns - 1); self.set_busy(True)
                 self.store.add(Msg("user", text)); self.memory.add("user", text)
 
                 msgs = build_messages(self.system_prompt, self.memory.get())
                 raw = self._tui_stream(msgs, self.current_model)
-                self.memory._history[-1] = {"role": "user", "content": text}; self.memory.add("assistant", raw)
+                self.memory.replace_last("user", text); self.memory.add("assistant", raw)
                 self.prev_reply = self.last_reply; self.last_reply = raw; self.turns += 1; self.set_busy(False); return
         self._err("Nothing to retry.")
 
@@ -1527,10 +1458,16 @@ class LumiTUI:
         self.picker_visible = False
 
     def _execute_command(self, cmd, arg):
-        if cmd in registry.commands: registry.commands[cmd]["func"](self, arg)
+        if cmd in registry.commands:
+            if cmd not in {"/help"}:
+                self.recent_commands = [cmd] + [item for item in self.recent_commands if item != cmd]
+                self.recent_commands = self.recent_commands[:3]
+            registry.commands[cmd]["func"](self, arg)
         else:
             handled, plug_result = plugin_dispatch(cmd, arg, client=self.client, model=self.current_model, memory=self.memory, system_prompt=self.system_prompt, name=self.name)
             if handled:
+                self.recent_commands = [cmd] + [item for item in self.recent_commands if item != cmd]
+                self.recent_commands = self.recent_commands[:3]
                 if plug_result: self._sys(plug_result)
             else: self._err(f"Unknown command: {cmd}  (try /help)")
 
@@ -1759,7 +1696,7 @@ def cmd_save(tui: LumiTUI, arg: str):
 def cmd_load(tui: LumiTUI, arg: str):
     try:
         h = load_by_name(arg.strip()) if arg.strip() else load_latest()
-        if h: tui.memory._history = h; tui.turns = len(h) // 2; tui._sys(f"Loaded {len(h)} messages")
+        if h: tui.memory.set_history(h); tui.turns = len(h) // 2; tui._sys(f"Loaded {len(h)} messages")
         else: tui._err("No saved session found.")
     except Exception as e: tui._err(str(e))
 
@@ -1774,13 +1711,12 @@ def cmd_more(tui: LumiTUI, arg: str):
     if not tui.last_reply: tui._err("Nothing to expand on yet."); return
     tui.set_busy(True); tui.memory.add("user", "[User wants more detail on the last response.]")
     msgs = build_messages(tui.system_prompt, tui.memory.get()); raw = tui._tui_stream(msgs, tui.current_model)
-    tui.memory._history[-1] = {"role": "user", "content": "Tell me more."}; tui.memory.add("assistant", raw)
+    tui.memory.replace_last("user", "Tell me more."); tui.memory.add("assistant", raw)
     tui.prev_reply = tui.last_reply; tui.last_reply = raw; tui.turns += 1; tui.set_busy(False)
 
 @registry.register("/undo", "Pop the latest history branch")
 def cmd_undo(tui: LumiTUI, arg: str):
-    if len(tui.memory._history) >= 2:
-        tui.memory._history = tui.memory._history[:-2]
+    if tui.memory.remove_last_exchange():
         tui.turns = max(0, tui.turns - 1)
         tui._sys("Last exchange removed from LLM Memory Tree.")
     else: tui._err("Nothing to undo.")
@@ -1791,7 +1727,7 @@ def cmd_rewrite(tui: LumiTUI, arg: str):
     if not tui.last_reply: tui._err("No block loaded!"); return
     tui.set_busy(True); tui.memory.add("user", "[Rewrite the previous context totally differently.]")
     msgs = build_messages(tui.system_prompt, tui.memory.get()); raw = tui._tui_stream(msgs, tui.current_model)
-    tui.memory._history[-1] = {"role": "user", "content": "Rewrite completely differently."}
+    tui.memory.replace_last("user", "Rewrite completely differently.")
     tui.memory.add("assistant", raw); tui.prev_reply = tui.last_reply; tui.last_reply = raw; tui.turns += 1; tui.set_busy(False)
 
 @registry.register("/tl;dr", "One sentence summarize response")
@@ -1810,7 +1746,7 @@ def cmd_fix(tui: LumiTUI, arg: str):
     tui.set_busy(True)
     msg = f"Im crashing with stack trace error: ```{arg}``` context was previously:\n{tui.last_reply}\n1. Clarify Root cause\n2. Rewrite entire codeblock fix directly.\n3. Defenses?"
     tui.memory.add("user", msg); raw = tui._tui_stream(build_messages(tui.system_prompt, tui.memory.get()), tui.current_model, f"◆ {tui.name}  [fix]")
-    tui.memory._history[-1] = {"role": "user", "content": f"/fix: {arg[:100]}"}; tui.memory.add("assistant", raw)
+    tui.memory.replace_last("user", f"/fix: {arg[:100]}"); tui.memory.add("assistant", raw)
     tui.last_reply = raw; tui.turns += 1; tui.set_busy(False)
 
 @registry.register("/search", "Internet browser fetching context tools")
@@ -1824,7 +1760,7 @@ def cmd_search(tui: LumiTUI, arg: str):
         tui._sys("\n".join(lines)); ctx = search(arg, fetch_top=True)
         tui.memory.add("user", f"Auto Search Tool results fetched internally to system parameters [query={arg}]\nData block:\n{ctx}\nAnalyze directly the main details and print clear structured insights.")
         raw = tui._tui_stream(build_messages(tui.system_prompt, tui.memory.get()), tui.current_model, f"◆ {tui.name}  [WWW Net Context Load Complete]")
-        tui.memory._history[-1] = {"role": "user", "content": f"Search requested info on [ {arg} ]"}
+        tui.memory.replace_last("user", f"Search requested info on [ {arg} ]")
         tui.memory.add("assistant", raw); tui.last_reply = raw; tui.turns += 1
     except Exception as e: tui._err(str(e))
     tui.set_busy(False)
@@ -1838,7 +1774,7 @@ def cmd_web(tui: LumiTUI, arg: str):
     if content.startswith(("HTTP", "Fetch", "Could not")): tui._err(content); tui.set_busy(False); return
     tui.memory.add("user", f"Fetched external raw web link ({url}):\n{content}\n---\nRespond instruction: {q}")
     raw = tui._tui_stream(build_messages(tui.system_prompt, tui.memory.get()), tui.current_model, f"◆ {tui.name} [WWW Node parser]")
-    tui.memory._history[-1] = {"role": "user", "content": f"Scan web dom target details[URL_HIDDEN]: {q}"}; tui.memory.add("assistant", raw)
+    tui.memory.replace_last("user", f"Scan web dom target details[URL_HIDDEN]: {q}"); tui.memory.add("assistant", raw)
     tui.last_reply = raw; tui.turns += 1; tui.set_busy(False)
 
 @registry.register("/shell", "OS Subprocess system layer execution map handler terminal link!")
@@ -1864,7 +1800,7 @@ def cmd_docs(tui: LumiTUI, arg: str):
     else: tui._err("A valid File arg param, or active reply target missing"); tui.set_busy(False); return
     tui.memory.add("user", f"Generate massive doc blocks via format params to the script file contents accurately:\n{content}")
     raw = tui._tui_stream(build_messages(tui.system_prompt, tui.memory.get()), tui.current_model, f"◆ {tui.name}  [Document Generator Routine Started...]")
-    tui.memory._history[-1] = {"role": "user", "content": "Generational System Comment AutoDocs Code Map Layout."}
+    tui.memory.replace_last("user", "Generational System Comment AutoDocs Code Map Layout.")
     tui.memory.add("assistant", raw); tui.last_reply = raw; tui.turns += 1; tui.set_busy(False)
 
 @registry.register("/types", "PEP typing annotations rewrite format generator block tool")
@@ -1876,7 +1812,7 @@ def cmd_types(tui: LumiTUI, arg: str):
     else: tui._err("Types parameter missing! Active text memory nil void zero context state loaded!"); tui.set_busy(False); return
     tui.memory.add("user", f"Parse format TypeHint TypeChecker mypy style to all structure object values directly safely accurately!\n```\n{content}\n```")
     raw = tui._tui_stream(build_messages(tui.system_prompt, tui.memory.get()), tui.current_model, f"◆ {tui.name}  [Statically Type Analysis Typing routine...]")
-    tui.memory._history[-1] = {"role": "user", "content": "Applied Code PEP Typings Map Refactor Run!"}; tui.memory.add("assistant", raw); tui.last_reply = raw; tui.turns += 1; tui.set_busy(False)
+    tui.memory.replace_last("user", "Applied Code PEP Typings Map Refactor Run!"); tui.memory.add("assistant", raw); tui.last_reply = raw; tui.turns += 1; tui.set_busy(False)
 
 @registry.register("/multi", "Toggle multiline input mode")
 def cmd_multi(tui: LumiTUI, arg: str):
@@ -2272,7 +2208,7 @@ def cmd_fix(tui: LumiTUI, arg: str):
         tui.memory.add("user", msg)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [fix]")
-        tui.memory._history[-1] = {"role": "user", "content": f"/fix: {arg[:200]}"}
+        tui.memory.replace_last("user", f"/fix: {arg[:200]}")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2289,7 +2225,7 @@ def cmd_debug(tui: LumiTUI, arg: str):
         tui.memory.add("user", msg)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [debug]")
-        tui.memory._history[-1] = {"role": "user", "content": f"/debug: {error[:200]}"}
+        tui.memory.replace_last("user", f"/debug: {error[:200]}")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2309,7 +2245,7 @@ def cmd_improve(tui: LumiTUI, arg: str):
         tui.memory.add("user", msg)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [improve]")
-        tui.memory._history[-1] = {"role": "user", "content": "/improve"}
+        tui.memory.replace_last("user", "/improve")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2329,7 +2265,7 @@ def cmd_optimize(tui: LumiTUI, arg: str):
         tui.memory.add("user", msg)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [optimize]")
-        tui.memory._history[-1] = {"role": "user", "content": "/optimize"}
+        tui.memory.replace_last("user", "/optimize")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2349,7 +2285,7 @@ def cmd_security(tui: LumiTUI, arg: str):
         tui.memory.add("user", msg)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [security]")
-        tui.memory._history[-1] = {"role": "user", "content": "/security"}
+        tui.memory.replace_last("user", "/security")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2369,7 +2305,7 @@ def cmd_refactor(tui: LumiTUI, arg: str):
         tui.memory.add("user", msg)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [refactor]")
-        tui.memory._history[-1] = {"role": "user", "content": "/refactor"}
+        tui.memory.replace_last("user", "/refactor")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2389,7 +2325,7 @@ def cmd_test(tui: LumiTUI, arg: str):
         tui.memory.add("user", msg)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [tests]")
-        tui.memory._history[-1] = {"role": "user", "content": "/test"}
+        tui.memory.replace_last("user", "/test")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2408,7 +2344,7 @@ def cmd_explain(tui: LumiTUI, arg: str):
         tui.memory.add("user", msg)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [explain]")
-        tui.memory._history[-1] = {"role": "user", "content": "/explain"}
+        tui.memory.replace_last("user", "/explain")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2428,7 +2364,7 @@ def cmd_review(tui: LumiTUI, arg: str):
         tui.memory.add("user", msg)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [review]")
-        tui.memory._history[-1] = {"role": "user", "content": "/review"}
+        tui.memory.replace_last("user", "/review")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2444,7 +2380,7 @@ def cmd_scaffold(tui: LumiTUI, arg: str):
         tui.memory.add("user", msg)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [scaffold: {arg}]")
-        tui.memory._history[-1] = {"role": "user", "content": f"/scaffold: {arg}"}
+        tui.memory.replace_last("user", f"/scaffold: {arg}")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2471,7 +2407,7 @@ def cmd_readme(tui: LumiTUI, arg: str):
         tui.memory.add("user", msg)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [README]")
-        tui.memory._history[-1] = {"role": "user", "content": "[readme]"}
+        tui.memory.replace_last("user", "[readme]")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2494,7 +2430,7 @@ def cmd_pr(tui: LumiTUI, arg: str):
         tui.memory.add("user", msg)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [PR]")
-        tui.memory._history[-1] = {"role": "user", "content": "[pr]"}
+        tui.memory.replace_last("user", "[pr]")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2510,7 +2446,7 @@ def cmd_changelog(tui: LumiTUI, arg: str):
         tui.memory.add("user", msg)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [CHANGELOG]")
-        tui.memory._history[-1] = {"role": "user", "content": "[changelog]"}
+        tui.memory.replace_last("user", "[changelog]")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2533,7 +2469,7 @@ def cmd_standup(tui: LumiTUI, arg: str):
         tui.memory.add("user", msg)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [standup]")
-        tui.memory._history[-1] = {"role": "user", "content": "[standup]"}
+        tui.memory.replace_last("user", "[standup]")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2610,14 +2546,13 @@ def cmd_redo(tui: LumiTUI, arg: str):
         alt = arg.strip()
         q = (f"{tui.last_msg}\n\n[This time: {alt}]" if alt
              else f"{tui.last_msg}\n\n[Rephrase — different approach, same quality.]")
-        if len(tui.memory._history) >= 2:
-            tui.memory._history = tui.memory._history[:-2]
+        if tui.memory.remove_last_exchange():
             tui.turns = max(0, tui.turns - 1)
         tui.store.add(Msg("user", f"↺ redo{' — '+alt if alt else ''}"))
         tui.memory.add("user", q)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model)
-        tui.memory._history[-1] = {"role": "user", "content": tui.last_msg}
+        tui.memory.replace_last("user", tui.last_msg)
         tui.memory.add("assistant", raw)
         tui.prev_reply = tui.last_reply; tui.last_reply = raw
         tui.turns += 1; tui.set_busy(False); tui.redraw()
@@ -2633,7 +2568,7 @@ def cmd_translate(tui: LumiTUI, arg: str):
         tui.memory.add("user", q)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [→ {arg}]")
-        tui.memory._history[-1] = {"role": "user", "content": f"Translate to {arg}"}
+        tui.memory.replace_last("user", f"Translate to {arg}")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2646,7 +2581,7 @@ def cmd_summarize(tui: LumiTUI, arg: str):
         tui.memory.add("user", q)
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [summarize]")
-        tui.memory._history[-1] = {"role": "user", "content": q}
+        tui.memory.replace_last("user", q)
         tui.memory.add("assistant", raw)
         tui.last_reply = raw; tui.turns += 1; tui.set_busy(False); tui.redraw()
     threading.Thread(target=_go, daemon=True).start()
@@ -2989,7 +2924,7 @@ def cmd_rag(tui: LumiTUI, arg: str):
 
         msgs = build_messages(tui.system_prompt, tui.memory.get())
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [RAG]")
-        tui.memory._history[-1] = {"role": "user", "content": f"/rag {arg}"}
+        tui.memory.replace_last("user", f"/rag {arg}")
         tui.memory.add("assistant", raw)
         tui.last_reply = raw
         tui.turns += 1
