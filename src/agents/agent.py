@@ -21,7 +21,13 @@ from typing import Any
 
 import yaml
 
-from src.agents.task_memory import record_run, render_task_memory_context
+from src.agents.task_memory import (
+    clear_active_run,
+    record_run,
+    render_task_memory_context,
+    start_active_run,
+    update_active_run,
+)
 
 R = "\033[0m"
 B = "\033[1m"
@@ -244,7 +250,9 @@ class ChangeJournal:
 class RepoProfile:
     base_dir: Path
     package_manager: str | None
+    frameworks: tuple[str, ...]
     entrypoints: tuple[str, ...]
+    config_files: tuple[str, ...]
     relevant_files: tuple[str, ...]
     changed_files: tuple[str, ...]
     verification_commands: dict[str, tuple[str, ...]]
@@ -611,6 +619,57 @@ def _detect_entrypoints(base_dir: Path) -> tuple[str, ...]:
     return tuple(found[:6])
 
 
+def _detect_frameworks(base_dir: Path) -> tuple[str, ...]:
+    found: list[str] = []
+    pyproject = (base_dir / "pyproject.toml").read_text(encoding="utf-8", errors="replace").lower() if (base_dir / "pyproject.toml").exists() else ""
+    requirements = (base_dir / "requirements.txt").read_text(encoding="utf-8", errors="replace").lower() if (base_dir / "requirements.txt").exists() else ""
+    package_json = (base_dir / "package.json").read_text(encoding="utf-8", errors="replace").lower() if (base_dir / "package.json").exists() else ""
+    cargo = (base_dir / "Cargo.toml").read_text(encoding="utf-8", errors="replace").lower() if (base_dir / "Cargo.toml").exists() else ""
+
+    def has_token(*tokens: str) -> bool:
+        haystacks = (pyproject, requirements, package_json, cargo)
+        return any(token in haystack for haystack in haystacks for token in tokens)
+
+    framework_rules = (
+        ("fastapi", ("fastapi",)),
+        ("django", ("django",)),
+        ("flask", ("flask",)),
+        ("pytest", ("pytest",)),
+        ("react", ('"react"', '"next"', '"vite"', "react-dom")),
+        ("vue", ('"vue"', "nuxt")),
+        ("svelte", ('"svelte"',)),
+        ("node", ('"express"', '"nestjs"', '"koa"', '"hono"')),
+        ("rust", ("[package]", "tokio", "axum", "actix")),
+        ("go", ("module ",)),
+    )
+    for label, tokens in framework_rules:
+        if has_token(*tokens):
+            found.append(label)
+    return tuple(found[:6])
+
+
+def _detect_config_files(base_dir: Path) -> tuple[str, ...]:
+    candidates = (
+        ".env.example",
+        ".env",
+        "pyproject.toml",
+        "requirements.txt",
+        "package.json",
+        "tsconfig.json",
+        "Cargo.toml",
+        "go.mod",
+        "ruff.toml",
+        "mypy.ini",
+        ".github/workflows",
+    )
+    found: list[str] = []
+    for candidate in candidates:
+        path = base_dir / candidate
+        if path.exists():
+            found.append(candidate)
+    return tuple(found[:8])
+
+
 def inspect_repo(base_dir: Path | None = None, task: str = "") -> RepoProfile:
     base_dir = (base_dir or Path.cwd()).resolve()
     relevant_paths = tuple(str(path.relative_to(base_dir)) for path in _search_relevant_paths(base_dir, task))
@@ -634,7 +693,9 @@ def inspect_repo(base_dir: Path | None = None, task: str = "") -> RepoProfile:
     return RepoProfile(
         base_dir=base_dir,
         package_manager=_detect_package_manager(base_dir),
+        frameworks=_detect_frameworks(base_dir),
         entrypoints=_detect_entrypoints(base_dir),
+        config_files=_detect_config_files(base_dir),
         relevant_files=relevant_paths,
         changed_files=tuple(changed_files[:12]),
         verification_commands=verification,
@@ -678,6 +739,18 @@ def collect_planning_context(task: str, base_dir: Path | None = None) -> str:
         lines.append("Likely entrypoints:")
         for entry in profile.entrypoints:
             lines.append(f"- {entry}")
+        lines.append("")
+
+    if profile.frameworks:
+        lines.append("Detected frameworks and tools:")
+        for framework in profile.frameworks:
+            lines.append(f"- {framework}")
+        lines.append("")
+
+    if profile.config_files:
+        lines.append("Key config files:")
+        for config_path in profile.config_files:
+            lines.append(f"- {config_path}")
         lines.append("")
 
     if profile.package_manager:
@@ -1890,6 +1963,7 @@ def run_agent(
 
     base_dir = Path.cwd().resolve()
     journal = ChangeJournal()
+    start_active_run(task)
     policy = _default_execution_policy(task)
     if review_only:
         policy = ExecutionPolicy(
@@ -1905,10 +1979,12 @@ def run_agent(
     try:
         steps = make_plan(task, client, model, base_dir=base_dir, policy=policy)
     except RuntimeError as exc:
+        clear_active_run()
         record_run(task, status="planning_failed", summary=str(exc))
         return str(exc)
 
     if not steps:
+        clear_active_run()
         record_run(task, status="planning_failed", summary="No steps generated.")
         return "No steps generated."
 
@@ -1924,16 +2000,19 @@ def run_agent(
     invalid = [item for item in inspected if item.get("ok") is False]
     if invalid:
         reason = invalid[0].get("reason", "Plan preflight failed")
+        update_active_run(status="preflight_failed", summary=reason)
         record_run(task, status="preflight_failed", summary=reason)
         return f"Plan rejected during preflight: {reason}"
 
     if policy.review_only:
         summary = f"Review-only plan generated with {len(steps)} steps; no changes executed."
+        update_active_run(status="review_only", summary=summary)
         record_run(task, status="review_only", summary=summary)
         return summary
 
     print()
     if not yolo and not confirm(f"Execute {len(steps)} preflighted steps?"):
+        update_active_run(status="cancelled", summary="Agent cancelled before execution.")
         record_run(task, status="cancelled", summary="Agent cancelled before execution.")
         return "Agent cancelled."
 
@@ -1944,6 +2023,8 @@ def run_agent(
     failed_checks: list[str] = []
     completed_plan_steps = 0
     failed_plan_steps = 0
+
+    update_active_run(status="running", summary=f"Planned {len(steps)} steps")
 
     for step in steps:
         stype = step.get("type", "?")
@@ -1964,6 +2045,17 @@ def run_agent(
 
         if success:
             completed_plan_steps += 1
+            touched_files = [
+                str(record.path.relative_to(base_dir)) if record.path.is_relative_to(base_dir) else str(record.path)
+                for record in journal.records
+                if record.kind == "file"
+            ]
+            update_active_run(
+                status="running",
+                summary=f"Completed step {step['id']}/{len(steps)}: {step['description']}",
+                touched_files=touched_files,
+                failed_checks=failed_checks,
+            )
             print(f"  {GN}✓{R}  ", end="")
             if output and len(output) < 300:
                 print(output)
@@ -1972,6 +2064,16 @@ def run_agent(
                 for line in md_render(output[:800]).split("\n"):
                     print(f"  {GR}{line}{R}")
         else:
+            update_active_run(
+                status="recovering" if not recovery_used else "failed",
+                summary=f"Failed step: {step['description']}",
+                failed_checks=failed_checks,
+                touched_files=[
+                    str(record.path.relative_to(base_dir)) if record.path.is_relative_to(base_dir) else str(record.path)
+                    for record in journal.records
+                    if record.kind == "file"
+                ],
+            )
             print(f"  {RE}✗{R}  {output}")
             if step.get("type") == "action" and step.get("action") in VERIFY_ACTIONS | {"run_verify"}:
                 failed_checks.append(step.get("verify_kind") or step.get("action", "verify"))

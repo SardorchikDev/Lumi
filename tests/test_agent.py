@@ -81,6 +81,17 @@ class TestPlanningContext:
         assert "tests" in profile.verification_commands
         assert "lint" in profile.verification_commands
 
+    def test_inspect_repo_detects_frameworks_and_config_files(self, tmp_path):
+        (tmp_path / "package.json").write_text(
+            '{"dependencies":{"react":"^19.0.0"},"scripts":{"test":"vitest","lint":"eslint ."}}\n',
+            encoding="utf-8",
+        )
+        (tmp_path / "tsconfig.json").write_text("{}\n", encoding="utf-8")
+        profile = inspect_repo(tmp_path, "update ui")
+        assert "react" in profile.frameworks
+        assert "package.json" in profile.config_files
+        assert "tsconfig.json" in profile.config_files
+
     def test_make_plan_includes_task_memory_context(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr("src.agents.task_memory.TASK_MEMORY_PATH", tmp_path / "task_memory.json")
@@ -95,6 +106,7 @@ class TestPlanningContext:
         make_plan("inspect parser", client, "fake-model", base_dir=tmp_path)
         user_message = client.calls[0]["messages"][1]["content"]
         assert "Recent agent task memory:" in user_message
+        assert "Top-level entries:" in user_message
 
     def test_make_plan_builds_filesystem_scaffold_without_model(self, tmp_path):
         client = FakeClient("[]")

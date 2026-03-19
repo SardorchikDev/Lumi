@@ -28,7 +28,7 @@ Minimal terminal AI with a council mode, grounded agent mode, memory, and a clea
                                  /`
 ```
 
-[Install](#install) · [Quick Start](#quick-start) · [Modes](#modes) · [Commands](#commands) · [Config](#config) · [Development](#development)
+[Install](#install) · [Quick Start](#quick-start) · [Modes](#modes) · [Commands](#commands) · [Config](#config) · [Development](#development) · [Roadmap](ROADMAP.md)
 
 ## Install
 
