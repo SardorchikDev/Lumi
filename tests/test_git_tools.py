@@ -41,6 +41,21 @@ def test_run_git_subcommand_remote_and_sync_without_remotes(tmp_path):
     assert "status" in sync.lower()
 
 
+def test_run_git_subcommand_summary_and_review(tmp_path):
+    _init_repo(tmp_path)
+    (tmp_path / "app.py").write_text("print('hi')\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=tmp_path, check=True, capture_output=True, text=True)
+
+    ok, summary = run_git_subcommand("summary", cwd=tmp_path)
+    assert ok is True
+    assert "staged" in summary.lower()
+
+    ok, review = run_git_subcommand("review", cwd=tmp_path)
+    assert ok is True
+    assert "review" in review.lower()
+    assert "app.py" in review
+
+
 def test_run_git_subcommand_unknown():
     ok, output = run_git_subcommand("nope")
     assert ok is False

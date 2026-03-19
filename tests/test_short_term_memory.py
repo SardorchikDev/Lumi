@@ -70,3 +70,15 @@ class TestShortTermMemory:
         mem.add("user", "")
         assert len(mem) == 1
         assert mem.get()[0]["content"] == ""
+
+    def test_stats_reports_role_counts(self):
+        mem = ShortTermMemory(max_turns=3)
+        mem.add("system", "rules")
+        mem.add("user", "hello")
+        mem.add("assistant", "hi")
+        stats = mem.stats()
+        assert stats["total_messages"] == 3
+        assert stats["max_messages"] == 6
+        assert stats["user_messages"] == 1
+        assert stats["assistant_messages"] == 1
+        assert stats["system_messages"] == 1

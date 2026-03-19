@@ -41,6 +41,18 @@ class ShortTermMemory:
         with self._lock:
             return list(self._history)
 
+    def stats(self) -> dict[str, int]:
+        """Return a small structured summary of the current session memory."""
+        with self._lock:
+            roles = [item.get("role", "") for item in self._history]
+            return {
+                "total_messages": len(self._history),
+                "max_messages": self.max_turns * 2,
+                "user_messages": sum(1 for role in roles if role == "user"),
+                "assistant_messages": sum(1 for role in roles if role == "assistant"),
+                "system_messages": sum(1 for role in roles if role == "system"),
+            }
+
     # ── Mutation helpers (replaces direct _history access) ───────────────────
 
     def pop_last(self) -> dict[str, str] | None:

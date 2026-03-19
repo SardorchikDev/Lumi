@@ -31,6 +31,14 @@ class LittleNotesStore:
         self.path = path or DEFAULT_NOTES_PATH
         self.command_limit = command_limit
         self._data = self._load()
+        self._start_session()
+
+    def _start_session(self) -> None:
+        """Reset session-scoped UI hints when a new TUI session starts."""
+        if not self._data.get("recent_commands"):
+            return
+        self._data["recent_commands"] = []
+        self._save()
 
     def _load(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -100,7 +108,7 @@ class LittleNotesStore:
         lines = self.recent_commands[:limit]
         if lines:
             return lines
-        return ["no commands yet"]
+        return ["no commands this session"]
 
     def display_action_lines(self, limit: int = 2) -> list[str]:
         return self.recent_actions[:limit]

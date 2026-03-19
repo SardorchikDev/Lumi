@@ -75,6 +75,13 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {
         frozenset({"chat", "stream", "fallbacks"}),
         "Bytez open-source model catalog",
     ),
+    "airforce": ProviderSpec(
+        "airforce",
+        "Airforce",
+        ("AIRFORCE_API_KEY",),
+        frozenset({"chat", "stream", "fallbacks"}),
+        "Airforce unified AI gateway",
+    ),
     "cloudflare": ProviderSpec(
         "cloudflare",
         "Cloudflare",
@@ -88,6 +95,13 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {
         ("VERCEL_API_KEY",),
         frozenset({"chat", "stream", "fallbacks"}),
         "Vercel AI Gateway",
+    ),
+    "pollinations": ProviderSpec(
+        "pollinations",
+        "Pollinations",
+        ("POLLINATIONS_API_KEY",),
+        frozenset({"chat", "stream", "fallbacks"}),
+        "Pollinations unified generative API",
     ),
     "vertex": ProviderSpec(
         "vertex",
@@ -107,7 +121,9 @@ DEFAULT_PROVIDER_ORDER = [
     "github",
     "cohere",
     "bytez",
+    "airforce",
     "vercel",
+    "pollinations",
     "cloudflare",
     "vertex",
 ]

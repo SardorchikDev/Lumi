@@ -17,6 +17,7 @@ import difflib
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,7 @@ import urllib.parse
 import webbrowser
 from datetime import datetime
 
+from src.agents.benchmark import load_benchmark_scenarios, render_benchmark_catalog
 from src.agents.council import council_ask
 from src.chat.hf_client import (
     get_available_providers,
@@ -34,6 +36,12 @@ from src.chat.hf_client import (
     get_models,
     get_provider,
     set_provider,
+)
+from src.chat.optimizer import (
+    get_global_context_cache,
+    get_global_telemetry,
+    optimize_messages,
+    route_model,
 )
 from src.config import PLUGINS_DIR, SESSIONS_DIR, ensure_dirs
 from src.memory.conversation_store import list_sessions, load_by_name, load_latest, save
@@ -50,7 +58,9 @@ from src.memory.longterm import (
 )
 from src.memory.short_term import ShortTermMemory
 from src.prompts.builder import (
-    build_messages,
+    build_messages as _base_build_messages,
+)
+from src.prompts.builder import (
     build_system_prompt,
     is_file_generation_task,
     load_persona,
@@ -80,8 +90,9 @@ from src.utils.intelligence import (
 )
 from src.utils.markdown import render as md_render
 from src.utils.notes import note_add, note_list, note_remove, note_search, notes_to_markdown
+from src.utils.plugins import describe_plugins, get_commands, load_plugins, render_permission_report
 from src.utils.plugins import dispatch as plugin_dispatch
-from src.utils.plugins import get_commands, load_plugins
+from src.utils.system_reports import build_doctor_report, build_status_report
 from src.utils.themes import get_theme, list_themes, load_theme_name, save_theme_name
 from src.utils.todo import todo_add, todo_clear_done, todo_done, todo_list, todo_remove
 from src.utils.tools import (
@@ -112,6 +123,56 @@ def make_system_prompt(
     merged = {**persona, **(override or {})}
     mem    = build_memory_block()
     return build_system_prompt(merged, mem, coding_mode, file_mode)
+
+
+_context_cache = get_global_context_cache()
+_session_telemetry = get_global_telemetry()
+
+
+def _infer_message_mode(history: list[dict[str, str]]) -> str:
+    text = next((m.get("content", "") for m in reversed(history) if m.get("role") == "user"), "")
+    lowered = str(text).lower()
+    if any(token in lowered for token in ("/review", "review", "security review")):
+        return "review"
+    if any(token in lowered for token in ("traceback", "stack trace", "assert", "test failed", "/fix", "mypy", "ruff")):
+        return "debug"
+    if any(token in lowered for token in ("/search", "/web", "page content", "url:")):
+        return "search"
+    if any(token in lowered for token in ("/tl;dr", "summarize", "summary")):
+        return "summary"
+    if any(token in lowered for token in ("/file", "/project", "loaded file", "project loaded", "create a folder", "<file path=")):
+        return "files"
+    return "code" if is_file_generation_task(lowered) or "```" in lowered else "chat"
+
+
+def build_messages(system_prompt: str, history: list[dict[str, str]], *, model: str = "") -> list[dict[str, str]]:
+    base = _base_build_messages(system_prompt, history)
+    mode = _infer_message_mode(history)
+    active_model = model or "unknown"
+    if active_model == "unknown":
+        try:
+            active_model = get_models(get_provider())[0]
+        except Exception:
+            active_model = "unknown"
+    return optimize_messages(base, active_model, mode=mode, context_cache=_context_cache, telemetry=_session_telemetry)
+
+
+def _remember_context_text(label: str, content: str, *, kind: str) -> None:
+    _context_cache.remember_text(f"{kind}:{label}", label, content, kind=kind)
+
+
+def _route_helper_model(current_model: str, mode: str) -> str:
+    if current_model == "council":
+        try:
+            available = get_models(get_provider())
+        except Exception:
+            return current_model
+        return route_model(current_model, available, mode)
+    try:
+        available = get_models(get_provider())
+    except Exception:
+        return current_model
+    return route_model(current_model, available, mode)
 
 
 # ── ANSI reset ────────────────────────────────────────────────────────────────
@@ -186,6 +247,9 @@ def print_help() -> None:
     cmd("/council <q>",              "ask all agents — best answer synthesized")
     cmd("/council --show <q>",       "same + show each agent's raw response")
     cmd("/context",                  "show token usage and context window")
+    cmd("/status",                   "session + workspace status summary")
+    cmd("/doctor",                   "check Lumi setup and workspace health")
+    cmd("/benchmark [list]",         "show built-in benchmark scenarios")
     cmd("/redo [hint]",              "regenerate last answer, optionally with a hint")
     cmd("/help",                     "show this")
     cmd("/clear",                    "reset conversation")
@@ -245,7 +309,8 @@ def print_help() -> None:
     cmd("/mcp call <srv> <tool>",    "call a tool directly")
 
     section("PLUGINS")
-    cmd("/plugins",                  "list loaded plugins")
+    cmd("/plugins [inspect]",        "list loaded plugins or inspect metadata")
+    cmd("/permissions [all|plugins]", "show plugin permission model")
     cmd("/plugins reload",           f"reload plugins from {PLUGINS_DIR}")
 
     section("MEMORY & PERSONA")
@@ -284,13 +349,12 @@ def _track(prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
 
 
 def cmd_cost() -> None:
-    i, o  = _session_tokens["input"], _session_tokens["output"]
-    total = i + o
+    report = _session_telemetry.render_usage_report()
     print(f"\n  {B}{WH}Session token usage{R}\n")
-    print(f"  {CY}Input tokens {R}  {GR}{i:,}{R}")
-    print(f"  {CY}Output tokens{R}  {GR}{o:,}{R}")
-    print(f"  {CY}Total        {R}  {WH}{total:,}{R}")
-    print(f"\n  {DG}(approx — not all providers report token counts){R}\n")
+    for line in report.splitlines()[1:]:
+        key, value = line.split(":", 1)
+        print(f"  {CY}{key:<12}{R}{GR}{value}{R}")
+    print(f"\n  {DG}(estimated from packed prompt + reply telemetry){R}\n")
 
 
 def health_check(_providers: list) -> None:
@@ -473,6 +537,7 @@ def stream_and_render(
         print(f"\n  {MU}{wc(final)} words  {DG}{len(avail)} agents{R}")
         if stats_line:
             print(f"  {stats_line}")
+        _session_telemetry.record_response(final)
         return final
 
     # ── Normal streaming ──────────────────────────────────────────────────────
@@ -512,6 +577,7 @@ def stream_and_render(
         indented = "\n".join("  " + l for l in md_render(raw_reply).split("\n"))
         print(indented)
         print(f"\n  {MU}{wc(raw_reply)} words{R}")
+        _session_telemetry.record_response(raw_reply)
 
     return raw_reply
 
@@ -546,15 +612,25 @@ def stream_with_fallback(
 
 def silent_call(client, prompt: str, model: str, max_tokens: int = 300) -> str:
     """Single non-streaming call with no display output."""
+    routed_model = _route_helper_model(model, "summary")
+    messages = optimize_messages(
+        [{"role": "system", "content": "You are Lumi. Return only the requested result."}, {"role": "user", "content": prompt}],
+        routed_model,
+        mode="summary",
+        context_cache=_context_cache,
+        telemetry=_session_telemetry,
+    )
     try:
         r = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
+            model=routed_model,
+            messages=messages,
             max_tokens=max_tokens,
             temperature=0.3,
             stream=False,
         )
-        return r.choices[0].message.content.strip()
+        reply = r.choices[0].message.content.strip()
+        _session_telemetry.record_response(reply)
+        return reply
     except Exception:
         return ""
 
@@ -629,12 +705,10 @@ def cmd_file(
         return None
 
     fname = pathlib.Path(path).name
+    _context_cache.remember_file(path, code)
     info(f"Loaded {fname}  {DG}({code.count(chr(10)) + 1} lines, {len(code)} chars){R}")
-    memory.add("user", (
-        f"I've loaded the file `{fname}` for you:\n\n```\n{code}\n```\n\n"
-        "Let me know what you'd like to do with it."
-    ))
-    messages = build_messages(system_prompt, memory.get())
+    memory.add("user", f"[loaded file: {path}] Relevant file cached for retrieval.")
+    messages = build_messages(system_prompt, memory.get(), model=model)
     print_you(f"[loaded file: {fname}]")
     try:
         raw = stream_and_render(client, messages, model, name)
@@ -1233,8 +1307,9 @@ def cmd_web(
     if content.startswith(("HTTP error", "Could not reach", "Fetch failed")):
         fail(content)
         return
-    memory.add("user", f"URL: {target}\n\nPage content:\n{content}\n\n{question}")
-    messages = build_messages(system_prompt, memory.get())
+    _remember_context_text(target, content, kind="web")
+    memory.add("user", f"[web: {target}] Cached fetched page. Task: {question}")
+    messages = build_messages(system_prompt, memory.get(), model=model)
     print_you(f"/web {target}")
     try:
         raw = stream_and_render(client, messages, model, name)
@@ -1302,29 +1377,14 @@ def cmd_image(
 
 
 def cmd_context(memory: ShortTermMemory, system_prompt: str, model: str) -> None:
-    import math
-    all_text   = system_prompt + " ".join(
-        m["content"] for m in memory.get()
-        if isinstance(m.get("content"), str)
-    )
-    est_tokens = math.ceil(len(all_text) / 4)
-    turns      = len([m for m in memory.get() if m["role"] == "user"])
-    limits     = {
-        "gemini": 1_000_000, "gpt": 128_000, "llama": 128_000,
-        "mistral": 32_000, "codestral": 200_000, "kimi": 131_072,
-        "qwen": 32_768, "default": 8_192,
-    }
-    limit  = next((v for k, v in limits.items() if k in model.lower()), limits["default"])
-    pct    = min(100, round(est_tokens / limit * 100))
-    bar_w  = 30
-    filled = round(bar_w * pct / 100)
-    color  = GN if pct < 60 else (YE if pct < 85 else RE)
-    bar    = f"{color}{'█' * filled}{DG}{'░' * (bar_w - filled)}{R}"
-
     print(f"\n  {B}{WH}Context window{R}\n")
-    print(f"  {bar}  {color}{pct}%{R}")
-    print(f"  {CY}~{est_tokens:,} tokens{R}  {DG}of ~{limit:,} limit{R}")
-    print(f"  {GR}{turns} turns  ·  {len(memory.get())} messages{R}\n")
+    report = _session_telemetry.render_context_report()
+    lines = report.splitlines()
+    for line in lines[1:]:
+        key, value = line.split(":", 1)
+        print(f"  {CY}{key:<12}{R}{GR}{value}{R}")
+    turns = len([m for m in memory.get() if m["role"] == "user"])
+    print(f"\n  {DG}{turns} turns  ·  {len(memory.get())} messages in rolling memory{R}\n")
 
 
 def cmd_redo(
@@ -1532,8 +1592,13 @@ def cmd_project(path: str, memory: ShortTermMemory) -> None:
     if context.startswith("Not a directory"):
         fail(context)
         return
-    memory.add("user",      f"[Project loaded: {path}]\n\n{context}")
-    memory.add("assistant", "Got it. I have your project context. Ask me anything about the codebase.")
+    file_blocks = re.findall(r"###\s+([^\n]+)\n```[^\n]*\n(.*?)\n```", context, re.DOTALL)
+    if file_blocks:
+        _context_cache.remember_project(path, [(rel, body) for rel, body in file_blocks])
+    else:
+        _remember_context_text(path, context, kind="project")
+    memory.add("user", f"[Project loaded: {path}] Cached for retrieval.")
+    memory.add("assistant", "Got it. I cached the project context. Ask me anything about the codebase.")
     ok(f"Project loaded: {path}")
     info("Ask me anything about your codebase")
 
@@ -1551,7 +1616,8 @@ def cmd_pdf(path: str, memory: ShortTermMemory) -> None:
         fail(text)
         return
     fname = os.path.basename(path)
-    memory.add("user",      f"[PDF: {fname}]\n\n{text}")
+    _remember_context_text(fname, text, kind="pdf")
+    memory.add("user", f"[PDF: {fname}] Cached for retrieval.")
     memory.add("assistant", f"I've read {fname}. Ask me anything about it.")
     ok(f"PDF loaded: {fname}  ({len(text.split())} words)")
 
@@ -1746,8 +1812,9 @@ def cmd_data(
         fail(context)
         return
     fname = os.path.basename(path)
-    memory.add("user", f"[Data: {fname}]\n\n{context}\n\nAnalyze this. What are the key insights?")
-    messages = build_messages(system_prompt, memory.get())
+    _remember_context_text(fname, context, kind="data")
+    memory.add("user", f"[Data: {fname}] Cached data summary. Analyze the key insights.")
+    messages = build_messages(system_prompt, memory.get(), model=model)
     print_you(f"Analyze {fname}")
     try:
         reply = stream_and_render(client, messages, model, name)
@@ -2484,6 +2551,18 @@ def main() -> None:  # noqa: C901
             if sub == "reload":
                 loaded = load_plugins()
                 ok(f"Reloaded: {', '.join(loaded) or 'none'}")
+            elif sub in {"inspect", "details", "verbose"}:
+                details = describe_plugins()
+                if not details:
+                    info(f"No plugins loaded.  Drop .py files in {PLUGINS_DIR}")
+                else:
+                    print(f"\n  {B}{WH}Loaded plugins{R}\n")
+                    for item in details:
+                        perms = ", ".join(item["permissions"]) if item["permissions"] else "none declared"
+                        print(f"  {PU}{item['name']}  v{item['version']}{R}")
+                        print(f"  {GR}{item['description']}{R}")
+                        print(f"  {DG}commands:{R} {', '.join(item['commands'])}")
+                        print(f"  {DG}permissions:{R} {perms}\n")
             else:
                 cmds = get_commands()
                 if cmds:
@@ -2493,6 +2572,58 @@ def main() -> None:  # noqa: C901
                     print()
                 else:
                     info(f"No plugins loaded.  Drop .py files in {PLUGINS_DIR}")
+            continue
+
+        if cmd == "/permissions":
+            sub = (user_input.split(maxsplit=1)[1:] or ["summary"])[0].strip().lower() or "summary"
+            if sub not in {"summary", "all", "plugins"}:
+                warn("Usage: /permissions [all|plugins]")
+                continue
+            print("\n  " + render_permission_report(sub).replace("\n", "\n  ") + "\n")
+            continue
+
+        if cmd == "/status":
+            try:
+                provider_name = get_provider()
+            except Exception:
+                provider_name = ""
+            print(
+                "\n  "
+                + build_status_report(
+                    base_dir=pathlib.Path.cwd(),
+                    provider=provider_name,
+                    model=current_model,
+                    session_turns=turns,
+                    short_term_stats=memory.stats(),
+                    recent_commands=[],
+                ).replace("\n", "\n  ")
+                + "\n"
+            )
+            continue
+
+        if cmd == "/doctor":
+            try:
+                provider_name = get_provider()
+            except Exception:
+                provider_name = ""
+            print(
+                "\n  "
+                + build_doctor_report(
+                    base_dir=pathlib.Path.cwd(),
+                    provider=provider_name,
+                    model=current_model,
+                    configured_providers=get_available_providers(),
+                ).replace("\n", "\n  ")
+                + "\n"
+            )
+            continue
+
+        if cmd == "/benchmark":
+            sub = (user_input.split(maxsplit=1)[1:] or ["list"])[0].strip().lower() or "list"
+            if sub != "list":
+                warn("Usage: /benchmark [list]")
+                continue
+            print("\n  " + render_benchmark_catalog(load_benchmark_scenarios()).replace("\n", "\n  ") + "\n")
             continue
 
         if cmd == "/lumi.md":
@@ -2542,8 +2673,9 @@ def main() -> None:  # noqa: C901
                     print(f"{GR}{textwrap.fill(r['snippet'], terminal_width()-8, initial_indent='      ', subsequent_indent='      ')}{R}")
                 print()
             ctx = search(query, fetch_top=True)
-            memory.add("user", f"I searched for: {query}\n\n{ctx}\n\nSummarize the key findings briefly.")
-            messages = build_messages(system_prompt, memory.get())
+            _remember_context_text(query, ctx, kind="search")
+            memory.add("user", f"[search: {query}] Cached search results. Summarize the key findings briefly.")
+            messages = build_messages(system_prompt, memory.get(), model=current_model)
             try:
                 raw_reply = stream_and_render(client, messages, current_model, name)
             except Exception as exc:

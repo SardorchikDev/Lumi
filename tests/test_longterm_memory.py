@@ -18,8 +18,10 @@ from src.memory.longterm import (
     get_facts,
     get_persona_override,
     get_related_episodes,
+    memory_stats,
     remove_fact,
     save_episode,
+    search_facts,
     set_persona_override,
     update_fact,
 )
@@ -73,6 +75,14 @@ class TestFactMemory:
         add_fact("old fact")
         assert update_fact(0, "new fact") is True
         assert get_facts() == ["new fact"]
+
+    def test_search_facts_ranks_matching_entries(self):
+        add_fact("User prefers Python")
+        add_fact("User likes TypeScript")
+        add_fact("Favorite editor is Neovim")
+        matches = search_facts("python user")
+        assert matches[0] == "User prefers Python"
+        assert "User likes TypeScript" in matches
 
     def test_remove_fact_valid_index(self):
         add_fact("keep me")
@@ -155,6 +165,14 @@ class TestPersonaOverride:
         set_persona_override({"name": "Test"})
         assert len(get_facts()) == 1
         assert get_persona_override()["name"] == "Test"
+
+    def test_memory_stats_reports_fact_and_persona_counts(self):
+        add_fact("test fact")
+        set_persona_override({"name": "Test", "tone": "formal"})
+        stats = memory_stats()
+        assert stats["facts"] == 1
+        assert stats["persona_override_keys"] == 2
+        assert stats["episodes"] == 0
 
 
 class TestEpisodes:

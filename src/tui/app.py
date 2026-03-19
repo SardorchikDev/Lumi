@@ -43,6 +43,7 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=ROOT / ".env")
 
 # ── CLI Modules ──────────────────────────────────────────────────────────────
+from src.agents.benchmark import load_benchmark_scenarios, render_benchmark_catalog
 from src.agents.council import LEAD_AGENTS, _get_available_agents, classify_task, council_ask
 from src.chat.hf_client import (
     get_available_providers,
@@ -50,6 +51,12 @@ from src.chat.hf_client import (
     get_models,
     get_provider,
     set_provider,
+)
+from src.chat.optimizer import (
+    get_global_context_cache,
+    get_global_telemetry,
+    optimize_messages,
+    route_model,
 )
 from src.memory.conversation_store import load_by_name, load_latest
 from src.memory.conversation_store import (
@@ -63,7 +70,9 @@ from src.memory.longterm import (
 )
 from src.memory.short_term import ShortTermMemory
 from src.prompts.builder import (
-    build_messages,
+    build_messages as _base_build_messages,
+)
+from src.prompts.builder import (
     build_system_prompt,
     is_coding_task,
     is_file_generation_task,
@@ -98,14 +107,50 @@ from src.utils.intelligence import (
     needs_plan_first,
     should_search,
 )
+from src.utils.plugins import describe_plugins, load_plugins, render_permission_report
 from src.utils.plugins import dispatch as plugin_dispatch
-from src.utils.plugins import load_plugins
+from src.utils.system_reports import build_doctor_report, build_status_report
 from src.utils.web import fetch_url
 
 try:
     from src.utils.tools import clipboard_get, clipboard_set, get_weather, load_project, read_pdf
 except Exception:
     clipboard_get = clipboard_set = get_weather = load_project = read_pdf = None
+
+_context_cache = get_global_context_cache()
+_session_telemetry = get_global_telemetry()
+
+
+def _infer_message_mode(history: list[dict[str, str]]) -> str:
+    text = next((m.get("content", "") for m in reversed(history) if m.get("role") == "user"), "")
+    lowered = str(text).lower()
+    if any(token in lowered for token in ("/review", "review", "security review")):
+        return "review"
+    if any(token in lowered for token in ("traceback", "stack trace", "assert", "test failed", "/fix", "mypy", "ruff")):
+        return "debug"
+    if any(token in lowered for token in ("/search", "/web", "fetched external raw web link", "auto search tool results")):
+        return "search"
+    if any(token in lowered for token in ("/tl;dr", "summarize", "summary")):
+        return "summary"
+    if any(token in lowered for token in ("/file", "/project", "loaded file", "<file path=", "cached for retrieval")):
+        return "files"
+    return "code" if is_file_generation_task(lowered) or "```" in lowered or is_coding_task(lowered) else "chat"
+
+
+def build_messages(system_prompt: str, history: list[dict[str, str]], *, model: str = "") -> list[dict[str, str]]:
+    active_model = model or "unknown"
+    if active_model == "unknown":
+        try:
+            active_model = get_models(get_provider())[0]
+        except Exception:
+            active_model = "unknown"
+    return optimize_messages(
+        _base_build_messages(system_prompt, history),
+        active_model,
+        mode=_infer_message_mode(history),
+        context_cache=_context_cache,
+        telemetry=_session_telemetry,
+    )
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ANSI Colors & Deep Tokyo Night Math
@@ -275,7 +320,7 @@ class CommandRegistry:
         return decorator
 
     def _infer_category(self, name):
-        if name in {"/model", "/theme", "/persona", "/mode", "/offline", "/plugins", "/quit", "/exit"}:
+        if name in {"/model", "/theme", "/persona", "/mode", "/offline", "/plugins", "/permissions", "/status", "/doctor", "/benchmark", "/quit", "/exit"}:
             return "settings"
         if name in {"/agent", "/scaffold", "/edit", "/review", "/fix", "/debug", "/improve", "/optimize", "/security", "/refactor", "/test", "/explain"}:
             return "code"
@@ -489,10 +534,14 @@ class Renderer:
         pname = PROV_NAME.get(tui.current_model if tui.current_model == "council" else get_provider(), get_provider())
         model = tui.current_model.split("/")[-1][:22]
         mem = tui.memory.get()
-        if len(mem) != tui._cached_tok_len:
+        if _session_telemetry.last_budget is not None:
+            toks = _session_telemetry.last_budget.total_prompt_tokens
+        elif len(mem) != tui._cached_tok_len:
             tui._cached_tok_count = sum(_tok(m["content"]) for m in mem)
             tui._cached_tok_len = len(mem)
-        toks = tui._cached_tok_count
+            toks = tui._cached_tok_count
+        else:
+            toks = tui._cached_tok_count
         mode = f" {tui.response_mode}" if tui.response_mode else ""
 
         if tui.vessel_mode and tui.active_vessel:
@@ -636,6 +685,41 @@ class LumiTUI:
             return "confirm removal", "y apply · Enter cancel"
         return "confirm filesystem plan", "y apply · Enter cancel"
 
+    def _cancel_pending_file_plan(self) -> bool:
+        pending = self._pending_file_plan
+        if pending is None:
+            return False
+        self._pending_file_plan = None
+        operation = pending.get("plan", {}).get("operation", "create")
+        label = "Removal" if operation == "delete" else "Filesystem plan"
+        self._sys(f"{label} cancelled.")
+        return True
+
+    def _cancel_transient_state(self) -> bool:
+        changed = False
+        if getattr(self, "browser_visible", False):
+            self.browser_visible = False
+            changed = True
+        if self.slash_visible:
+            self.slash_visible = False
+            changed = True
+        if self.path_visible or self.path_hits:
+            self.path_visible = False
+            self.path_hits = []
+            self.path_sel = 0
+            changed = True
+        if self.picker_visible:
+            self.picker_visible = False
+            changed = True
+        if self._cancel_pending_file_plan():
+            changed = True
+        if self.buf:
+            self.buf = ""
+            self.cur_pos = 0
+            self.history.reset_navigation()
+            changed = True
+        return changed
+
     def _record_filesystem_action(self, summary: str, undo_record: dict | None = None) -> None:
         self._last_filesystem_undo = undo_record
         self.recent_actions = self.little_notes.record_action(summary)[:4]
@@ -727,7 +811,9 @@ class LumiTUI:
                 if d:
                     full += d; self.store.append(idx, d); self.redraw()
         except Exception as ex: return self._handle_stream_error(idx, ex, messages)
-        self.store.finalize(idx); return full
+        self.store.finalize(idx)
+        _session_telemetry.record_response(full)
+        return full
 
     def _run_council_stream(self, idx, messages):
         avail = _get_available_agents()
@@ -758,8 +844,11 @@ class LumiTUI:
         except Exception as ex:
             log.exception("Council stream failed")
             self.store.set_text(idx, f"⚠  {ex}"); self.store.finalize(idx); return f"⚠  {ex}"
-        if refined: self.store.set_text(idx, refined or full)
-        self.store.finalize(idx); return refined or full
+        final = refined or full
+        if refined: self.store.set_text(idx, final)
+        self.store.finalize(idx)
+        _session_telemetry.record_response(final)
+        return final
 
     def _handle_stream_error(self, idx, ex, messages):
         msg = str(ex)
@@ -782,7 +871,24 @@ class LumiTUI:
         self.store.finalize(idx); return f"⚠  {ex}"
 
     def _silent_call(self, prompt, model, max_tokens=8192):
-        try: return self.client.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}], max_tokens=max_tokens, temperature=0.3, stream=False).choices[0].message.content.strip()
+        try:
+            routed = route_model(model, get_models(get_provider()), "summary")
+            messages = optimize_messages(
+                [{"role": "system", "content": "You are Lumi. Return only the requested result."}, {"role": "user", "content": prompt}],
+                routed,
+                mode="summary",
+                context_cache=_context_cache,
+                telemetry=_session_telemetry,
+            )
+            reply = self.client.chat.completions.create(
+                model=routed,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=0.3,
+                stream=False,
+            ).choices[0].message.content.strip()
+            _session_telemetry.record_response(reply)
+            return reply
         except Exception:
             log.exception("Silent call failed")
             return ""
@@ -959,10 +1065,7 @@ class LumiTUI:
     def _handle_key(self, key):
         if not key: return
         if key == "ESC":
-            if getattr(self, "browser_visible", False): self.browser_visible = False; self.redraw(); return
-            if self.slash_visible: self.slash_visible = False
-            elif self.path_visible: self.path_visible = False
-            elif self.picker_visible: self.picker_visible = False
+            self._cancel_transient_state()
             return
         if key in ("CTRL_Q", "CTRL_C"):
             with self._state_lock: self._running = False
@@ -1573,11 +1676,9 @@ def cmd_file(tui: LumiTUI, arg: str):
         content = path.read_text(errors="replace")
         rel = str(path)
         line_count = content.count("\n") + 1
-        # Inject into memory as a user-facing system note
         tui._sys(f"󰈔 Loaded `{rel}` ({line_count} lines) into context")
-        # Also push into the conversation memory so the LLM can see it
-        snippet = f"<file path=\"{rel}\">\n{content}\n</file>"
-        tui.memory.add("user", snippet)
+        _context_cache.remember_file(rel, content)
+        tui.memory.add("user", f"[loaded file: {rel}] Cached for retrieval.")
     except Exception as e:
         tui._err(f"Failed to read {path}: {e}")
 
@@ -1673,8 +1774,9 @@ def cmd_search(tui: LumiTUI, arg: str):
         results, _ = search_display(arg); lines = [f"Result Headers Found for => {arg}", ""]
         for i, r in enumerate(results, 1): lines.append(f" {i}. {r['title']}\n    - {r['url']}")
         tui._sys("\n".join(lines)); ctx = search(arg, fetch_top=True)
-        tui.memory.add("user", f"Auto Search Tool results fetched internally to system parameters [query={arg}]\nData block:\n{ctx}\nAnalyze directly the main details and print clear structured insights.")
-        raw = tui._tui_stream(build_messages(tui.system_prompt, tui.memory.get()), tui.current_model, f"◆ {tui.name}  [WWW Net Context Load Complete]")
+        _context_cache.remember_text(f"search:{arg}", arg, ctx, kind="search")
+        tui.memory.add("user", f"[search: {arg}] Cached search results. Analyze the main details and print clear structured insights.")
+        raw = tui._tui_stream(build_messages(tui.system_prompt, tui.memory.get(), model=tui.current_model), tui.current_model, f"◆ {tui.name}  [WWW Net Context Load Complete]")
         tui.memory.replace_last("user", f"Search requested info on [ {arg} ]")
         tui.memory.add("assistant", raw); tui.last_reply = raw; tui.turns += 1
     except Exception as e: tui._err(str(e))
@@ -1687,8 +1789,9 @@ def cmd_web(tui: LumiTUI, arg: str):
     tui.set_busy(True); parts = arg.split(None, 1); url = parts[0]; q = parts[1] if len(parts) > 1 else "Brief summarize."
     tui._sys(f"◆  Connecting fetching HTML target payload @ [{url}]"); content = fetch_url(url)
     if content.startswith(("HTTP", "Fetch", "Could not")): tui._err(content); tui.set_busy(False); return
-    tui.memory.add("user", f"Fetched external raw web link ({url}):\n{content}\n---\nRespond instruction: {q}")
-    raw = tui._tui_stream(build_messages(tui.system_prompt, tui.memory.get()), tui.current_model, f"◆ {tui.name} [WWW Node parser]")
+    _context_cache.remember_text(f"web:{url}", url, content, kind="web")
+    tui.memory.add("user", f"[web: {url}] Cached fetched page. Instruction: {q}")
+    raw = tui._tui_stream(build_messages(tui.system_prompt, tui.memory.get(), model=tui.current_model), tui.current_model, f"◆ {tui.name} [WWW Node parser]")
     tui.memory.replace_last("user", f"Scan web dom target details[URL_HIDDEN]: {q}"); tui.memory.add("assistant", raw)
     tui.last_reply = raw; tui.turns += 1; tui.set_busy(False)
 
@@ -1769,17 +1872,11 @@ def cmd_compact(tui: LumiTUI, arg: str): tui._compact = not tui._compact; tui._s
 
 @registry.register("/tokens", "Show estimated token usage")
 def cmd_tokens(tui: LumiTUI, arg: str):
-    msgs = tui.memory.get()
-    total = sum(max(1, int(len(m["content"].split()) * 1.35)) for m in msgs)
-    tui._sys(f"Estimated tokens: ~{total:,}  ({len(msgs)} messages)")
+    tui._sys(_session_telemetry.render_usage_report())
 
 @registry.register("/context", "Show context window breakdown")
 def cmd_context(tui: LumiTUI, arg: str):
-    msgs = tui.memory.get()
-    sys_t = sum(max(1, int(len(m["content"].split()) * 1.35)) for m in msgs if m["role"] == "system")
-    usr_t = sum(max(1, int(len(m["content"].split()) * 1.35)) for m in msgs if m["role"] == "user")
-    ast_t = sum(max(1, int(len(m["content"].split()) * 1.35)) for m in msgs if m["role"] == "assistant")
-    tui._sys(f"Context breakdown:\n  System: ~{sys_t:,}tk\n  User:   ~{usr_t:,}tk\n  AI:     ~{ast_t:,}tk\n  Total:  ~{sys_t + usr_t + ast_t:,}tk")
+    tui._sys(_session_telemetry.render_context_report())
 
 @registry.register("/export", "Export chat as Markdown file")
 def cmd_export(tui: LumiTUI, arg: str):
@@ -1891,8 +1988,10 @@ def cmd_data(tui: LumiTUI, arg: str):
     content = path.read_text(errors="replace")[:8000]
     def _go():
         tui.set_busy(True)
-        prompt = f"Analyze this data ({path.name}). Give summary stats, patterns, insights:\n\n```\n{content}\n```"
+        _context_cache.remember_text(f"data:{path}", path.name, content, kind="data")
+        prompt = f"[data: {path.name}] Cached data snapshot. Give summary stats, patterns, insights."
         msgs = [{"role": "system", "content": tui.system_prompt}, {"role": "user", "content": prompt}]
+        msgs = optimize_messages(msgs, tui.current_model, mode="code", context_cache=_context_cache, telemetry=_session_telemetry)
         reply = tui._tui_stream(msgs, tui.current_model, f"analyzing {path.name}")
         tui.last_reply = reply; tui.set_busy(False)
     threading.Thread(target=_go, daemon=True).start()
@@ -2019,8 +2118,79 @@ def cmd_timer(tui: LumiTUI, arg: str):
 
 @registry.register("/plugins", "List loaded plugins")
 def cmd_plugins(tui: LumiTUI, arg: str):
-    if not tui._loaded_plugins: tui._sys("No plugins loaded. Drop .py files in ~/Lumi/plugins/"); return
-    tui._sys("Loaded plugins:\n" + "\n".join(f"  {p}" for p in tui._loaded_plugins))
+    details = describe_plugins()
+    if not details:
+        tui._sys("No plugins loaded. Drop .py files in ~/Lumi/plugins/")
+        return
+    sub = arg.strip().lower()
+    if sub in {"inspect", "details", "verbose"}:
+        lines = ["Loaded plugins"]
+        for item in details:
+            perms = ", ".join(item["permissions"]) if item["permissions"] else "none declared"
+            commands = ", ".join(item["commands"])
+            lines.append(f"  {item['name']} v{item['version']}")
+            lines.append(f"    {item['description']}")
+            lines.append(f"    commands: {commands}")
+            lines.append(f"    permissions: {perms}")
+        tui._sys("\n".join(lines))
+        return
+    tui._sys(
+        "Loaded plugins:\n"
+        + "\n".join(f"  {item['name']}  ({', '.join(item['commands'])})" for item in details)
+    )
+
+
+@registry.register("/permissions", "Show plugin permissions: /permissions [all|plugins]")
+def cmd_permissions(tui: LumiTUI, arg: str):
+    scope = arg.strip().lower() or "summary"
+    if scope not in {"summary", "all", "plugins"}:
+        tui._err("Usage: /permissions [all|plugins]")
+        return
+    tui._sys(render_permission_report(scope))
+
+
+@registry.register("/status", "Show Lumi session and workspace status")
+def cmd_status(tui: LumiTUI, arg: str):
+    try:
+        provider = get_provider()
+    except Exception:
+        provider = ""
+    report = build_status_report(
+        base_dir=Path.cwd(),
+        provider=provider,
+        model=tui.current_model,
+        session_turns=tui.turns,
+        short_term_stats=tui.memory.stats(),
+        recent_commands=tui.recent_commands,
+    )
+    tui._sys(report)
+
+
+@registry.register("/doctor", "Check Lumi setup and workspace health")
+def cmd_doctor(tui: LumiTUI, arg: str):
+    try:
+        provider = get_provider()
+    except Exception:
+        provider = ""
+    try:
+        configured = get_available_providers()
+    except Exception:
+        configured = []
+    report = build_doctor_report(
+        base_dir=Path.cwd(),
+        provider=provider,
+        model=tui.current_model,
+        configured_providers=configured,
+    )
+    tui._sys(report)
+
+
+@registry.register("/benchmark", "Show the built-in benchmark suite")
+def cmd_benchmark(tui: LumiTUI, arg: str):
+    if arg.strip() not in {"", "list"}:
+        tui._err("Usage: /benchmark [list]")
+        return
+    tui._sys(render_benchmark_catalog(load_benchmark_scenarios()))
 
 @registry.register("/comment", "Add inline comments to file")
 def cmd_comment(tui: LumiTUI, arg: str):
@@ -2075,11 +2245,13 @@ def cmd_project(tui: LumiTUI, arg: str):
     exts = {".py", ".js", ".ts", ".jsx", ".tsx", ".go", ".rs", ".md", ".toml", ".yaml", ".yml", ".json", ".sh"}
     files = [f for f in target.rglob("*") if f.is_file() and f.suffix in exts and ".git" not in str(f) and "node_modules" not in str(f)][:30]
     if not files: tui._sys("No recognizable source files found"); return
-    content_parts = []
+    cached_parts: list[tuple[str, str]] = []
     for f in files:
-        try: content_parts.append(f"<file path=\"{f}\">\n{f.read_text(errors='replace')[:3000]}\n</file>")
+        try:
+            cached_parts.append((str(f.relative_to(target)), f.read_text(errors='replace')[:3000]))
         except Exception: pass
-    tui.memory.add("user", "\n\n".join(content_parts))
+    _context_cache.remember_project(target, cached_parts)
+    tui.memory.add("user", f"[project loaded: {target}] Cached project files for retrieval.")
     tui._sys(f"Loaded {len(files)} files from {target} into context")
 
 # ── Help (redesigned) ────────────────────────────────────────────────────────
@@ -2092,7 +2264,7 @@ HELP_CATEGORIES = {
     "🌐 Web": ["/search", "/web", "/image", "/data"],
     "🧠 Memory": ["/remember", "/memory", "/forget", "/save", "/load", "/sessions", "/export", "/tokens", "/context"],
     "🛠️ Tools": ["/shell", "/scaffold", "/lint", "/fmt", "/todo", "/note", "/draft", "/weather", "/timer", "/copy", "/paste", "/diff", "/pdf"],
-    "⚙️ System": ["/model", "/council", "/mode", "/offline", "/godmode", "/pane", "/apply", "/index", "/rag", "/voice", "/persona", "/sys", "/plugins", "/compact", "/help", "/exit"],
+    "⚙️ System": ["/status", "/doctor", "/benchmark", "/permissions", "/model", "/council", "/mode", "/offline", "/godmode", "/pane", "/apply", "/index", "/rag", "/voice", "/persona", "/sys", "/plugins", "/compact", "/help", "/exit"],
 }
 
 @registry.register("/help", "Show all commands organized by category")
@@ -2832,11 +3004,12 @@ def cmd_rag(tui: LumiTUI, arg: str):
         context = "Here are the top relevant files from the local index:\n\n"
         for filepath, content in results:
             context += f"--- {filepath} ---\n{content}\n\n"
+            _context_cache.remember_text(f"rag:{filepath}", filepath, content, kind="rag")
 
-        prompt = f"{context}\n\nBased on the codebase above, answer this: {arg}"
+        prompt = f"[rag: {arg}] Use the cached index results to answer the question."
         tui.memory.add("user", prompt)
 
-        msgs = build_messages(tui.system_prompt, tui.memory.get())
+        msgs = build_messages(tui.system_prompt, tui.memory.get(), model=tui.current_model)
         raw = tui._tui_stream(msgs, tui.current_model, f"◆ {tui.name}  [RAG]")
         tui.memory.replace_last("user", f"/rag {arg}")
         tui.memory.add("assistant", raw)

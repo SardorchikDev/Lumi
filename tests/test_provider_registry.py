@@ -16,7 +16,9 @@ def test_pick_default_provider_prefers_documented_order(monkeypatch):
         "GITHUB_API_KEY",
         "COHERE_API_KEY",
         "BYTEZ_API_KEY",
+        "AIRFORCE_API_KEY",
         "VERCEL_API_KEY",
+        "POLLINATIONS_API_KEY",
         "CLOUDFLARE_API_KEY",
         "CLOUDFLARE_ACCOUNT_ID",
         "GOOGLE_APPLICATION_CREDENTIALS",
@@ -37,5 +39,9 @@ def test_get_configured_providers_includes_ollama_flag(monkeypatch):
 
 def test_provider_capabilities_and_labels():
     assert provider_supports("openrouter", "fallbacks") is True
+    assert provider_supports("airforce", "fallbacks") is True
+    assert provider_supports("pollinations", "fallbacks") is True
     assert provider_supports("ollama", "local") is True
     assert provider_label("github") == "GitHub Models"
+    assert provider_label("airforce") == "Airforce"
+    assert provider_label("pollinations") == "Pollinations"

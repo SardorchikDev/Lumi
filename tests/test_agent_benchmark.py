@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from src.agents.benchmark import (
     BenchmarkScenario,
+    load_benchmark_scenarios,
+    render_benchmark_catalog,
+    render_benchmark_summary,
     run_benchmark_suite,
     summarize_benchmark_results,
 )
@@ -60,3 +63,52 @@ def test_summarize_benchmark_results_tracks_quality_signals(tmp_path):
     assert summary.verification_pass_rate == 1.0
     assert summary.recovery_rate == 1.0
     assert summary.rollback_rate == 1.0
+
+
+def test_load_benchmark_scenarios_reads_json_catalog(tmp_path):
+    path = tmp_path / "benchmarks.json"
+    path.write_text(
+        """
+        [
+          {
+            "name": "delete-docs",
+            "task": "delete the folder docs",
+            "category": "filesystem",
+            "expected_absent_files": ["docs"],
+            "expected_substrings": ["completed"]
+          }
+        ]
+        """,
+        encoding="utf-8",
+    )
+    scenarios = load_benchmark_scenarios(path)
+    assert len(scenarios) == 1
+    assert scenarios[0].category == "filesystem"
+    assert scenarios[0].expected_absent_files == ("docs",)
+
+
+def test_render_benchmark_outputs_are_scanable(tmp_path):
+    (tmp_path / "docs").mkdir()
+
+    def runner(task: str) -> str:
+        return f"Agent completed 1/1 steps for {task}. 1 passed."
+
+    results = run_benchmark_suite(
+        [
+            BenchmarkScenario(
+                name="delete-folder",
+                task="delete docs",
+                category="filesystem",
+                expected_absent_files=("docs",),
+                expected_substrings=("passed",),
+            )
+        ],
+        runner=runner,
+        workspace=tmp_path,
+    )
+    catalog = render_benchmark_catalog(
+        [BenchmarkScenario(name="delete-folder", task="delete docs", category="filesystem")]
+    )
+    summary = render_benchmark_summary(summarize_benchmark_results(results))
+    assert "delete-folder" in catalog
+    assert "Benchmark summary" in summary

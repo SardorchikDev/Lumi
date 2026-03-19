@@ -122,24 +122,50 @@ class StarterView:
         note_lines = notes_store.display_lines(limit=3) if notes_store else [
             cmd for cmd in getattr(self.tui, "recent_commands", []) if cmd
         ][:3]
+        note_lines = [center(line, right_w - 2) for line in note_lines]
         action_lines = notes_store.display_action_lines(limit=2) if notes_store else getattr(self.tui, "recent_actions", [])[:2]
         while len(note_lines) < 3:
             note_lines.append("")
 
-        logo = "[˶ᵔ ᵕ ᵔ˶]"
+        logo_lines = [
+            "         ,",
+            "        _o_",
+            "   ._ ,'   `o'",
+            "----(_)      :",
+            "    '  `.   .o",
+            "         ~o~  `",
+            "          '",
+        ]
+        logo_box_w = max(len(line) for line in logo_lines)
+        logo_left_pad = max(0, (left_w - 2 - logo_box_w) // 2)
+        logo_rows = [(" " * logo_left_pad) + line for line in logo_lines]
+        logo_tones = [
+            self.style.fg_dim,
+            self.style.muted,
+            self.style.fg_hi,
+            self.style.fg_hi,
+            self.style.muted,
+            self.style.fg_dim,
+            self.style.fg_dim,
+        ]
         trailing_lines = [""]
         if action_lines:
             trailing_lines.append("  " + self.style.fg_fn(self.style.muted) + "recent action  " + action_lines[0][: min(width - 20, 72)] + self.style.reset)
         lines = [
+            "",
             panel_pad + border + "╭" + "─" * panel_w + "╮" + self.style.reset,
             row(center("welcome to lumi", left_w - 2), center("little notes", right_w - 2)),
             row("", note_lines[0], self.style.fg_dim, self.style.fg_dim),
-            row(center(logo, left_w - 2), note_lines[1], self.style.fg_hi, self.style.fg_dim),
-            row("", note_lines[2], self.style.fg_dim, self.style.fg_dim),
+            row(logo_rows[0], note_lines[1], logo_tones[0], self.style.fg_dim),
+            row(logo_rows[1], note_lines[2], logo_tones[1], self.style.fg_dim),
+            row(logo_rows[2], "", logo_tones[2], self.style.fg_dim),
+            row(logo_rows[3], "", logo_tones[3], self.style.fg_dim),
+            row(logo_rows[4], "", logo_tones[4], self.style.fg_dim),
+            row(logo_rows[5], "", logo_tones[5], self.style.fg_dim),
+            row(logo_rows[6], "", logo_tones[6], self.style.fg_dim),
             row("", "", self.style.fg_dim, self.style.fg_dim),
             row(center(f"{provider}  ·  {model}", left_w - 2), "", self.style.muted, self.style.fg_dim),
             row(center(cwd_short, left_w - 2), "", self.style.muted, self.style.fg_dim),
-            row("", "", self.style.fg_dim, self.style.fg_dim),
             row("", "", self.style.fg_dim, self.style.fg_dim),
             panel_pad + border + "╰" + "─" * panel_w + "╯" + self.style.reset,
             "",

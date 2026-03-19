@@ -1,21 +1,32 @@
 """
-Lumi API client — Gemini, Groq, HuggingFace.
+Lumi API client — Gemini, Groq, HuggingFace, and OpenAI-compatible gateways.
 
 Add any/all keys to .env — Lumi will let you pick the provider at runtime:
-  GEMINI_API_KEY=AIza...       https://aistudio.google.com/apikey
-  GROQ_API_KEY=gsk_...         https://console.groq.com
-  HF_TOKEN=hf_...              https://huggingface.co/settings/tokens
+  GEMINI_API_KEY=AIza...          https://aistudio.google.com/apikey
+  GROQ_API_KEY=gsk_...            https://console.groq.com
+  HF_TOKEN=hf_...                 https://huggingface.co/settings/tokens
+  AIRFORCE_API_KEY=...            https://api.airforce
+  POLLINATIONS_API_KEY=...        https://gen.pollinations.ai
 """
 
 import json
 import os
+import sys
 import time
 import urllib.request
 from pathlib import Path
 
 from openai import OpenAI
 
-from src.chat.providers import get_configured_providers, pick_default_provider
+from src.chat.client_factory import make_client as _factory_make_client
+from src.chat.client_factory import make_vertex_client as _factory_make_vertex_client
+from src.chat.openai_compat import fetch_openai_compatible_models
+from src.chat.providers import (
+    get_configured_providers,
+    get_provider_spec,
+    pick_default_provider,
+    provider_supports,
+)
 from src.config import DATA_DIR
 
 # ── Model lists ───────────────────────────────────────────────────────────────
@@ -203,10 +214,6 @@ CLOUDFLARE_MODELS = [
     "@cf/meta/llama-3.2-3b-instruct",        # Llama 3.2 3B — fastest
 ]
 
-def _cloudflare_base_url() -> str:
-    account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
-    return f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1"
-
 
 # Bytez — unified API for 100,000+ open-source models (https://bytez.com/api)
 # Base URL: https://api.bytez.com/models/v2/openai/v1
@@ -279,6 +286,54 @@ def _fetch_bytez_models() -> list:
         return ordered + extras if ordered else BYTEZ_MODELS[:]
     except Exception:
         return BYTEZ_MODELS[:]
+
+
+# Airforce — OpenAI-compatible AI gateway
+# Base: https://api.airforce/v1
+# Env var: AIRFORCE_API_KEY
+# These curated defaults are conservative fallbacks for when model discovery fails.
+AIRFORCE_MODELS = [
+    "gpt-4o-mini",
+    "gpt-4o",
+    "claude-3-5-sonnet",
+    "deepseek-chat",
+    "gemini-2.0-flash",
+    "llama-3.3-70b-instruct",
+]
+
+
+# Pollinations — OpenAI-compatible text/image generation gateway
+# Base: https://gen.pollinations.ai/v1
+# Env var: POLLINATIONS_API_KEY
+POLLINATIONS_MODELS = [
+    "kimi",
+    "deepseek",
+    "glm",
+    "claude-fast",
+    "gemini-large",
+    "gemini-search",
+]
+
+def _fetch_airforce_models() -> list[str]:
+    try:
+        return fetch_openai_compatible_models(
+            base_url="https://api.airforce/v1",
+            api_key=os.getenv("AIRFORCE_API_KEY", ""),
+            curated=AIRFORCE_MODELS,
+        )
+    except Exception:
+        return AIRFORCE_MODELS[:]
+
+
+def _fetch_pollinations_models() -> list[str]:
+    try:
+        return fetch_openai_compatible_models(
+            base_url="https://gen.pollinations.ai/v1",
+            api_key=os.getenv("POLLINATIONS_API_KEY", ""),
+            curated=POLLINATIONS_MODELS,
+        )
+    except Exception:
+        return POLLINATIONS_MODELS[:]
 
 
 # Vercel AI Gateway — $5 free credits/month, 100+ models, no markup fee
@@ -361,14 +416,6 @@ VERTEX_MODELS = [
     "codestral@2405",                          # Codestral — coding specialist
 ]
 
-def _vertex_base_url() -> str:
-    location   = os.getenv("VERTEX_LOCATION", "us-central1")
-    project_id = os.getenv("VERTEX_PROJECT_ID", "")
-    return (
-        f"https://{location}-aiplatform.googleapis.com/v1beta1"
-        f"/projects/{project_id}/locations/{location}/endpoints/openapi"
-    )
-
 
 OLLAMA_BASE = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
@@ -391,9 +438,19 @@ def _has_ollama() -> bool:
 
 _active_provider: str = None   # "gemini" | "groq" | "huggingface"
 _active_client: OpenAI = None
+_active_client_provider: str | None = None
+_active_client_expires_at: float | None = None
 _models_cache: dict = {}       # provider → list of models
+_models_cache_fetched_at: dict[str, float] = {}
 MODEL_CACHE_DIR = DATA_DIR / "model_catalogs"
 MODEL_CACHE_TTL_SECONDS = 900
+
+
+def _validate_provider(provider: str) -> None:
+    if provider == "ollama":
+        return
+    if not get_provider_spec(provider):
+        raise ValueError(f"Unknown provider: {provider}")
 
 
 def _catalog_cache_path(provider: str) -> Path:
@@ -426,10 +483,13 @@ def _write_catalog_cache(provider: str, models: list[str]) -> None:
         "fetched_at": time.time(),
         "models": models,
     }
-    _catalog_cache_path(provider).write_text(
+    path = _catalog_cache_path(provider)
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    tmp_path.replace(path)
 
 
 def _discover_models(provider: str, curated: list[str], fetcher) -> list[str]:
@@ -464,18 +524,28 @@ def get_provider() -> str:
         "  GITHUB_API_KEY=...      https://github.com/settings/tokens\n"
         "  COHERE_API_KEY=...      https://dashboard.cohere.com/api-keys\n"
         "  BYTEZ_API_KEY=...       https://bytez.com/api\n"
+        "  AIRFORCE_API_KEY=...    https://api.airforce\n"
         "  CLOUDFLARE_API_KEY=...  https://dash.cloudflare.com/profile/api-tokens\n"
         "  CLOUDFLARE_ACCOUNT_ID=... https://dash.cloudflare.com (right sidebar)\n"
         "  VERCEL_API_KEY=...      https://vercel.com/dashboard -> AI -> API Keys\n"
+        "  POLLINATIONS_API_KEY=... https://gen.pollinations.ai\n"
         "  GOOGLE_APPLICATION_CREDENTIALS=... /path/to/service-account.json\n"
         "  VERTEX_PROJECT_ID=...   Your Google Cloud project ID"
     )
 
 
 def set_provider(provider: str):
-    global _active_provider, _active_client
+    global _active_provider, _active_client, _active_client_provider, _active_client_expires_at
+    _validate_provider(provider)
     _active_provider = provider
-    _active_client   = _make_client(provider)
+    if provider == "vertex":
+        _active_client = None
+        _active_client_provider = provider
+        _active_client_expires_at = 0
+        return
+    _active_client = _make_client(provider)
+    _active_client_provider = provider
+    _active_client_expires_at = None
 
 
 def get_available_providers() -> list:
@@ -484,86 +554,44 @@ def get_available_providers() -> list:
 
 
 def _make_client(provider: str) -> OpenAI:
-    if provider == "gemini":
-        return OpenAI(
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-            api_key=os.getenv("GEMINI_API_KEY"),
-        )
-    if provider == "groq":
-        return OpenAI(
-            base_url="https://api.groq.com/openai/v1",
-            api_key=os.getenv("GROQ_API_KEY"),
-        )
-    if provider == "openrouter":
-        return OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=os.getenv("OPENROUTER_API_KEY"),
-        )
-    if provider == "mistral":
-        return OpenAI(
-            base_url="https://api.mistral.ai/v1",
-            api_key=os.getenv("MISTRAL_API_KEY"),
-        )
-    if provider == "github":
-        return OpenAI(
-            base_url="https://models.inference.ai.azure.com",
-            api_key=os.getenv("GITHUB_API_KEY"),
-        )
-    if provider == "cohere":
-        return OpenAI(
-            base_url="https://api.cohere.com/compatibility/v1",
-            api_key=os.getenv("COHERE_API_KEY"),
-        )
-    if provider == "bytez":
-        return OpenAI(
-            base_url="https://api.bytez.com/models/v2/openai/v1",
-            api_key=os.getenv("BYTEZ_API_KEY"),
-        )
-    if provider == "cloudflare":
-        return OpenAI(
-            base_url=_cloudflare_base_url(),
-            api_key=os.getenv("CLOUDFLARE_API_KEY"),
-        )
-    if provider == "vercel":
-        return OpenAI(
-            base_url="https://ai-gateway.vercel.sh/v1",
-            api_key=os.getenv("VERCEL_API_KEY"),
-        )
-    if provider == "vertex":
-        import google.auth
-        from google.auth.transport.requests import Request as _GRequest
-        creds, _ = google.auth.default(
-            scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
-        creds.refresh(_GRequest())
-        return OpenAI(
-            base_url=_vertex_base_url(),
-            api_key=creds.token,  # short-lived OAuth2 bearer token
-        )
-    if provider == "ollama":
-        return OpenAI(
-            base_url=f"{OLLAMA_BASE}/v1",
-            api_key="ollama",
-        )
-    return OpenAI(
-        base_url="https://router.huggingface.co/v1",
-        api_key=os.getenv("HF_TOKEN"),
-    )
+    _validate_provider(provider)
+    return _factory_make_client(provider, ollama_base=OLLAMA_BASE)
+
+
+def _make_vertex_client() -> tuple[OpenAI, float]:
+    return _factory_make_vertex_client()
 
 
 def get_client() -> OpenAI:
-    global _active_client
-    if _active_client is None:
-        _active_client = _make_client(get_provider())
+    global _active_client, _active_client_provider, _active_client_expires_at
+    provider = get_provider()
+    if provider == "vertex":
+        refresh_needed = (
+            _active_client is None
+            or _active_client_provider != provider
+            or _active_client_expires_at is None
+            or time.time() >= (_active_client_expires_at - 60)
+        )
+        if refresh_needed:
+            _active_client, _active_client_expires_at = _make_vertex_client()
+            _active_client_provider = provider
+        return _active_client
+    if _active_client is None or _active_client_provider != provider:
+        _active_client = _make_client(provider)
+        _active_client_provider = provider
+        _active_client_expires_at = None
     return _active_client
 
 
 # ── Model fetching ────────────────────────────────────────────────────────────
 
 def get_models(provider: str = None) -> list:
-    global _models_cache
+    global _models_cache, _models_cache_fetched_at
     p = provider or get_provider()
-    if p in _models_cache:
+    _validate_provider(p)
+    cached = _models_cache.get(p)
+    fetched_at = _models_cache_fetched_at.get(p, 0)
+    if cached and (time.time() - fetched_at) <= MODEL_CACHE_TTL_SECONDS:
         return _models_cache[p]
     if p == "gemini":
         models = _discover_models(p, ["gemini-3.1-flash-lite-preview", "gemini-2.0-flash"], _fetch_gemini_models)
@@ -579,17 +607,24 @@ def get_models(provider: str = None) -> list:
         models = COHERE_MODELS[:]
     elif p == "bytez":
         models = _discover_models(p, BYTEZ_MODELS, _fetch_bytez_models)
+    elif p == "airforce":
+        models = _discover_models(p, AIRFORCE_MODELS, _fetch_airforce_models)
     elif p == "cloudflare":
         models = CLOUDFLARE_MODELS[:]
     elif p == "vercel":
         models = _discover_models(p, VERCEL_MODELS, _fetch_vercel_models)
+    elif p == "pollinations":
+        models = _discover_models(p, POLLINATIONS_MODELS, _fetch_pollinations_models)
     elif p == "vertex":
         models = VERTEX_MODELS[:]
     elif p == "ollama":
         models = _fetch_ollama_models()
-    else:
+    elif p == "huggingface":
         models = HF_MODELS[:]
+    else:
+        raise ValueError(f"Unsupported provider: {p}")
     _models_cache[p] = models
+    _models_cache_fetched_at[p] = time.time()
     return models
 
 
@@ -782,13 +817,12 @@ def chat_stream(
         model = get_models()[0]
 
     # Build fallback chain
-    if provider == "openrouter":
-        all_models  = get_models("openrouter")           # full live list
-        # put chosen model first, then rest in order
-        rest        = [m for m in all_models if m != model]
-        attempt_models = [model] + rest[:12]             # try up to 13 before giving up
+    if provider_supports(provider, "fallbacks"):
+        all_models = get_models(provider)
+        rest = [m for m in all_models if m != model]
+        attempt_models = [model] + rest[:12]
     elif provider == "huggingface":
-        fallbacks      = [m for m in HF_FALLBACKS if m != model]
+        fallbacks = [m for m in HF_FALLBACKS if m != model]
         attempt_models = [model] + fallbacks
     else:
         attempt_models = [model]
@@ -825,7 +859,7 @@ def chat_stream(
             msg_lower = msg.lower()
             if any(e in msg_lower for e in _SKIP_ERRORS):
                 last_err = friendly or f"Model {m} unavailable, trying next..."
-                if provider in ("openrouter", "huggingface") and i < len(attempt_models) - 1:
+                if (provider == "huggingface" or provider_supports(provider, "fallbacks")) and i < len(attempt_models) - 1:
                     sys.stdout.write(f"\r  {m.split('/')[-1]} unavailable — trying next...  \r")
                     sys.stdout.flush()
                     continue

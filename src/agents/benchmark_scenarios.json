@@ -1,0 +1,36 @@
+[
+  {
+    "name": "scaffold-python",
+    "category": "filesystem",
+    "task": "create a folder named api and add a file named main.py inside that folder",
+    "expected_files": ["api/main.py"],
+    "expected_substrings": ["completed"]
+  },
+  {
+    "name": "scaffold-docs",
+    "category": "filesystem",
+    "task": "create a folder named docs and add a file named README.md inside that folder",
+    "expected_files": ["docs/README.md"],
+    "expected_substrings": ["completed"]
+  },
+  {
+    "name": "rename-file",
+    "category": "filesystem",
+    "task": "rename app.py to main.py",
+    "expected_files": ["main.py"],
+    "expected_substrings": ["completed"]
+  },
+  {
+    "name": "delete-folder",
+    "category": "filesystem",
+    "task": "delete the folder docs",
+    "expected_absent_files": ["docs"],
+    "expected_substrings": ["completed"]
+  },
+  {
+    "name": "patch-bug",
+    "category": "agent",
+    "task": "fix the failing calculation and run verification",
+    "expected_substrings": ["completed", "passed"]
+  }
+]

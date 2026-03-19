@@ -39,6 +39,24 @@ def _save(data: dict[str, Any]) -> None:
 def get_facts() -> list[str]:
     return _load().get("facts", [])
 
+
+def search_facts(query: str, limit: int = 5) -> list[str]:
+    normalized = " ".join(query.lower().split())
+    if not normalized:
+        return get_facts()[:limit]
+    facts = get_facts()
+    ranked: list[tuple[int, str]] = []
+    for fact in facts:
+        lowered = fact.lower()
+        score = 0
+        for token in normalized.split():
+            if token in lowered:
+                score += 1
+        if score:
+            ranked.append((score, fact))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return [fact for _, fact in ranked[:limit]]
+
 def add_fact(fact: str) -> int:
     data = _load()
     normalized = " ".join(fact.strip().split())
@@ -104,6 +122,15 @@ def clear_persona_override() -> None:
     data = _load()
     data.pop("persona_override", None)
     _save(data)
+
+
+def memory_stats() -> dict[str, int]:
+    data = _load()
+    return {
+        "facts": len(data.get("facts", [])),
+        "persona_override_keys": len(data.get("persona_override", {})),
+        "episodes": len(_load_episodes()),
+    }
 
 # ── Episodic Memory (Vector Search) ───────────────────────────────────────────
 EPISODIC_DB_PATH = MEMORY_DIR / "episodes.sqlite3"

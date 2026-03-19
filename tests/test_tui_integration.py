@@ -62,7 +62,7 @@ def test_ctrl_g_toggles_to_prompt_only_layout(tmp_path, monkeypatch):
     tui._task_executor.shutdown(wait=False)
 
 
-def test_recent_commands_persist_across_tui_instances(tmp_path, monkeypatch):
+def test_recent_commands_clear_between_tui_sessions(tmp_path, monkeypatch):
     first = _make_tui(tmp_path, monkeypatch)
     first.redraw = lambda: None
     first._execute_command("/clear", "")
@@ -72,7 +72,9 @@ def test_recent_commands_persist_across_tui_instances(tmp_path, monkeypatch):
     second.recent_commands = second.little_notes.recent_commands[:3]
 
     lines = [_strip_ansi(line) for line in second.renderer._build_starter_lines(110)]
-    assert any("/clear" in line for line in lines)
+    joined = "\n".join(lines)
+    assert "/clear" not in joined
+    assert "no commands this session" in joined
 
     first._task_executor.shutdown(wait=False)
     second._task_executor.shutdown(wait=False)
@@ -100,6 +102,46 @@ def test_pending_plan_changes_prompt_hint(tmp_path, monkeypatch):
 
     assert "confirm removal" in joined
     assert "y apply" in joined
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_escape_cancels_pending_file_plan(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui._pending_file_plan = {
+        "plan": {"operation": "delete", "targets": [{"path": "docs", "kind": "dir"}]},
+        "base_dir": str(tmp_path),
+        "inspection": {},
+    }
+
+    tui._handle_key("ESC")
+
+    assert tui._pending_file_plan is None
+    messages = tui.store.snapshot()
+    assert any(msg.role == "system" and "Removal cancelled." in msg.text for msg in messages)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_escape_closes_transient_ui_and_clears_prompt(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui.browser_visible = True
+    tui.slash_visible = True
+    tui.path_visible = True
+    tui.path_hits = ["src/app.py"]
+    tui.picker_visible = True
+    tui.buf = "/help"
+    tui.cur_pos = len(tui.buf)
+
+    tui._handle_key("ESC")
+
+    assert tui.browser_visible is False
+    assert tui.slash_visible is False
+    assert tui.path_visible is False
+    assert tui.path_hits == []
+    assert tui.picker_visible is False
+    assert tui.buf == ""
+    assert tui.cur_pos == 0
     tui._task_executor.shutdown(wait=False)
 
 
@@ -194,4 +236,15 @@ def test_undo_restores_last_filesystem_action(tmp_path, monkeypatch):
     assert not (tmp_path / "notes.txt").exists()
     messages = tui.store.snapshot()
     assert any(msg.role == "system" and "Undid filesystem action" in msg.text for msg in messages)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_permissions_command_renders_permission_report(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    tui._execute_command("/permissions", "all")
+
+    messages = tui.store.snapshot()
+    assert any(msg.role == "system" and "Plugin permissions" in msg.text for msg in messages)
+    assert any(msg.role == "system" and "loaded plugins" in msg.text for msg in messages)
     tui._task_executor.shutdown(wait=False)
