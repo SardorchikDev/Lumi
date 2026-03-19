@@ -52,25 +52,10 @@ from src.agents.council import council_ask, _get_available_agents as get_council
 
 from .render import (
     ok,
-    fail,
-    info,
-    warn,
-    div,
-    print_you,
     print_lumi_label,
-    print_welcome,
-    draw_header,
     Spinner,
-    terminal_width as W,
-    current_time as ts,
     word_count as wc,
-    provider_color as _pcolor,
-    visual_length as _vlen,
-    center_visual as _center,
-    PROV_COL,
-    LOGO,
-    LOGO_WIDTH as LOGO_W,
-    C1, C2, C3, PU, BL, CY, GR, DG, MU, GN, RE, YE, WH, R, B, D,
+    DG, GR, MU, R,
 )
 
 # Re-export for backward compatibility

@@ -2,6 +2,9 @@
 Terminal syntax highlighter using Pygments.
 Maps Pygments tokens to Lumi TUI colors.
 """
+
+from __future__ import annotations
+
 try:
     from pygments import lexers, token
     from pygments.lexers import get_lexer_by_name, guess_lexer, TextLexer
@@ -56,6 +59,9 @@ def highlight_line(code: str, lang: str = "") -> str:
     Returns ANSI string WITHOUT resets at the end of every token,
     to preserve background color.
     """
+    if not code:
+        return ""
+
     if not HAS_PYGMENTS:
         return code
 
@@ -121,14 +127,46 @@ def highlight_line(code: str, lang: str = "") -> str:
     return out + R
 
 
+def highlight(code: str, lang: str = "") -> str:
+    """Backward-compatible helper used by tests and older callers."""
+    if not code:
+        return ""
+
+    normalized_lang = (lang or "").lower()
+    aliases = {
+        "py": "python",
+        "js": "javascript",
+        "ts": "typescript",
+        "sh": "bash",
+        "yml": "yaml",
+    }
+    normalized_lang = aliases.get(normalized_lang, normalized_lang)
+
+    return "\n".join(highlight_line(line, normalized_lang) for line in code.split("\n"))
+
+
 def render_code_block(code: str, lang: str = "", indent: str = "  ") -> str:
     """Render a code block with syntax highlighting."""
-    if not HAS_PYGMENTS:
-        return f"{indent}{code}"
-    
+    normalized_lang = (lang or "").lower()
+    aliases = {
+        "py": "python",
+        "js": "javascript",
+        "ts": "typescript",
+        "sh": "bash",
+        "yml": "yaml",
+    }
+    normalized_lang = aliases.get(normalized_lang, normalized_lang)
+    label = normalized_lang or "code"
+
     lines = code.split("\n")
-    output = []
+    content_width = max([len(line) for line in lines] + [len(label), 4])
+    top = f"{indent}╭─ {label} " + "─" * max(0, content_width - len(label) + 1) + "╮"
+    bottom = f"{indent}╰" + "─" * (content_width + 4) + "╯"
+
+    output = [top]
     for line in lines:
-        highlighted = highlight_line(line, lang)
-        output.append(f"{indent}{highlighted}")
+        highlighted = highlight_line(line, normalized_lang) if HAS_PYGMENTS else line
+        padding = " " * max(0, content_width - len(line))
+        output.append(f"{indent}│ {highlighted}{padding} │")
+    output.append(bottom)
     return "\n".join(output)
