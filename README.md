@@ -181,7 +181,7 @@ Code and files:
 | `/fix <error>` | Diagnose and fix an error |
 | `/test [file]` | Generate tests |
 | `/run` | Run code from the last reply |
-| `/git status|commit|log` | Git helpers |
+| `/git status|commit|log|remote|fetch|sync|branches` | Git helpers |
 
 Search and tools:
 

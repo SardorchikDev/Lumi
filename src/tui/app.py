@@ -90,6 +90,7 @@ from src.utils.filesystem import (
     suggest_paths,
     undo_operation,
 )
+from src.utils.git_tools import GIT_USAGE, run_git_subcommand
 from src.utils.intelligence import (
     detect_emotion,
     emotion_hint,
@@ -2035,12 +2036,9 @@ def cmd_comment(tui: LumiTUI, arg: str):
         tui.last_reply = reply; tui.set_busy(False)
     threading.Thread(target=_go, daemon=True).start()
 
-@registry.register("/git", "Git: /git status|log|diff|commit|push|pull|branch")
+@registry.register("/git", f"Git: /git {GIT_USAGE}|commit|commit-confirm")
 def cmd_git(tui: LumiTUI, arg: str):
     sub = arg.strip().split()[0] if arg.strip() else "status"
-    cmd_map = {"status": ["git", "status", "-sb"], "log": ["git", "log", "--oneline", "--graph", "-15"],
-               "diff": ["git", "diff", "--stat"], "branch": ["git", "branch", "-a"],
-               "push": ["git", "push"], "pull": ["git", "pull"]}
     if sub == "commit":
         diff = subprocess.run(["git", "diff", "--cached", "--stat"], capture_output=True, text=True).stdout
         if not diff.strip(): diff = subprocess.run(["git", "diff", "--stat"], capture_output=True, text=True).stdout
@@ -2059,10 +2057,11 @@ def cmd_git(tui: LumiTUI, arg: str):
             r = subprocess.run(["git", "commit", "-m", msg], capture_output=True, text=True)
             tui._sys(r.stdout.strip() or r.stderr.strip()); return
         tui._err("Run /git commit first"); return
-    if sub in cmd_map:
-        r = subprocess.run(cmd_map[sub], capture_output=True, text=True)
-        tui._sys(r.stdout.strip() or r.stderr.strip() or "(no output)")
-    else: tui._sys("Usage: /git status|log|diff|commit|commit-confirm|push|pull|branch")
+    ok, output = run_git_subcommand(sub)
+    if ok:
+        tui._sys(output)
+    else:
+        tui._sys(f"Usage: /git {GIT_USAGE}|commit|commit-confirm")
 
 @registry.register("/pdf", "Load PDF text into context")
 def cmd_pdf(tui: LumiTUI, arg: str):

@@ -1,6 +1,7 @@
 {
   "recent_commands": [
     "/exit",
+    "/git",
     "/clear",
     "/changelog",
     "/model",
@@ -10,5 +11,5 @@
   "last_provider": "huggingface",
   "last_model": "meta-llama/Llama-3.3-70B-Instruct",
   "last_agent_task": "",
-  "updated_at": "2026-03-19T18:20:59"
+  "updated_at": "2026-03-19T18:27:10"
 }

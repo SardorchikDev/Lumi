@@ -68,6 +68,7 @@ from src.utils.filesystem import (
     is_create_request,
     write_file_plan,
 )
+from src.utils.git_tools import GIT_USAGE, run_git_subcommand
 from src.utils.history import save as history_save
 from src.utils.history import setup as history_setup
 from src.utils.intelligence import (
@@ -204,7 +205,7 @@ def print_help() -> None:
     cmd("/comment [file]",           "add docstrings and inline comments")
     cmd("/run",                      "run code block from last reply")
     cmd("/diff",                     "diff previous reply vs latest")
-    cmd("/git status|commit|log",    "git helpers")
+    cmd(f"/git {GIT_USAGE}",         "git helpers")
     cmd("/github issues",            "pull GitHub issues (needs GITHUB_TOKEN)")
 
     section("FILES & DATA")
@@ -968,7 +969,15 @@ def cmd_git(
                 print(f"  {CY}{parts[0]}{R}  {GR}{parts[1]}{R}")
         print()
     else:
-        warn(f"Unknown git subcommand: {sub}  —  try: /git status | /git commit | /git log")
+        ok_git, output = run_git_subcommand(sub)
+        if not ok_git:
+            warn(output)
+            return
+        title = f"Git {sub}"
+        print(f"\n  {B}{WH}{title}{R}\n")
+        for line in output.splitlines():
+            print(f"  {GR}{line}{R}")
+        print()
 
 
 # ── /find ─────────────────────────────────────────────────────────────────────
