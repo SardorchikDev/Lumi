@@ -38,6 +38,26 @@ def test_starter_panel_renders_single_top_box(tmp_path, monkeypatch):
     tui._task_executor.shutdown(wait=False)
 
 
+def test_starter_panel_shows_session_tip(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.tui.session.random.choice",
+        lambda _seq: "Tip: Use /imagine <prompt> to generate images with Gemini and then ask Lumi to iterate on lighting, framing, and style.",
+    )
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
+    tip_lines = [line for line in lines if line.strip().startswith("tip")]
+    tip_index = next(i for i, line in enumerate(lines) if line.strip().startswith("tip"))
+    box_bottom_index = max(i for i, line in enumerate(lines) if line.strip().startswith("╰"))
+
+    assert len(tip_lines) == 1
+    assert "/imagine <prompt>" in tip_lines[0]
+    assert tip_lines[0].rstrip().endswith("...")
+    assert tip_index == box_bottom_index + 1
+    assert lines[tip_index + 1].strip() == ""
+    tui._task_executor.shutdown(wait=False)
+
+
 def test_chat_layout_keeps_prompt_and_transcript_separate(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.store.add(Msg("user", "hi"))

@@ -230,6 +230,26 @@ class StarterView:
         )
         return lines
 
+    def _build_tip_lines(self, width: int, *, left: str = "  ", max_width: int | None = None) -> list[str]:
+        tip = str(getattr(self.tui, "session_tip", "") or "").strip()
+        if not tip:
+            return []
+        label = "tip  "
+        left = left + "  "
+        available = max_width if max_width is not None else max(32, width - len(left) - 4)
+        content_w = max(12, available - len(label))
+        if len(tip) > content_w:
+            tip = tip[: max(9, content_w - 3)].rstrip() + "..."
+        return [
+            left
+            + self.style.fg_fn(self.style.muted)
+            + label
+            + self.style.reset
+            + self.style.fg_fn(self.style.fg_dim)
+            + tip
+            + self.style.reset
+        ]
+
     def _render_box(
         self,
         width: int,
@@ -271,9 +291,9 @@ class StarterView:
 
     def _compact_build(self, width: int, provider: str, model: str, cwd_short: str) -> IntroRender:
         card_w = min(max(42, max(len(provider) + len(model) + 18, len(cwd_short) + 13)), max(42, width - 8))
-        lines = [
-            "",
-        ]
+        review_lines = self._build_review_lines(width)
+        tip_lines = self._build_tip_lines(width, max_width=card_w - 2) if not review_lines else []
+        lines = []
         lines.extend(
             self._render_box(
                 width,
@@ -288,8 +308,9 @@ class StarterView:
                 align="left",
             )
         )
-        lines.append("")
-        header_lines = lines + self._build_review_lines(width)
+        if tip_lines:
+            lines.extend(tip_lines)
+        header_lines = lines + review_lines
         return IntroRender(
             header_lines=header_lines,
             prompt=PromptRender(lines=[], cursor_row=0, cursor_col=0),
@@ -314,6 +335,8 @@ class StarterView:
             )
 
         card_w = min(max(46, max(len(provider) + len(model) + 26, len(cwd_short) + 14)), max(46, width - 8))
+        review_lines = self._build_review_lines(width)
+        tip_lines = self._build_tip_lines(width, max_width=card_w - 2) if not review_lines else []
         title_box = self._render_box(
             width,
             [
@@ -326,11 +349,10 @@ class StarterView:
             box_w=card_w,
             align="left",
         )
-        lines = [
-            *title_box,
-            "",
-        ]
-        lines.extend(self._build_review_lines(width))
+        lines = [*title_box]
+        if tip_lines:
+            lines.extend(tip_lines)
+        lines.extend(review_lines)
         return IntroRender(
             header_lines=lines,
             prompt=PromptRender(lines=[], cursor_row=0, cursor_col=0),
