@@ -9,10 +9,8 @@ import concurrent.futures
 import io
 import json
 import logging
-import mimetypes
 import os
 import re
-import shlex
 import shutil
 import signal
 import subprocess
@@ -143,9 +141,22 @@ from src.tui.controller_actions import (
     update_slash as controller_update_slash,
 )
 from src.tui.input import InputHistory, read_key
+from src.tui.media import (
+    build_image_messages,
+    generate_gemini_images,
+    image_mime,
+    inject_text_at_cursor,
+    parse_image_request,
+    parse_imagine_request,
+    parse_voice_duration,
+    record_voice_clip,
+    resolve_media_target,
+    transcribe_audio_file,
+)
 from src.tui.notes import LittleNotesStore
+from src.tui.review_cards import file_review_card
 from src.tui.session import initialize_ui_state
-from src.tui.state import AgentState, Msg, PaneState, Store
+from src.tui.state import AgentState, Msg, PaneState, ReviewCard, Store
 from src.tui.views import OverlayView, PaneView, StarterView, TranscriptView, ViewStyle
 from src.utils.autoremember import auto_extract_facts
 from src.utils.filesystem import (
@@ -172,12 +183,11 @@ from src.utils.intelligence import (
 )
 from src.utils.plugins import (
     approve_plugin,
-    describe_plugin_inventory,
-    describe_plugins,
     load_plugins,
     reload_plugins,
     render_permission_report,
     render_plugin_audit_report,
+    render_plugin_inventory_report,
     revoke_plugin,
 )
 from src.utils.plugins import dispatch as plugin_dispatch
@@ -186,9 +196,9 @@ from src.utils.system_reports import build_doctor_report, build_status_report
 from src.utils.web import fetch_url
 
 try:
-    from src.utils.tools import clipboard_get, clipboard_set, encode_image_base64, get_weather, load_project, read_pdf
+    from src.utils.tools import clipboard_get, clipboard_set, get_weather, load_project, read_pdf
 except Exception:
-    clipboard_get = clipboard_set = encode_image_base64 = get_weather = load_project = read_pdf = None
+    clipboard_get = clipboard_set = get_weather = load_project = read_pdf = None
 
 _context_cache = get_global_context_cache()
 _session_telemetry = get_global_telemetry()
@@ -207,51 +217,6 @@ def build_messages(system_prompt: str, history: list[dict[str, str]], *, model: 
         file_markers=("loaded file", "<file path=", "cached for retrieval"),
         include_coding_detector=True,
     )
-
-
-def _parse_image_command(arg: str) -> tuple[Path, str] | None:
-    stripped = arg.strip()
-    if not stripped:
-        return None
-    try:
-        tokens = shlex.split(stripped)
-    except ValueError:
-        tokens = stripped.split()
-    if not tokens:
-        return None
-    for end in range(len(tokens), 0, -1):
-        candidate = Path(" ".join(tokens[:end])).expanduser()
-        if candidate.exists():
-            question = " ".join(tokens[end:]).strip()
-            return candidate, question
-    candidate = Path(tokens[0]).expanduser()
-    question = " ".join(tokens[1:]).strip()
-    return candidate, question
-
-
-def _image_mime(path: Path) -> str | None:
-    guessed, _encoding = mimetypes.guess_type(path.name)
-    if guessed and guessed.startswith("image/"):
-        return guessed
-    fallback = {
-        ".png": "image/png",
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".webp": "image/webp",
-        ".gif": "image/gif",
-        ".bmp": "image/bmp",
-    }
-    return fallback.get(path.suffix.lower())
-
-
-def _resolve_vision_target(current_provider: str, current_model: str) -> tuple[str, str, bool]:
-    configured = set(get_available_providers())
-    if "gemini" not in configured:
-        raise RuntimeError("Vision needs Gemini. Add GEMINI_API_KEY=... or switch provider.")
-    models = get_models("gemini")
-    model = route_model(current_model, models, "chat", provider="gemini") if models else "gemini-2.0-flash"
-    auto_routed = current_provider != "gemini"
-    return "gemini", model, auto_routed
 
 
 def _stream_direct_completion(
@@ -286,54 +251,6 @@ def _stream_direct_completion(
         full = "".join(chunks).strip()
     _session_telemetry.record_response(full)
     return full
-
-
-def _parse_voice_duration(arg: str) -> int:
-    raw = arg.strip()
-    if not raw:
-        return 5
-    if not raw.isdigit():
-        raise ValueError("Usage: /voice [seconds]")
-    seconds = int(raw)
-    if seconds < 1 or seconds > 30:
-        raise ValueError("Voice duration must be between 1 and 30 seconds.")
-    return seconds
-
-
-def _transcribe_voice_audio(audio_path: str) -> tuple[str, str]:
-    from src.utils.voice import transcribe_groq
-
-    if os.getenv("GROQ_API_KEY"):
-        text = transcribe_groq(audio_path).strip()
-        if text:
-            return text, "Groq Whisper"
-
-    if os.getenv("HF_TOKEN"):
-        from src.tools.voice import transcribe_audio_hf
-
-        text = transcribe_audio_hf(audio_path).strip()
-        if text:
-            return text, "HuggingFace Whisper"
-
-    if os.getenv("GROQ_API_KEY") or os.getenv("HF_TOKEN"):
-        return "", ""
-    raise RuntimeError("Voice transcription needs GROQ_API_KEY or HF_TOKEN in .env.")
-
-
-def _inject_text_at_cursor(tui: LumiTUI, text: str) -> None:
-    if not text:
-        return
-    left = tui.buf[: tui.cur_pos]
-    right = tui.buf[tui.cur_pos :]
-    needs_left_space = bool(left and not left.endswith((" ", "\n")))
-    needs_right_space = bool(right and not right.startswith((" ", "\n")))
-    injected = text
-    if needs_left_space:
-        injected = " " + injected
-    if needs_right_space:
-        injected = injected + " "
-    tui.buf = left + injected + right
-    tui.cur_pos = len(left + injected)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ANSI Colors & Deep Tokyo Night Math
@@ -959,6 +876,25 @@ class LumiTUI:
         self.pane = PaneState()
         self.pane_active = False
         self.pane_lines_output = []
+
+    def set_review_card(
+        self,
+        *,
+        title: str,
+        summary_lines: list[str] | None = None,
+        preview_lines: list[str] | None = None,
+        footer: str = "",
+    ) -> None:
+        self.review_card = ReviewCard(
+            active=True,
+            title=title,
+            summary_lines=list(summary_lines or []),
+            preview_lines=list(preview_lines or []),
+            footer=footer,
+        )
+
+    def clear_review_card(self) -> None:
+        self.review_card = ReviewCard()
 
     def _make_system_prompt(self, coding_mode=False, file_mode=False):
         return build_system_prompt({**self.persona, **self.persona_override}, build_memory_block(), coding_mode, file_mode)
@@ -1879,10 +1815,21 @@ def cmd_edit(tui: LumiTUI, arg: str):
     content = path.read_text(errors="replace")
     def _go():
         tui.set_busy(True)
-        prompt = f"Rewrite and improve this file. Return ONLY the new file content:\n\n```\n{content}\n```"
-        msgs = [{"role": "system", "content": tui.system_prompt}, {"role": "user", "content": prompt}]
-        reply = tui._tui_stream(msgs, tui.current_model, f"editing {path.name}")
-        tui.last_reply = reply; tui.set_busy(False)
+        card = file_review_card(path, mode="edit")
+        tui.set_review_card(
+            title=str(card["title"]),
+            summary_lines=list(card["summary_lines"]),
+            preview_lines=list(card["preview_lines"]),
+            footer=str(card["footer"]),
+        )
+        try:
+            prompt = f"Rewrite and improve this file. Return ONLY the new file content:\n\n```\n{content}\n```"
+            msgs = [{"role": "system", "content": tui.system_prompt}, {"role": "user", "content": prompt}]
+            reply = tui._tui_stream(msgs, tui.current_model, f"editing {path.name}")
+            tui.last_reply = reply
+        finally:
+            tui.clear_review_card()
+            tui.set_busy(False)
     threading.Thread(target=_go, daemon=True).start()
 
 @registry.register("/run", "Execute last code block from AI reply")
@@ -1904,16 +1851,13 @@ def cmd_run(tui: LumiTUI, arg: str):
 
 @registry.register("/image", "Vision: describe or query image")
 def cmd_image(tui: LumiTUI, arg: str):
-    parsed = _parse_image_command(arg)
+    parsed = parse_image_request(arg)
     if not parsed:
         tui._err("Usage: /image <path> [question]"); return
     path, question = parsed
     if not path.is_file():
         tui._err(f"Not found: {path}"); return
-    if encode_image_base64 is None:
-        tui._err("Image support is unavailable right now."); return
-    mime = _image_mime(path)
-    if not mime:
+    if not image_mime(path):
         tui._err(f"Not an image: {path}"); return
 
     def _go():
@@ -1923,29 +1867,85 @@ def cmd_image(tui: LumiTUI, arg: str):
         except Exception:
             current_provider = ""
         try:
-            provider, model, auto_routed = _resolve_vision_target(current_provider, tui.current_model)
+            provider, model, auto_routed = resolve_media_target(
+                capability="vision",
+                current_provider=current_provider,
+                current_model=tui.current_model,
+                configured_providers=get_available_providers(),
+                get_models_fn=get_models,
+            )
             client = make_provider_client(provider)
-            prompt = question or "Describe this image clearly and concisely."
             if auto_routed:
-                tui._sys(f"Using Gemini vision via {model}.")
-            data_url = f"data:{mime};base64,{encode_image_base64(str(path))}"
-            messages = [
-                {
-                    "role": "system",
-                    "content": "You are Lumi. Analyze the provided image and answer the user's question clearly and concisely.",
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                    ],
-                },
-            ]
+                tui._sys(f"Using {PROV_NAME.get(provider, provider)} vision via {model}.")
+            messages = build_image_messages(question, path)
             reply = _stream_direct_completion(tui, client=client, messages=messages, model=model)
             if not reply.startswith("⚠"):
                 tui.last_reply = reply
                 tui.turns += 1
+        except Exception as ex:
+            tui._err(str(ex))
+        finally:
+            tui.set_busy(False)
+
+    threading.Thread(target=_go, daemon=True).start()
+
+
+@registry.register("/imagine", "Generate or edit an image with Nano Banana")
+def cmd_imagine(tui: LumiTUI, arg: str):
+    parsed = parse_imagine_request(arg)
+    if not parsed:
+        tui._err("Usage: /imagine <prompt>  or  /imagine <image-path> <prompt>")
+        return
+    source_image, prompt = parsed
+    if source_image is not None:
+        if not source_image.is_file():
+            tui._err(f"Not found: {source_image}")
+            return
+        if not image_mime(source_image):
+            tui._err(f"Not an image: {source_image}")
+            return
+    if not prompt.strip():
+        tui._err("Image generation needs a prompt.")
+        return
+
+    def _go():
+        tui.set_busy(True)
+        try:
+            current_provider = get_provider()
+        except Exception:
+            current_provider = ""
+        try:
+            provider, model, auto_routed = resolve_media_target(
+                capability="image_generation",
+                current_provider=current_provider,
+                current_model=tui.current_model,
+                configured_providers=get_available_providers(),
+                get_models_fn=get_models,
+            )
+            if provider != "gemini":
+                raise RuntimeError("Image generation currently uses Gemini models only.")
+            if auto_routed:
+                tui._sys(f"Using {PROV_NAME.get(provider, provider)} image generation via {model}.")
+            saved_paths, message = generate_gemini_images(
+                prompt,
+                source_image=source_image,
+                model=model,
+            )
+            lines = []
+            if source_image is not None:
+                lines.append(f"Edited image from {source_image}")
+            else:
+                lines.append("Generated image with Nano Banana")
+            if message:
+                lines.append(message)
+            for path in saved_paths:
+                lines.append(f"Saved image → {path}")
+            summary = "\n".join(lines)
+            tui._sys(summary)
+            tui.last_reply = summary
+            tui.recent_actions = tui.little_notes.record_action(
+                f"Generated {len(saved_paths)} image(s) with {model}."
+            )[:4]
         except Exception as ex:
             tui._err(str(ex))
         finally:
@@ -2098,8 +2098,6 @@ def cmd_timer(tui: LumiTUI, arg: str):
 
 @registry.register("/plugins", "List loaded plugins")
 def cmd_plugins(tui: LumiTUI, arg: str):
-    details = describe_plugins()
-    inventory = describe_plugin_inventory()
     parts = arg.strip().split(None, 1)
     sub = parts[0].lower() if parts else ""
     target = parts[1].strip() if len(parts) > 1 else ""
@@ -2138,59 +2136,13 @@ def cmd_plugins(tui: LumiTUI, arg: str):
         )
         return
     if sub == "pending":
-        pending = [item for item in inventory if item["status"] != "loaded"]
-        if not pending:
-            tui._sys("No pending plugins.")
-            return
-        lines = ["Pending plugins"]
-        for item in pending:
-            lines.append(f"  {item['name']}  [{item['status']}]")
-            if item["issues"]:
-                lines.append(f"    issues: {', '.join(item['issues'])}")
-            elif item["warnings"]:
-                lines.append(f"    warnings: {', '.join(item['warnings'])}")
-            else:
-                lines.append("    approval required before load")
-        tui._sys("\n".join(lines))
+        tui._sys(render_plugin_inventory_report("pending"))
         return
     if sub in {"inspect", "details", "verbose"}:
-        if not inventory:
-            tui._sys("No plugins discovered. Drop .py files in ~/Lumi/plugins/")
-            return
-        lines = ["Plugin inventory"]
-        for item in inventory:
-            perms = ", ".join(item["permissions"]) if item["permissions"] else "none declared"
-            commands = ", ".join(item["commands"]) if item["commands"] else "none"
-            lines.append(f"  {item['name']} v{item['version']}  [{item['status']}]")
-            lines.append(f"    {item['description']}")
-            lines.append(f"    commands: {commands}")
-            lines.append(f"    permissions: {perms}")
-            if item["issues"]:
-                lines.append(f"    issues: {', '.join(item['issues'])}")
-            if item["warnings"]:
-                lines.append(f"    warnings: {', '.join(item['warnings'])}")
-        tui._sys("\n".join(lines))
+        tui._sys(render_plugin_inventory_report("inspect"))
         return
 
-    if not inventory:
-        tui._sys("No plugins discovered. Drop .py files in ~/Lumi/plugins/")
-        return
-    loaded = [item for item in details if item["loaded"]]
-    pending_count = sum(1 for item in inventory if item["status"] != "loaded")
-    lines = ["Plugins"]
-    if loaded:
-        lines.append("  loaded")
-        lines.extend(
-            f"    {item['name']}  ({', '.join(item['commands'])})"
-            for item in loaded
-        )
-    else:
-        lines.append("  loaded")
-        lines.append("    none")
-    lines.append("")
-    lines.append(f"  pending: {pending_count}")
-    lines.append("  use /plugins inspect, /plugins pending, /plugins approve <name>")
-    tui._sys("\n".join(lines))
+    tui._sys(render_plugin_inventory_report("summary"))
 
 
 @registry.register("/permissions", "Show plugin permissions: /permissions [all|plugins]")
@@ -2610,19 +2562,27 @@ def cmd_voice(tui: LumiTUI, arg: str):
     audio_file = None
     tui.set_busy(True)
     try:
-        from src.utils.voice import record_audio
-
-        seconds = _parse_voice_duration(arg)
+        seconds = parse_voice_duration(arg)
         tui._sys(f"◆  Listening for {seconds} second{'s' if seconds != 1 else ''}... Speak now!")
-        audio_file = record_audio(seconds=seconds)
+        audio_file = record_voice_clip(seconds)
         if not audio_file:
             raise RuntimeError("No recorder found. Install arecord, sox, or ffmpeg.")
         tui._sys("◆  Transcribing...")
-        text, backend = _transcribe_voice_audio(audio_file)
+        provider, _model, auto_routed = resolve_media_target(
+            capability="audio_transcription",
+            current_provider=get_provider() if tui.current_model != "council" else "",
+            current_model=tui.current_model,
+            configured_providers=get_available_providers(),
+            get_models_fn=get_models,
+        )
+        text, backend = transcribe_audio_file(audio_file)
         if not text:
             raise RuntimeError("No speech detected. Try again a little closer to the mic.")
-        _inject_text_at_cursor(tui, text)
-        tui._sys(f"Transcribed via {backend}: '{text}'")
+        tui.buf, tui.cur_pos = inject_text_at_cursor(tui.buf, tui.cur_pos, text)
+        label = backend
+        if auto_routed:
+            label += f" via {PROV_NAME.get(provider, provider)}"
+        tui._sys(f"Transcribed via {label}: '{text}'")
     except Exception as e:
         tui._err(f"Voice failed: {e}")
     finally:

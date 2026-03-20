@@ -6,6 +6,7 @@ import pytest
 
 from src.agents.agent import (
     ChangeJournal,
+    ExecutionPolicy,
     build_file_write_preview,
     collect_planning_context,
     compute_step_file_change,
@@ -13,6 +14,7 @@ from src.agents.agent import (
     inspect_repo,
     is_risky,
     make_plan,
+    make_recovery_plan,
     normalize_plan,
     run_step,
     validate_action_step,
@@ -136,6 +138,41 @@ class TestPlanningContext:
             ("action", "app/components"),
             ("file_write", "app/components/Button.tsx"),
         ]
+
+    def test_make_recovery_plan_includes_changed_files_guidance(self, tmp_path, monkeypatch):
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "app.py").write_text("print('hello')\n", encoding="utf-8")
+        client = FakeClient(
+            """
+            [
+              {"type": "action", "action": "inspect_changed_files", "description": "Inspect changed files"}
+            ]
+            """
+        )
+
+        class WorkspaceProfile:
+            changed_files = ("src/app.py",)
+            config_files = ("pyproject.toml",)
+
+        monkeypatch.setattr("src.agents.agent.inspect_workspace", lambda _base_dir: WorkspaceProfile())
+        monkeypatch.setattr(
+            "src.agents.agent.collect_planning_context",
+            lambda task, base_dir: f"Workspace root: {base_dir}",
+        )
+
+        make_recovery_plan(
+            "fix the failing test run",
+            {"type": "action", "action": "run_verify", "verify_kind": "tests", "description": "Run tests"},
+            "Traceback\nAssertionError: broken",
+            client,
+            "fake-model",
+            tmp_path,
+            ExecutionPolicy(),
+        )
+        user_message = client.calls[0]["messages"][1]["content"]
+        assert "Changed files:" in user_message
+        assert "src/app.py" in user_message
+        assert "Do not immediately repeat the same verification step." in user_message
 
 
 class TestRisk:

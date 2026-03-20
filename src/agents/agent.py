@@ -787,13 +787,31 @@ def make_recovery_plan(
 ) -> list[dict]:
     """Ask AI for a bounded recovery plan after a step fails."""
     workspace_context = collect_planning_context(task, base_dir)
+    workspace_profile = inspect_workspace(base_dir)
     failure_kind = _classify_failure_output(failure_output)
+    guidance_lines = _build_recovery_guidance(
+        failed_step=failed_step,
+        failure_kind=failure_kind,
+        workspace_profile=workspace_profile,
+    )
+    changed_context_blocks: list[str] = []
+    for relative in workspace_profile.changed_files[:3]:
+        changed_path = base_dir / relative
+        if changed_path.exists() and changed_path.is_file():
+            changed_context_blocks.append(_read_context_file(changed_path, base_dir))
+    changed_context = (
+        "Changed file context:\n" + "\n\n".join(changed_context_blocks) + "\n\n"
+        if changed_context_blocks
+        else ""
+    )
     failure_context = (
         f"Original objective:\n{task}\n\n"
         f"Failed step:\n{json.dumps(failed_step, indent=2, ensure_ascii=False)}\n\n"
         f"Failure kind:\n{failure_kind}\n\n"
         f"Failure output:\n{failure_output[:1200]}\n\n"
-        "Return a JSON array of up to 3 recovery steps that could fix or diagnose the failure. "
+        f"Recovery guidance:\n{chr(10).join(guidance_lines)}\n\n"
+        + changed_context
+        + "Return a JSON array of up to 3 recovery steps that could fix or diagnose the failure. "
         "Prefer structured actions and safe file patches. Do not repeat the failed verification command unless a fix step comes first."
     )
     try:
@@ -909,6 +927,46 @@ def _summarize_verification_output(command: tuple[str, ...], output: str) -> str
 
 def _classify_failure_output(output: str) -> str:
     return classify_failure_output_impl(output)
+
+
+def _build_recovery_guidance(
+    *,
+    failed_step: dict,
+    failure_kind: str,
+    workspace_profile: RepoProfile,
+) -> list[str]:
+    guidance: list[str] = []
+    changed_files = list(workspace_profile.changed_files[:5])
+    if changed_files:
+        guidance.append("Changed files: " + ", ".join(changed_files))
+    if workspace_profile.config_files:
+        guidance.append("Relevant config files: " + ", ".join(workspace_profile.config_files[:4]))
+
+    action = str(failed_step.get("action", "")).strip()
+    if failure_kind == "missing_path":
+        target = str(failed_step.get("path") or failed_step.get("target") or "").strip()
+        if target:
+            guidance.append(f"Missing path target: {target}")
+        guidance.append("Prefer list_dir, inspect_repo, or read_file before editing paths again.")
+    elif failure_kind == "stale_patch_context":
+        guidance.append("Edit context is stale. Re-read the target file and prefer patch_context or patch_apply against current content.")
+    elif failure_kind == "syntax_or_parse_error":
+        guidance.append("A syntax or parse error likely came from a recent edit. Inspect changed files first and fix the parse issue before rerunning verification.")
+    elif failure_kind == "timeout":
+        guidance.append("The command timed out. Narrow the verification scope or inspect the changed files before retrying.")
+    elif failure_kind == "verification_or_runtime_error":
+        guidance.append("Prioritize the changed files and the latest traceback when building the repair plan.")
+    elif failure_kind == "missing_dependency":
+        guidance.append("The failure looks dependency-related. Inspect the relevant config files and imports before retrying.")
+    else:
+        guidance.append("Prefer a bounded inspect → patch → verify recovery sequence.")
+
+    if action in VERIFY_ACTIONS | {"run_verify"}:
+        guidance.append("Do not immediately repeat the same verification step. Add at least one inspect or patch step first.")
+    elif action in FILE_MUTATION_ACTIONS:
+        guidance.append("Prefer targeted patch steps over full rewrites during recovery.")
+
+    return guidance[:8]
 
 
 def compute_step_file_change(step: dict, base_dir: Path) -> tuple[bool, str, Path | None, str | None]:

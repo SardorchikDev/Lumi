@@ -9,6 +9,7 @@ from src.chat.model_catalogs import (
     BYTEZ_MODELS,
     CLOUDFLARE_MODELS,
     COHERE_MODELS,
+    GEMINI_ALL_MODELS,
     GITHUB_MODELS,
     GROQ_FALLBACK,
     HF_MODELS,
@@ -41,7 +42,7 @@ STATIC_PROVIDER_CATALOGS: dict[str, ProviderCatalog] = {
 
 def provider_catalog(provider: str) -> ProviderCatalog | None:
     dynamic_catalogs: dict[str, ProviderCatalog] = {
-        "gemini": ProviderCatalog(("gemini-3.1-flash-lite-preview", "gemini-2.0-flash"), fetch_gemini_models),
+        "gemini": ProviderCatalog(tuple(GEMINI_ALL_MODELS), fetch_gemini_models),
         "groq": ProviderCatalog(tuple(GROQ_FALLBACK), fetch_groq_models),
         "openrouter": ProviderCatalog(tuple(OPENROUTER_MODELS), fetch_openrouter_models),
         "github": ProviderCatalog(tuple(GITHUB_MODELS), fetch_github_models),

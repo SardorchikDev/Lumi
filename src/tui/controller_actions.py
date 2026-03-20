@@ -8,6 +8,7 @@ from typing import Any
 
 from src.chat.providers import (
     get_provider_spec,
+    provider_capability_model_hints,
     provider_context_limit,
     provider_health_snapshot,
     provider_supports,
@@ -513,6 +514,43 @@ def _model_traits(provider: str, model: str) -> list[str]:
     return traits or ["general"]
 
 
+def _unique_tags(tags: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for tag in tags:
+        if tag not in seen:
+            seen.add(tag)
+            ordered.append(tag)
+    return ordered
+
+
+def _model_tags(provider: str, model: str) -> list[str]:
+    lowered = model.lower()
+    tags: list[str] = []
+    traits = _model_traits(provider, model)
+    vision_hints = set(provider_capability_model_hints(provider, "vision"))
+    audio_hints = set(provider_capability_model_hints(provider, "audio_transcription"))
+    image_hints = set(provider_capability_model_hints(provider, "image_generation"))
+
+    if model in image_hints or any(token in lowered for token in ("image", "imagen", "nano-banana")):
+        tags.append("image")
+    if model in vision_hints or any(token in lowered for token in ("vision", "vl", "multimodal", "omni")):
+        tags.append("vision")
+    if model in audio_hints or any(token in lowered for token in ("audio", "speech", "transcribe", "whisper")):
+        tags.append("audio")
+    if "fast" in traits:
+        tags.append("fast")
+    if "reasoning" in traits:
+        tags.append("reasoning")
+    if "coding" in traits:
+        tags.append("best coding")
+    if "long" in traits:
+        tags.append("long")
+    if "local" in traits:
+        tags.append("local")
+    return _unique_tags(tags or ["general"])
+
+
 def _model_meta(provider: str, model: str) -> str:
     context_limit = provider_context_limit(provider)
     if context_limit >= 1_000_000:
@@ -523,8 +561,8 @@ def _model_meta(provider: str, model: str) -> str:
         context_label = "32k ctx"
     else:
         context_label = f"{context_limit // 1000}k ctx"
-    traits = _model_traits(provider, model)
-    return " · ".join([context_label, *traits[:2]])
+    tags = _model_tags(provider, model)
+    return " · ".join([context_label, *tags[:3]])
 
 
 def _model_group(provider: str, model: str, *, recent: set[str], favorites: set[str], current_model: str, helper_hints: tuple[str, ...], heavy_hints: tuple[str, ...]) -> str:
@@ -537,14 +575,20 @@ def _model_group(provider: str, model: str, *, recent: set[str], favorites: set[
         return "Recent"
     if any(hint in lowered for hint in helper_hints + heavy_hints):
         return "Recommended"
-    traits = _model_traits(provider, model)
-    if "fast" in traits:
+    tags = _model_tags(provider, model)
+    if "image" in tags:
+        return "Image"
+    if "vision" in tags:
+        return "Vision"
+    if "audio" in tags:
+        return "Audio"
+    if "fast" in tags:
         return "Fast"
-    if "coding" in traits:
+    if "best coding" in tags:
         return "Coding"
-    if "reasoning" in traits:
+    if "reasoning" in tags:
         return "Reasoning"
-    if "long" in traits:
+    if "long" in tags:
         return "Long context"
     return "All models"
 
@@ -576,10 +620,12 @@ def _model_preview_lines(provider: str, model: str, *, provider_names: dict[str,
     if current:
         reason = "currently active"
     env_hint = ", ".join(spec.env_vars) if spec is not None else "runtime configured"
+    tags = ", ".join(_model_tags(provider, model))
     return [
         f"Model: {model}",
         f"Provider: {provider_names.get(provider, provider)}",
         f"Profile: {_model_meta(provider, model)}",
+        f"Tags: {tags}",
         f"Why: {reason}",
         f"Setup: {env_hint}",
     ]
@@ -684,7 +730,7 @@ def _rebuild_picker(
 
     filtered = []
     for model in models:
-        searchable = " ".join([model.lower(), _model_meta(provider, model), " ".join(_model_traits(provider, model))])
+        searchable = " ".join([model.lower(), _model_meta(provider, model), " ".join(_model_tags(provider, model))])
         if query and query not in searchable:
             continue
         filtered.append(model)
@@ -702,13 +748,26 @@ def _rebuild_picker(
         )
         grouped.setdefault(group, []).append(model)
 
-    order = ("Current", "Favorites", "Recent", "Recommended", "Fast", "Coding", "Reasoning", "Long context", "All models")
+    order = (
+        "Current",
+        "Favorites",
+        "Recent",
+        "Recommended",
+        "Image",
+        "Vision",
+        "Audio",
+        "Fast",
+        "Coding",
+        "Reasoning",
+        "Long context",
+        "All models",
+    )
     for group in order:
         group_models = grouped.get(group)
         if not group_models:
             continue
         items.append({"kind": "header", "label": group})
-        for model in group_models[:12]:
+        for model in group_models:
             current = provider == get_provider_fn() and model == tui.current_model
             recommended = group == "Recommended"
             label = model.split("/")[-1]
@@ -725,6 +784,7 @@ def _rebuild_picker(
                     "value": model,
                     "label": label,
                     "meta": meta,
+                    "tags": _model_tags(provider, model),
                     "provider": provider,
                     "recommended": recommended,
                     "current": current,

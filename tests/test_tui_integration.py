@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from src.tui.app import LumiTUI, _strip_ansi, registry
+from src.tui.controller_actions import _update_picker_preview
 from src.tui.notes import LittleNotesStore
 from src.tui.state import Msg
 
@@ -369,6 +370,81 @@ def test_model_picker_can_toggle_favorite_model(tmp_path, monkeypatch):
     tui._task_executor.shutdown(wait=False)
 
 
+def test_model_picker_surfaces_model_tags_in_meta_and_preview(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "x")
+    monkeypatch.setenv("GEMINI_API_KEY", "y")
+    monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["huggingface", "gemini"])
+    monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
+    monkeypatch.setattr(
+        "src.tui.app.get_models",
+        lambda provider=None: ["gemini-2.5-flash-image", "gemini-2.5-flash"] if provider == "gemini" else ["meta-llama/Llama-3.3-70B-Instruct"],
+    )
+
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._open_picker()
+    tui.picker_sel = next(index for index, item in enumerate(tui.picker_items) if item.get("value") == "gemini")
+    tui._confirm_picker()
+    tui.picker_sel = next(index for index, item in enumerate(tui.picker_items) if item.get("value") == "gemini-2.5-flash-image")
+    _update_picker_preview(tui)
+
+    image_item = next(item for item in tui.picker_items if item.get("value") == "gemini-2.5-flash-image")
+    assert "image" in image_item["meta"]
+    assert "fast" in image_item["meta"]
+    assert any(line.startswith("Tags: ") and "image" in line and "fast" in line for line in tui.picker_preview_lines)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_model_picker_filter_matches_best_coding_tag(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "x")
+    monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["huggingface"])
+    monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
+    monkeypatch.setattr(
+        "src.tui.app.get_models",
+        lambda provider=None: ["Qwen/Qwen2.5-Coder-32B-Instruct", "meta-llama/Llama-3.3-70B-Instruct"],
+    )
+
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._open_picker()
+    tui.picker_sel = next(index for index, item in enumerate(tui.picker_items) if item.get("value") == "huggingface")
+    tui._confirm_picker()
+    tui.picker_query = "best coding"
+    tui._refresh_picker()
+
+    model_values = [item.get("value") for item in tui.picker_items if item.get("kind") == "model"]
+    assert model_values == ["Qwen/Qwen2.5-Coder-32B-Instruct"]
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_model_picker_shows_full_gemini_list_without_group_truncation(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "x")
+    monkeypatch.setenv("GEMINI_API_KEY", "y")
+    monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["huggingface", "gemini"])
+    monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
+
+    gemini_models = [f"gemini-model-{index}" for index in range(15)]
+
+    def fake_models(provider=None):
+        if provider == "gemini":
+            return gemini_models
+        return ["meta-llama/Llama-3.3-70B-Instruct"]
+
+    monkeypatch.setattr("src.tui.app.get_models", fake_models)
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._open_picker()
+    tui.picker_sel = next(index for index, item in enumerate(tui.picker_items) if item.get("value") == "gemini")
+    tui._confirm_picker()
+
+    model_values = [item.get("value") for item in tui.picker_items if item.get("kind") == "model"]
+    assert model_values == gemini_models
+    tui._task_executor.shutdown(wait=False)
+
+
 def test_undo_restores_last_filesystem_action(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.redraw = lambda: None
@@ -487,6 +563,82 @@ def test_image_command_reports_missing_file(tmp_path, monkeypatch):
 
     messages = tui.store.snapshot()
     assert any(msg.role == "error" and "Not found:" in msg.text for msg in messages)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_imagine_command_auto_routes_to_gemini_and_saves_image(tmp_path, monkeypatch):
+    class ImmediateThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            if self._target is not None:
+                self._target(*self._args, **self._kwargs)
+
+    output_path = tmp_path / "generated.png"
+
+    monkeypatch.setattr("src.tui.app.threading.Thread", ImmediateThread)
+    monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
+    monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["huggingface", "gemini"])
+    monkeypatch.setattr(
+        "src.tui.app.get_models",
+        lambda provider=None: ["gemini-2.5-flash-image"] if provider == "gemini" else ["meta-llama/Llama-3.3-70B-Instruct"],
+    )
+    monkeypatch.setattr(
+        "src.tui.app.generate_gemini_images",
+        lambda prompt, source_image=None, model="gemini-2.5-flash-image": ([output_path], "Rendered successfully."),
+    )
+
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._execute_command("/imagine", "a glowing banana throne in a marble room")
+
+    assert "Generated image with Nano Banana" in tui.last_reply
+    assert str(output_path) in tui.last_reply
+    messages = tui.store.snapshot()
+    assert any(msg.role == "system" and "Using Gemini image generation via gemini-2.5-flash-image." in msg.text for msg in messages)
+    assert any(msg.role == "system" and "Saved image" in msg.text for msg in messages)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_imagine_command_accepts_source_image_for_edits(tmp_path, monkeypatch):
+    class ImmediateThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            if self._target is not None:
+                self._target(*self._args, **self._kwargs)
+
+    source = tmp_path / "logo.png"
+    source.write_bytes(b"\x89PNG\r\n\x1a\n\x00")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("src.tui.app.threading.Thread", ImmediateThread)
+    monkeypatch.setattr("src.tui.app.get_provider", lambda: "gemini")
+    monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["gemini"])
+    monkeypatch.setattr("src.tui.app.get_models", lambda provider=None: ["gemini-2.5-flash-image"])
+
+    def fake_generate(prompt, source_image=None, model="gemini-2.5-flash-image"):
+        captured["prompt"] = prompt
+        captured["source_image"] = source_image
+        captured["model"] = model
+        return ([tmp_path / "edited.png"], "")
+
+    monkeypatch.setattr("src.tui.app.generate_gemini_images", fake_generate)
+
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._execute_command("/imagine", f"{source} add a gold frame around this logo")
+
+    assert captured["prompt"] == "add a gold frame around this logo"
+    assert captured["source_image"] == source
     tui._task_executor.shutdown(wait=False)
 
 

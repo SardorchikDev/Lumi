@@ -33,6 +33,8 @@ def classify_failure_output(output: str) -> str:
         return "timeout"
     if any(token in lowered for token in ("not found", "no such file", "does not exist")):
         return "missing_path"
+    if any(token in lowered for token in ("no module named", "modulenotfounderror", "cannot import name")):
+        return "missing_dependency"
     if any(token in lowered for token in ("syntaxerror", "parse error", "yamlerror", "jsondecodeerror")):
         return "syntax_or_parse_error"
     if any(token in lowered for token in ("ambiguous", "matched multiple", "old_text was not found", "old_block does not match")):

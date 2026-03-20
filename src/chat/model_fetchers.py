@@ -11,8 +11,7 @@ from src.chat.model_catalogs import (
     BYTEZ_CLOSED_PREFIXES,
     BYTEZ_MODELS,
     BYTEZ_SKIP_PATTERNS,
-    GEMINI_CONFIRMED,
-    GEMINI_SKIP,
+    GEMINI_ALL_MODELS,
     GITHUB_MODELS,
     GROQ_DECOMMISSIONED,
     GROQ_FALLBACK,
@@ -78,11 +77,13 @@ def fetch_bytez_models() -> list[str]:
 
 def fetch_airforce_models() -> list[str]:
     try:
-        return fetch_openai_compatible_models(
+        models = fetch_openai_compatible_models(
             base_url="https://api.airforce/v1",
             api_key=os.getenv("AIRFORCE_API_KEY", ""),
             curated=AIRFORCE_MODELS,
         )
+        filtered = [model for model in models if model != "deepseek-chat"]
+        return filtered or AIRFORCE_MODELS[:]
     except Exception:
         return AIRFORCE_MODELS[:]
 
@@ -129,15 +130,23 @@ def fetch_gemini_models() -> list[str]:
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
         with urllib.request.urlopen(url, timeout=6) as response:
             data = json.loads(response.read())
-        available = {
+        available = [
             item["name"].replace("models/", "")
             for item in data.get("models", [])
-            if "generateContent" in item.get("supportedGenerationMethods", [])
-        }
-        models = [model for model in GEMINI_CONFIRMED if model in available and model not in GEMINI_SKIP]
-        return models if models else ["gemini-3.1-flash-lite-preview", "gemini-2.0-flash"]
+            if isinstance(item, dict) and item.get("name")
+        ]
+        available = [model for model in available if model]
+        if not available:
+            return GEMINI_ALL_MODELS[:]
+        available_set = set(available)
+        curated = list(GEMINI_ALL_MODELS)
+        ordered = [model for model in curated if model in available_set]
+        extras = [model for model in available if model not in set(curated)]
+        missing_curated = [model for model in curated if model not in available_set]
+        models = ordered + extras + missing_curated
+        return models if models else GEMINI_ALL_MODELS[:]
     except Exception:
-        return ["gemini-3.1-flash-lite-preview", "gemini-2.0-flash"]
+        return GEMINI_ALL_MODELS[:]
 
 
 def fetch_groq_models() -> list[str]:

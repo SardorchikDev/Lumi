@@ -19,6 +19,7 @@ from src.chat.client_factory import make_vertex_client as _factory_make_vertex_c
 from src.chat.model_catalogs import (
     AIRFORCE_MODELS,
     BYTEZ_MODELS,
+    GEMINI_ALL_MODELS,
     GITHUB_MODELS,
     GROQ_FALLBACK,
     HF_FALLBACKS,
@@ -34,6 +35,7 @@ from src.chat.model_fetchers import fetch_openrouter_models as _fetch_openrouter
 from src.chat.model_fetchers import fetch_pollinations_models as _fetch_pollinations_models
 from src.chat.model_fetchers import fetch_vercel_models as _fetch_vercel_models
 from src.chat.model_registry import ModelRegistry, ProviderCatalog
+from src.chat.optimizer import route_model
 from src.chat.provider_catalogs import (
     provider_catalog as resolve_provider_catalog,
 )
@@ -75,6 +77,21 @@ _models_cache: dict = {}       # provider → list of models
 _models_cache_fetched_at: dict[str, float] = {}
 MODEL_CACHE_TTL_SECONDS = 900
 _MODEL_REGISTRY = ModelRegistry(cache_dir=MODEL_CACHE_DIR, ttl_seconds=MODEL_CACHE_TTL_SECONDS)
+
+
+def _should_ignore_cached_catalog(provider: str, models: list[str] | None) -> bool:
+    if not models:
+        return False
+    normalized = [model for model in models if isinstance(model, str) and model.strip()]
+    if provider == "airforce" and "deepseek-chat" in normalized:
+        return True
+    if provider != "gemini":
+        return False
+    if len(normalized) <= 4:
+        return True
+    return len(normalized) < len(GEMINI_ALL_MODELS) // 2
+
+
 def _sync_registry_state() -> None:
     _MODEL_REGISTRY.cache_dir = MODEL_CACHE_DIR
     _MODEL_REGISTRY.ttl_seconds = MODEL_CACHE_TTL_SECONDS
@@ -138,7 +155,7 @@ def _write_catalog_cache(provider: str, models: list[str]) -> None:
 
 def _discover_models(provider: str, curated: list[str], fetcher) -> list[str]:
     cached = _read_catalog_cache(provider)
-    if cached:
+    if cached and not _should_ignore_cached_catalog(provider, cached):
         return cached
     try:
         models = fetcher()
@@ -224,7 +241,7 @@ def get_models(provider: str = None) -> list:
     _sync_registry_state()
     cached = _models_cache.get(p)
     fetched_at = _models_cache_fetched_at.get(p, 0)
-    if cached and (time.time() - fetched_at) <= MODEL_CACHE_TTL_SECONDS:
+    if cached and not _should_ignore_cached_catalog(p, cached) and (time.time() - fetched_at) <= MODEL_CACHE_TTL_SECONDS:
         return cached
     if p == "ollama":
         models = _fetch_ollama_models()
@@ -315,10 +332,19 @@ def chat_stream(
     provider = get_provider()
     if model is None:
         model = get_models()[0]
+    try:
+        available_models = get_models(provider)
+    except Exception:
+        available_models = []
+    if available_models and model not in available_models:
+        routed_model = route_model(model, available_models, "chat", provider=provider)
+        if routed_model != model and on_status is not None:
+            on_status(f"{model.split('/')[-1]} unavailable; using {routed_model.split('/')[-1]}")
+        model = routed_model
 
     # Build fallback chain
     if provider_supports(provider, "fallbacks"):
-        all_models = get_models(provider)
+        all_models = available_models or get_models(provider)
         rest = [m for m in all_models if m != model]
         attempt_models = [model] + rest[:12]
     elif provider == "huggingface":

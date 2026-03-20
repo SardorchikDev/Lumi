@@ -20,27 +20,40 @@ GEMINI_CONFIRMED = [
     "gemini-3.1-flash-lite-preview",
 ]
 
-GEMINI_SKIP = {
+GEMINI_EXTENDED = [
     "gemini-2.0-flash-exp-image-generation",
-    "gemini-2.5-flash-image", "gemini-2.5-flash-image-generation",
-    "gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview",
-    "nano-banana-pro-preview", "nano-banana-2-preview",
-    "gemini-2.5-flash-preview-tts", "gemini-2.5-pro-preview-tts",
+    "gemini-2.5-flash-image",
+    "gemini-2.5-flash-image-generation",
+    "gemini-3-pro-image-preview",
+    "gemini-3.1-flash-image-preview",
+    "nano-banana-pro-preview",
+    "nano-banana-2-preview",
+    "gemini-2.5-flash-preview-tts",
+    "gemini-2.5-pro-preview-tts",
     "gemini-2.5-flash-native-audio-latest",
     "gemini-2.5-flash-native-audio-preview-09-2025",
     "gemini-2.5-flash-native-audio-preview-12-2025",
     "gemini-live-2.5-flash-preview",
     "gemini-2.0-flash-live-001",
-    "gemini-embedding-001", "gemini-embedding-exp-03-07", "aqa",
+    "gemini-embedding-001",
+    "gemini-embedding-exp-03-07",
+    "aqa",
     "gemini-robotics-er-1.5-preview",
     "gemini-2.5-computer-use-preview-10-2025",
     "gemini-3-pro-preview",
     "gemini-pro-latest",
     "deep-research-pro-preview-12-2025",
-    "gemma-3-27b-it", "gemma-3-12b-it", "gemma-3-4b-it",
-    "gemma-3n-e4b-it", "gemma-3n-e2b-it", "gemma-3-1b-it",
+    "gemma-3-27b-it",
+    "gemma-3-12b-it",
+    "gemma-3-4b-it",
+    "gemma-3n-e4b-it",
+    "gemma-3n-e2b-it",
+    "gemma-3-1b-it",
     "gemini-2.5-flash-lite-preview-09-2025",
-}
+]
+
+GEMINI_SKIP = set(GEMINI_EXTENDED)
+GEMINI_ALL_MODELS = GEMINI_CONFIRMED + [model for model in GEMINI_EXTENDED if model not in set(GEMINI_CONFIRMED)]
 
 GROQ_FALLBACK = [
     "openai/gpt-oss-120b",
@@ -152,7 +165,6 @@ AIRFORCE_MODELS = [
     "gpt-4o-mini",
     "gpt-4o",
     "claude-3-5-sonnet",
-    "deepseek-chat",
     "gemini-2.0-flash",
     "llama-3.3-70b-instruct",
 ]

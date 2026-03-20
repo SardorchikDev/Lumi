@@ -14,6 +14,9 @@ StatusCallback = Callable[[str], None]
 SKIP_ERRORS = (
     "404",
     "model_not_found",
+    "model does not exist",
+    "does not exist",
+    "doesn't exist",
     "decommissioned",
     "not found",
     "limit: 0",

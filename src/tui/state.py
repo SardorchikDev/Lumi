@@ -36,6 +36,21 @@ class PaneState:
         return list(self.lines or [])
 
 
+@dataclass(slots=True)
+class ReviewCard:
+    active: bool = False
+    title: str = ""
+    summary_lines: list[str] | None = None
+    preview_lines: list[str] | None = None
+    footer: str = ""
+
+    def summary(self) -> list[str]:
+        return list(self.summary_lines or [])
+
+    def preview(self) -> list[str]:
+        return list(self.preview_lines or [])
+
+
 class Store:
     def __init__(self) -> None:
         self._lock = threading.Lock()

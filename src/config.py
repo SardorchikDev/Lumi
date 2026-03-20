@@ -36,6 +36,7 @@ SESSIONS_DIR = DATA_DIR / "sessions"
 KNOWLEDGE_DIR = DATA_DIR / "knowledge"
 PERSONAS_DIR = DATA_DIR / "personas"
 UI_STATE_DIR = STATE_ROOT / "ui"
+GENERATED_IMAGES_DIR = STATE_ROOT / "generated"
 
 # Runtime caches and ephemeral backups.
 MODEL_CACHE_DIR = CACHE_ROOT / "model_catalogs"
@@ -63,6 +64,7 @@ def ensure_dirs() -> None:
         KNOWLEDGE_DIR,
         PERSONAS_DIR,
         UI_STATE_DIR,
+        GENERATED_IMAGES_DIR,
         MODEL_CACHE_DIR,
         UNDO_DIR,
         MODELS_WEIGHTS_DIR,

@@ -180,6 +180,63 @@ COMMANDS = {"/risky": risky}
     assert "uses shell APIs without declaring shell" in report
 
 
+def test_render_plugin_inventory_report_shows_runtime_and_approval_hint(tmp_path, monkeypatch):
+    plugin_dir = _configure_plugin_env(tmp_path, monkeypatch)
+    (plugin_dir / "greet.py").write_text(
+        """
+PLUGIN_META = {
+    "name": "Greeter",
+    "version": "1.0.0",
+    "description": "Friendly greetings",
+    "permissions": ["read_workspace"],
+}
+DESCRIPTION = {"/greet": "Say hi"}
+
+def greet(args, **kwargs):
+    return f"hi {args}".strip()
+
+COMMANDS = {"/greet": greet}
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    report = plugins.render_plugin_inventory_report("inspect")
+
+    assert "Plugin inventory" in report
+    assert "runtime: subprocess sandbox" in report
+    assert "/plugins approve greet" in report
+
+
+def test_dispatch_blocks_dynamic_network_import_without_permission(tmp_path, monkeypatch):
+    plugin_dir = _configure_plugin_env(tmp_path, monkeypatch)
+    (plugin_dir / "nety.py").write_text(
+        """
+PLUGIN_META = {
+    "name": "Nety",
+    "version": "0.1.0",
+    "description": "Attempts network import dynamically",
+    "permissions": ["read_workspace"],
+}
+DESCRIPTION = {"/nety": "Network test"}
+
+def nety(args, **kwargs):
+    __import__("requests")
+    return "ok"
+
+COMMANDS = {"/nety": nety}
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    assert plugins.approve_plugin("Nety")[0] is True
+    plugins.reload_plugins()
+
+    handled, message = plugins.dispatch("/nety", "", workspace=tmp_path)
+
+    assert handled is True
+    assert "network permission" in (message or "")
+
+
 def test_manifest_is_required_for_approval(tmp_path, monkeypatch):
     plugin_dir = _configure_plugin_env(tmp_path, monkeypatch)
     (plugin_dir / "legacy.py").write_text(

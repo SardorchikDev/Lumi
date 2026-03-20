@@ -147,21 +147,29 @@ class StarterView:
 
     def _build_review_lines(self, width: int) -> list[str]:
         pending = getattr(self.tui, "_pending_file_plan", None)
-        if not pending:
+        review_card = getattr(self.tui, "review_card", None)
+        if pending:
+            inspection = pending.get("inspection") if isinstance(pending, dict) else None
+            plan = pending.get("plan", {}) if isinstance(pending, dict) else pending[0]
+            operation = plan.get("operation", "create")
+            title = {
+                "delete": "review removal",
+                "move": "review move",
+                "copy": "review copy",
+                "rename": "review rename",
+            }.get(operation, "review filesystem plan")
+            summary = list((inspection or {}).get("summary_lines", []))[:5]
+            preview = list((inspection or {}).get("preview_lines", []))[:4]
+            footer = "y apply  ·  n cancel  ·  enter cancel"
+        elif getattr(review_card, "active", False):
+            title = review_card.title or "review"
+            summary = review_card.summary()[:5]
+            preview = review_card.preview()[:4]
+            footer = review_card.footer or "Esc close"
+        else:
             return []
-        inspection = pending.get("inspection") if isinstance(pending, dict) else None
-        plan = pending.get("plan", {}) if isinstance(pending, dict) else pending[0]
-        operation = plan.get("operation", "create")
-        title = {
-            "delete": "review removal",
-            "move": "review move",
-            "copy": "review copy",
-            "rename": "review rename",
-        }.get(operation, "review filesystem plan")
         panel_w = min(max(44, width - 16), 84)
         left = " " * max(2, (width - panel_w) // 2)
-        summary = list((inspection or {}).get("summary_lines", []))[:5]
-        preview = list((inspection or {}).get("preview_lines", []))[:4]
 
         def row(text: str = "", tone: str | None = None, *, center: bool = False) -> str:
             tone = tone or self.style.fg_dim
@@ -188,7 +196,7 @@ class StarterView:
         lines.extend(
             [
                 "",
-                row("y apply  ·  n cancel  ·  enter cancel", self.style.muted),
+                row(footer, self.style.muted),
                 "",
             ]
         )

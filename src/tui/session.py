@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.tui.state import PaneState
+from src.tui.state import PaneState, ReviewCard
 
 
 def initialize_ui_state(
@@ -20,6 +20,7 @@ def initialize_ui_state(
     tui.pane_active = False
     tui.pane_lines_output = []
     tui.pane = PaneState()
+    tui.review_card = ReviewCard()
     tui.show_starter_panel = True
 
     tui.little_notes = notes_store

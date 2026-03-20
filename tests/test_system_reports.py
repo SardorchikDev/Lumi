@@ -34,6 +34,7 @@ def test_build_status_report_includes_workspace_and_memory(tmp_path, monkeypatch
     assert "huggingface".lower() not in report.lower() or "HuggingFace" in report
     assert "Agent:     running" in report
     assert "Checks:" in report
+    assert "Runtime:" in report
 
 
 def test_build_doctor_report_surfaces_missing_setup(tmp_path, monkeypatch):
@@ -55,6 +56,7 @@ def test_build_doctor_report_surfaces_missing_setup(tmp_path, monkeypatch):
     assert "No configured providers detected." in report
     assert "No LUMI.md project context file found." in report
     assert "No .env file found" in report
+    assert "Runtime:" in report
 
 
 def test_build_onboarding_report_includes_workspace_summary(tmp_path, monkeypatch):
@@ -64,10 +66,15 @@ def test_build_onboarding_report_includes_workspace_summary(tmp_path, monkeypatc
     (tmp_path / "pyproject.toml").write_text("[tool.ruff]\n", encoding="utf-8")
     monkeypatch.setattr(system_reports, "LUMI_HOME", tmp_path / "lumi-home")
 
-    report = build_onboarding_report(base_dir=tmp_path, configured_providers=["huggingface"])
+    report = build_onboarding_report(
+        base_dir=tmp_path,
+        configured_providers=["huggingface", "gemini", "groq"],
+    )
 
     assert "Lumi onboarding" in report
     assert "Workspace:" in report
     assert "Source:" in report
     assert "Tests:" in report
     assert "Starter prompts" in report
+    assert "Shortcuts" in report
+    assert "/image <path> [question]" in report

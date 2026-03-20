@@ -16,6 +16,7 @@ class ProviderSpec:
     context_limit: int
     helper_model_hints: tuple[str, ...] = ()
     heavy_model_hints: tuple[str, ...] = ()
+    capability_model_hints: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
     def configured(self) -> bool:
         return all(os.getenv(var) for var in self.env_vars)
@@ -36,27 +37,35 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {
         "gemini",
         "Gemini",
         ("GEMINI_API_KEY",),
-        frozenset({"chat", "stream", "long_context"}),
+        frozenset({"chat", "stream", "long_context", "vision", "audio_transcription", "image_generation"}),
         "Google Gemini models",
         1_000_000,
         ("lite", "flash", "mini"),
         ("pro", "reasoning"),
+        (
+            ("vision", ("gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro")),
+            ("audio_transcription", ("gemini-2.5-flash", "gemini-2.0-flash")),
+            ("image_generation", ("gemini-2.5-flash-image", "gemini-3.1-flash-image-preview", "gemini-3-pro-image-preview")),
+        ),
     ),
     "groq": ProviderSpec(
         "groq",
         "Groq",
         ("GROQ_API_KEY",),
-        frozenset({"chat", "stream", "fast"}),
+        frozenset({"chat", "stream", "fast", "audio_transcription"}),
         "Fast hosted inference",
         128_000,
         ("instant", "mini", "8b", "20b"),
         ("70b", "120b", "large", "reasoning"),
+        (
+            ("audio_transcription", ("whisper-large-v3-turbo",)),
+        ),
     ),
     "openrouter": ProviderSpec(
         "openrouter",
         "OpenRouter",
         ("OPENROUTER_API_KEY",),
-        frozenset({"chat", "stream", "fallbacks"}),
+        frozenset({"chat", "stream", "fallbacks", "vision"}),
         "Aggregated hosted models",
         128_000,
         ("mini", "free", "flash", "20b"),
@@ -76,7 +85,7 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {
         "huggingface",
         "HuggingFace",
         ("HF_TOKEN",),
-        frozenset({"chat", "stream"}),
+        frozenset({"chat", "stream", "audio_transcription"}),
         "HuggingFace router",
         128_000,
         ("8b", "7b", "mini"),
@@ -116,7 +125,7 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {
         "airforce",
         "Airforce",
         ("AIRFORCE_API_KEY",),
-        frozenset({"chat", "stream", "fallbacks"}),
+        frozenset({"chat", "stream", "fallbacks", "vision"}),
         "Airforce unified AI gateway",
         128_000,
         ("mini", "flash"),
@@ -136,7 +145,7 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {
         "vercel",
         "Vercel AI",
         ("VERCEL_API_KEY",),
-        frozenset({"chat", "stream", "fallbacks"}),
+        frozenset({"chat", "stream", "fallbacks", "vision"}),
         "Vercel AI Gateway",
         128_000,
         ("mini", "flash"),
@@ -146,7 +155,7 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {
         "pollinations",
         "Pollinations",
         ("POLLINATIONS_API_KEY",),
-        frozenset({"chat", "stream", "fallbacks"}),
+        frozenset({"chat", "stream", "fallbacks", "vision"}),
         "Pollinations unified generative API",
         128_000,
         ("fast",),
@@ -156,11 +165,14 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {
         "vertex",
         "Vertex AI",
         ("GOOGLE_APPLICATION_CREDENTIALS", "VERTEX_PROJECT_ID"),
-        frozenset({"chat", "stream", "long_context"}),
+        frozenset({"chat", "stream", "long_context", "vision"}),
         "Google Cloud Vertex AI",
         1_000_000,
         ("flash", "haiku", "small"),
         ("pro", "opus", "sonnet", "70b", "405b", "large"),
+        (
+            ("vision", ("gemini-2.5-pro-preview-05-06", "gemini-2.5-flash-preview-04-17", "gemini-2.0-flash-001")),
+        ),
     ),
 }
 
@@ -230,6 +242,37 @@ def provider_model_hints(provider: str) -> tuple[tuple[str, ...], tuple[str, ...
     if not spec:
         return ((), ())
     return spec.helper_model_hints, spec.heavy_model_hints
+
+
+def provider_capability_model_hints(provider: str, capability: str) -> tuple[str, ...]:
+    if provider == "ollama":
+        return ()
+    spec = get_provider_spec(provider)
+    if not spec:
+        return ()
+    mapping = dict(spec.capability_model_hints)
+    return mapping.get(capability, ())
+
+
+def pick_provider_for_capability(
+    configured_providers: list[str],
+    capability: str,
+    *,
+    current_provider: str = "",
+    preferred_order: tuple[str, ...] = (),
+) -> str | None:
+    available = [provider for provider in configured_providers if provider_supports(provider, capability)]
+    if not available:
+        return None
+    if current_provider and current_provider in available:
+        return current_provider
+    for provider in preferred_order:
+        if provider in available:
+            return provider
+    for provider in DEFAULT_PROVIDER_ORDER:
+        if provider in available:
+            return provider
+    return available[0]
 
 
 def provider_health_snapshot(has_ollama: bool = False) -> list[ProviderHealth]:

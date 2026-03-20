@@ -430,6 +430,76 @@ def render_plugin_audit_report() -> str:
     return "\n".join(lines)
 
 
+def render_plugin_inventory_report(view: str = "summary") -> str:
+    normalized = (view or "summary").strip().lower()
+    if normalized not in {"summary", "inspect", "pending"}:
+        normalized = "summary"
+
+    inventory = describe_plugin_inventory()
+    loaded = describe_plugins()
+
+    if normalized == "pending":
+        if not inventory:
+            return "No plugins discovered. Drop .py files in ~/Lumi/plugins/"
+        pending = [item for item in inventory if item["status"] != "loaded"]
+        if not pending:
+            return "No pending plugins."
+        lines = ["Pending plugins", "  runtime: subprocess sandbox"]
+        for item in pending:
+            identifier = pathlib.Path(str(item["path"])).stem
+            trust = "trusted" if item["trusted"] else "approval required"
+            lines.append(f"  {item['name']}  [{item['status']}; {trust}]")
+            lines.append(f"    commands: {', '.join(item['commands']) if item['commands'] else 'none'}")
+            lines.append(f"    approve: /plugins approve {identifier}")
+            if item["issues"]:
+                lines.append(f"    issues: {', '.join(item['issues'])}")
+            elif item["warnings"]:
+                lines.append(f"    warnings: {', '.join(item['warnings'])}")
+            else:
+                lines.append("    ready to approve")
+        return "\n".join(lines)
+
+    if normalized == "inspect":
+        if not inventory:
+            return "No plugins discovered. Drop .py files in ~/Lumi/plugins/"
+        lines = ["Plugin inventory", "  runtime: subprocess sandbox"]
+        for item in inventory:
+            identifier = pathlib.Path(str(item["path"])).stem
+            perms = ", ".join(item["permissions"]) if item["permissions"] else "none declared"
+            commands = ", ".join(item["commands"]) if item["commands"] else "none"
+            trust = "trusted" if item["trusted"] else "approval required"
+            lines.append(f"  {item['name']} v{item['version']}  [{item['status']}; {trust}]")
+            lines.append(f"    {item['description']}")
+            lines.append(f"    commands: {commands}")
+            lines.append(f"    permissions: {perms}")
+            lines.append(f"    approve: /plugins approve {identifier}")
+            if item["issues"]:
+                lines.append(f"    issues: {', '.join(item['issues'])}")
+            if item["warnings"]:
+                lines.append(f"    warnings: {', '.join(item['warnings'])}")
+        return "\n".join(lines)
+
+    if not inventory:
+        return "No plugins discovered. Drop .py files in ~/Lumi/plugins/"
+
+    pending_count = sum(1 for item in inventory if item["status"] != "loaded")
+    lines = ["Plugins", "  runtime: subprocess sandbox"]
+    if loaded:
+        lines.append("  loaded")
+        lines.extend(
+            f"    {item['name']}  ({', '.join(item['commands'])})"
+            for item in loaded
+        )
+    else:
+        lines.append("  loaded")
+        lines.append("    none")
+    lines.append("")
+    lines.append(f"  discovered: {len(inventory)}")
+    lines.append(f"  pending:    {pending_count}")
+    lines.append("  next: /plugins inspect | /plugins pending | /plugins approve <name>")
+    return "\n".join(lines)
+
+
 def render_permission_report(scope: str = "summary") -> str:
     normalized = (scope or "summary").strip().lower()
     if normalized in {"", "summary"}:
@@ -495,6 +565,7 @@ def _sanitize_dispatch_context(meta: PluginMeta, kwargs: dict) -> dict[str, obje
     workspace_path = pathlib.Path(workspace).expanduser().resolve()
     payload["workspace"] = str(workspace_path)
     if "read_workspace" in permissions:
+        payload["read_workspace"] = True
         payload["cwd"] = str(pathlib.Path.cwd())
     if "write_workspace" in permissions:
         payload["write_workspace"] = True

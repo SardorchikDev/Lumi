@@ -28,14 +28,17 @@ def _inside_workspace(path: pathlib.Path, workspace: pathlib.Path) -> bool:
 
 def _install_permission_guards(context: dict[str, Any]) -> None:
     workspace = _resolve(str(context.get("workspace") or pathlib.Path.cwd()))
-    allow_read = bool(context.get("cwd"))
+    allow_read = bool(context.get("read_workspace") or context.get("cwd"))
     allow_write = bool(context.get("write_workspace"))
     allow_shell = bool(context.get("shell"))
     allow_network = bool(context.get("network"))
+    allow_clipboard = bool(context.get("clipboard"))
 
     real_open = builtins.open
 
     def guarded_open(file, mode="r", *args, **kwargs):
+        if isinstance(file, int):
+            return real_open(file, mode, *args, **kwargs)
         path = _resolve(file)
         wants_write = any(flag in mode for flag in ("w", "a", "x", "+"))
         if _inside_workspace(path, workspace):
@@ -52,6 +55,7 @@ def _install_permission_guards(context: dict[str, Any]) -> None:
     real_system = os.system
     real_urlopen = urllib_request.urlopen
     real_socket = socket.socket
+    real_import = builtins.__import__
 
     def guarded_run(*args, **kwargs):
         if not allow_shell:
@@ -79,16 +83,43 @@ def _install_permission_guards(context: dict[str, Any]) -> None:
                 raise PermissionError("plugin does not have network permission")
             return real_socket(*args, **kwargs)
 
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        top_level = name.split(".", 1)[0]
+        if top_level == "subprocess" and not allow_shell:
+            raise PermissionError("plugin does not have shell permission")
+        if top_level in {"requests", "httpx", "socket"} and not allow_network:
+            raise PermissionError("plugin does not have network permission")
+        if top_level in {"pyperclip", "tkinter"} and not allow_clipboard:
+            raise PermissionError("plugin does not have clipboard permission")
+        return real_import(name, globals, locals, fromlist, level)
+
     subprocess.run = guarded_run
     subprocess.Popen = guarded_popen
     os.system = guarded_system
     urllib_request.urlopen = guarded_urlopen
     socket.socket = GuardedSocket
+    builtins.__import__ = guarded_import
 
+    real_read_text = pathlib.Path.read_text
+    real_read_bytes = pathlib.Path.read_bytes
     real_unlink = pathlib.Path.unlink
     real_mkdir = pathlib.Path.mkdir
     real_rename = pathlib.Path.rename
     real_replace = pathlib.Path.replace
+    real_write_text = pathlib.Path.write_text
+    real_write_bytes = pathlib.Path.write_bytes
+
+    def guarded_read_text(self, *args, **kwargs):
+        path = _resolve(self)
+        if _inside_workspace(path, workspace) and not allow_read:
+            raise PermissionError("plugin does not have read_workspace permission")
+        return real_read_text(self, *args, **kwargs)
+
+    def guarded_read_bytes(self, *args, **kwargs):
+        path = _resolve(self)
+        if _inside_workspace(path, workspace) and not allow_read:
+            raise PermissionError("plugin does not have read_workspace permission")
+        return real_read_bytes(self, *args, **kwargs)
 
     def guarded_unlink(self, *args, **kwargs):
         path = _resolve(self)
@@ -114,10 +145,26 @@ def _install_permission_guards(context: dict[str, Any]) -> None:
             raise PermissionError("plugin does not have write_workspace permission")
         return real_replace(self, target, *args, **kwargs)
 
+    def guarded_write_text(self, *args, **kwargs):
+        path = _resolve(self)
+        if _inside_workspace(path, workspace) and not allow_write:
+            raise PermissionError("plugin does not have write_workspace permission")
+        return real_write_text(self, *args, **kwargs)
+
+    def guarded_write_bytes(self, *args, **kwargs):
+        path = _resolve(self)
+        if _inside_workspace(path, workspace) and not allow_write:
+            raise PermissionError("plugin does not have write_workspace permission")
+        return real_write_bytes(self, *args, **kwargs)
+
+    pathlib.Path.read_text = guarded_read_text
+    pathlib.Path.read_bytes = guarded_read_bytes
     pathlib.Path.unlink = guarded_unlink
     pathlib.Path.mkdir = guarded_mkdir
     pathlib.Path.rename = guarded_rename
     pathlib.Path.replace = guarded_replace
+    pathlib.Path.write_text = guarded_write_text
+    pathlib.Path.write_bytes = guarded_write_bytes
 
 
 def _load_module(path: pathlib.Path):

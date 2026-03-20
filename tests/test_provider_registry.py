@@ -3,6 +3,8 @@
 from src.chat.providers import (
     get_configured_providers,
     pick_default_provider,
+    pick_provider_for_capability,
+    provider_capability_model_hints,
     provider_health_snapshot,
     provider_label,
     provider_supports,
@@ -54,3 +56,13 @@ def test_provider_health_snapshot_reports_missing_env(monkeypatch):
     huggingface = next(item for item in snapshot if item.key == "huggingface")
     assert huggingface.configured is False
     assert "HF_TOKEN" in huggingface.missing_env_vars
+
+
+def test_capability_routing_prefers_matching_provider(monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "x")
+    monkeypatch.setenv("GEMINI_API_KEY", "y")
+    configured = get_configured_providers()
+
+    assert pick_provider_for_capability(configured, "vision", current_provider="huggingface") == "gemini"
+    assert pick_provider_for_capability(configured, "audio_transcription", current_provider="huggingface") == "huggingface"
+    assert "gemini-2.5-flash" in provider_capability_model_hints("gemini", "vision")

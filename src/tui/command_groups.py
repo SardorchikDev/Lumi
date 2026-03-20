@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 
 from src.agents.benchmark import load_benchmark_scenarios, render_benchmark_catalog
+from src.tui.review_cards import file_review_card
 from src.tui.state import Msg
 from src.utils.git_tools import GIT_USAGE, run_git_subcommand
 from src.utils.system_reports import build_onboarding_report
@@ -17,7 +18,7 @@ HELP_CATEGORIES = {
     "🔧 Code": ["/fix", "/debug", "/explain", "/review", "/improve", "/optimize", "/security", "/refactor", "/test", "/docs", "/types", "/comment", "/run", "/edit"],
     "📁 Files": ["/file", "/browse", "/find", "/grep", "/tree", "/project", "/fs"],
     "🔀 Git": ["/git", "/pr", "/changelog", "/standup", "/readme"],
-    "🌐 Web": ["/search", "/web", "/image", "/data"],
+    "🌐 Web": ["/search", "/web", "/image", "/imagine", "/data"],
     "🧠 Memory": ["/remember", "/memory", "/forget", "/save", "/load", "/sessions", "/export", "/tokens", "/context"],
     "🛠️ Tools": ["/shell", "/scaffold", "/lint", "/fmt", "/todo", "/note", "/draft", "/weather", "/timer", "/copy", "/paste", "/diff", "/pdf"],
     "⚙️ System": ["/status", "/doctor", "/onboard", "/benchmark", "/permissions", "/model", "/council", "/mode", "/offline", "/godmode", "/pane", "/apply", "/index", "/rag", "/voice", "/persona", "/sys", "/plugins", "/compact", "/help", "/exit"],
@@ -345,14 +346,27 @@ def register_command_groups(
     @registry.register("/review", "Full code review with specifics")
     def cmd_review(tui, arg: str):
         def _go():
-            content = _resolve_content_target(tui, arg, read_file, missing_error="Nothing to review.")
-            if not content:
-                return
-            msg = (
-                "Thorough code review. Cover: correctness, edge cases, performance, security, "
-                f"readability, maintainability. Be specific with line numbers and variable names:\n\n{content}"
-            )
-            _run_memory_prompt(tui, msg, f"◆ {tui.name}  [review]", build_messages=build_messages, user_label="/review")
+            path_arg = arg.strip()
+            target_path = Path(path_arg).expanduser() if path_arg else None
+            if target_path and target_path.exists() and target_path.is_file():
+                card = file_review_card(target_path, mode="review")
+                tui.set_review_card(
+                    title=str(card["title"]),
+                    summary_lines=list(card["summary_lines"]),
+                    preview_lines=list(card["preview_lines"]),
+                    footer=str(card["footer"]),
+                )
+            try:
+                content = _resolve_content_target(tui, arg, read_file, missing_error="Nothing to review.")
+                if not content:
+                    return
+                msg = (
+                    "Thorough code review. Findings first. Cover: correctness, edge cases, performance, security, "
+                    f"readability, maintainability. Be specific with line numbers and variable names:\n\n{content}"
+                )
+                _run_memory_prompt(tui, msg, f"◆ {tui.name}  [review]", build_messages=build_messages, user_label="/review")
+            finally:
+                tui.clear_review_card()
 
         _start_thread(_go)
 

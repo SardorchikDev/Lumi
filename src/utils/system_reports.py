@@ -6,7 +6,7 @@ from pathlib import Path
 
 from src.agents.task_memory import get_active_run, get_recent_runs
 from src.chat.providers import provider_health_snapshot, provider_label
-from src.config import LUMI_HOME
+from src.config import CACHE_ROOT, LUMI_HOME, PLUGINS_DIR, STATE_ROOT, UI_STATE_DIR
 from src.memory.longterm import memory_stats
 from src.utils.git_tools import summarize_git_state
 from src.utils.plugins import audit_plugins, describe_plugins
@@ -31,6 +31,14 @@ def _find_env_file(base_dir: Path) -> Path | None:
     return None
 
 
+def _capability_ready_labels(provider_health: list, capability: str) -> list[str]:
+    return [
+        item.label
+        for item in provider_health
+        if item.configured and capability in item.capabilities
+    ]
+
+
 def build_status_report(
     *,
     base_dir: Path | None = None,
@@ -46,6 +54,9 @@ def build_status_report(
     git_summary = summarize_git_state(root)
     plugins = describe_plugins()
     active_run = get_active_run(root)
+    provider_health = provider_health_snapshot(has_ollama=provider == "ollama")
+    vision_ready = _capability_ready_labels(provider_health, "vision")
+    voice_ready = _capability_ready_labels(provider_health, "audio_transcription")
 
     lines = ["Lumi status", f"  Workspace: {root}"]
     if provider or model:
@@ -66,6 +77,13 @@ def build_status_report(
         f"{longterm['facts']} fact(s), {longterm['episodes']} episode(s), "
         f"{longterm['persona_override_keys']} persona override key(s)"
     )
+    lines.append(f"  Runtime:   state {STATE_ROOT} · cache {CACHE_ROOT}")
+    if vision_ready or voice_ready:
+        lines.append(
+            "  Media:     "
+            f"vision {', '.join(vision_ready) if vision_ready else 'none'} · "
+            f"voice {', '.join(voice_ready) if voice_ready else 'none'}"
+        )
 
     if active_run:
         lines.append(
@@ -136,6 +154,9 @@ def build_doctor_report(
         + (", ".join(provider_label(name) for name in configured) if configured else "none configured")
     )
     lines.append(f"  Plugins:   {len(plugins)} loaded")
+    lines.append(f"  Runtime:   state {STATE_ROOT} · cache {CACHE_ROOT}")
+    lines.append(f"  UI state:  {UI_STATE_DIR}")
+    lines.append(f"  Plugins:   {PLUGINS_DIR}")
     suspicious_plugins = sum(1 for item in plugin_audit if item["warnings"])
     if suspicious_plugins:
         lines.append(f"  Plugin audit: {suspicious_plugins} plugin(s) need attention")
@@ -180,6 +201,12 @@ def build_doctor_report(
     configured_labels = [item.label for item in provider_health if item.configured]
     if configured_labels:
         lines.append(f"  Ready providers: {', '.join(configured_labels)}")
+    vision_ready = _capability_ready_labels(provider_health, "vision")
+    voice_ready = _capability_ready_labels(provider_health, "audio_transcription")
+    if vision_ready:
+        lines.append(f"  Vision-ready: {', '.join(vision_ready)}")
+    if voice_ready:
+        lines.append(f"  Voice-ready: {', '.join(voice_ready)}")
 
     lines.append("")
     lines.append("Warnings")
@@ -210,6 +237,8 @@ def build_onboarding_report(
     configured = configured_providers or []
     provider_health = provider_health_snapshot(has_ollama="ollama" in configured)
     ready = [item.label for item in provider_health if item.configured]
+    vision_ready = _capability_ready_labels(provider_health, "vision")
+    voice_ready = _capability_ready_labels(provider_health, "audio_transcription")
     hints = build_onboarding_hints(profile)
 
     lines = ["Lumi onboarding", ""]
@@ -218,7 +247,15 @@ def build_onboarding_report(
     lines.append("Ready now")
     lines.append("  Providers: " + (", ".join(ready) if ready else "none configured"))
     lines.append("  Env file:  " + (str(_find_env_file(root)) if _find_env_file(root) else "missing"))
+    lines.append("  Runtime:   state " + str(STATE_ROOT))
+    lines.append("  Cache:     " + str(CACHE_ROOT))
     lines.append("  Commands:  /status, /doctor, /model, /agent, /git review")
+    lines.append(
+        "  Media:     vision "
+        + (", ".join(vision_ready) if vision_ready else "none")
+        + " · voice "
+        + (", ".join(voice_ready) if voice_ready else "none")
+    )
     lines.append("")
     lines.append("Next steps")
     if hints:
@@ -226,6 +263,16 @@ def build_onboarding_report(
             lines.append(f"  - {hint}")
     else:
         lines.append("  - Workspace shape looks healthy for Lumi.")
+    lines.append("")
+    lines.append("Shortcuts")
+    lines.append("  - Ctrl+N opens the provider/model picker")
+    lines.append("  - Ctrl+G toggles the starter panel")
+    lines.append("  - Esc cancels pending UI and review states")
+    lines.append("")
+    lines.append("Useful commands")
+    lines.append("  - /image <path> [question]")
+    lines.append("  - /voice [seconds]")
+    lines.append("  - /plugins inspect")
     lines.append("")
     lines.append("Starter prompts")
     lines.append("  - review the repo and tell me where to start")
