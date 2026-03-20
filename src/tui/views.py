@@ -381,31 +381,33 @@ class TranscriptView:
         msgs = self.tui.store.snapshot()
         lines: list[str] = []
         inner = max(30, width - 8)
+        header_prefix = "    "
+        body_prefix = "      "
         if not msgs:
             return lines
 
         if getattr(self.tui, "agent_active_objective", None) and getattr(self.tui, "agent_tasks", None):
             lines.append("")
-            lines.append("  " + self.style.fg_fn(self.style.muted) + "objective" + self.style.reset + "  " + self.style.fg_fn(self.style.fg_hi) + self.tui.agent_active_objective + self.style.reset)
+            lines.append(header_prefix + self.style.fg_fn(self.style.muted) + "objective" + self.style.reset + "  " + self.style.fg_fn(self.style.fg_hi) + self.tui.agent_active_objective + self.style.reset)
             for task in self.tui.agent_tasks:
                 bullet = "·"
                 label = task.get("text", "")
                 for ln in textwrap.wrap(label, inner - 6) or [label]:
-                    lines.append("    " + self.style.fg_fn(self.style.muted) + bullet + " " + self.style.fg_fn(self.style.fg_dim) + ln + self.style.reset)
+                    lines.append(body_prefix + self.style.fg_fn(self.style.muted) + bullet + " " + self.style.fg_fn(self.style.fg_dim) + ln + self.style.reset)
                     bullet = " "
             lines.append("")
 
         for msg in msgs:
             if msg.role == "user":
                 lines.append(
-                    "  "
+                    header_prefix
                     + self.style.fg_fn(self.style.muted)
                     + "you"
                     + (f"  {msg.ts}" if msg.ts else "")
                     + self.style.reset
                 )
                 for ln in textwrap.wrap(msg.text, inner) or [msg.text]:
-                    lines.append("    " + self.style.fg_fn(self.style.fg_hi) + ln + self.style.reset)
+                    lines.append(body_prefix + self.style.fg_fn(self.style.fg_hi) + ln + self.style.reset)
                 lines.append("")
                 continue
 
@@ -425,9 +427,9 @@ class TranscriptView:
                 else:
                     hdr = self.style.fg_fn(self.style.fg_hi) + self.style.bold()
 
-                prefix = "    "
+                prefix = body_prefix
                 label_text = label + (f"  {msg.ts}" if msg.ts else "")
-                lines.append("  " + hdr + label_text + self.style.reset)
+                lines.append(header_prefix + hdr + label_text + self.style.reset)
                 raw_lines = msg.text.split("\n") if msg.text else [""]
                 in_code = False
                 code_w = min(inner - 2, 88)
@@ -504,16 +506,16 @@ class TranscriptView:
                 continue
 
             if msg.role == "system":
-                lines.append("  " + self.style.fg_fn(self.style.muted) + "note" + self.style.reset)
+                lines.append(header_prefix + self.style.fg_fn(self.style.muted) + "note" + self.style.reset)
                 for chunk in msg.text.split("\n"):
                     for wrapped in (textwrap.wrap(chunk, inner) if chunk.strip() else [""]):
-                        lines.append("    " + self.style.fg_fn(self.style.fg_dim) + wrapped + self.style.reset)
+                        lines.append(body_prefix + self.style.fg_fn(self.style.fg_dim) + wrapped + self.style.reset)
                 lines.append("")
                 continue
 
             if msg.role == "error":
-                lines.append("  " + self.style.fg_fn(self.style.red) + "warning" + self.style.reset)
-                lines.append("    " + self.style.fg_fn(self.style.fg_hi) + msg.text + self.style.reset)
+                lines.append(header_prefix + self.style.fg_fn(self.style.red) + "warning" + self.style.reset)
+                lines.append(body_prefix + self.style.fg_fn(self.style.fg_hi) + msg.text + self.style.reset)
                 lines.append("")
 
         return lines

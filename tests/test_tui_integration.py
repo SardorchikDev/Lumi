@@ -77,6 +77,40 @@ def test_chat_layout_keeps_prompt_and_transcript_separate(tmp_path, monkeypatch)
     tui._task_executor.shutdown(wait=False)
 
 
+def test_starter_tip_aligns_with_transcript_headers(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.tui.session.random.choice",
+        lambda _seq: "Tip: Use /voice [seconds] to record and transcribe straight into the prompt.",
+    )
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.store.add(Msg("user", "hi"))
+
+    starter = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
+    chat = [_strip_ansi(line) for line in tui.renderer._build_chat_lines(110)]
+    tip_line = next(line for line in starter if line.strip().startswith("tip"))
+    user_line = next(line for line in chat if line.strip().startswith("you"))
+
+    assert len(tip_line) - len(tip_line.lstrip()) == len(user_line) - len(user_line.lstrip())
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_prompt_status_aligns_with_starter_tip(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.tui.session.random.choice",
+        lambda _seq: "Tip: Use /doctor to check provider setup and runtime health.",
+    )
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    starter = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
+    prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(36, 110, 110)
+    prompt = [_strip_ansi(line) for line in prompt_lines]
+    tip_line = next(line for line in starter if line.strip().startswith("tip"))
+    status_line = next(line for line in prompt if "100% left" in line)
+
+    assert len(tip_line) - len(tip_line.lstrip()) == len(status_line) - len(status_line.lstrip())
+    tui._task_executor.shutdown(wait=False)
+
+
 def test_empty_state_keeps_prompt_directly_under_starter_card(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
 
@@ -123,6 +157,10 @@ def test_prompt_bar_renders_bordered_input(tmp_path, monkeypatch):
 
 
 def test_recent_commands_clear_between_tui_sessions(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "src.tui.session.random.choice",
+        lambda _seq: "Tip: Use /doctor to check provider setup and runtime health.",
+    )
     first = _make_tui(tmp_path, monkeypatch)
     first.redraw = lambda: None
     first._execute_command("/clear", "")

@@ -762,6 +762,7 @@ class Renderer:
         tui = self.tui
         text = tui.buf
         left = " " * 2
+        status_left = left + "  "
         body_w = max(24, chat_w - len(left) - 6)
         text_w = max(10, body_w - 2)
         status_plain, status_colored = self._stat_info(chat_w)
@@ -843,7 +844,7 @@ class Renderer:
             status_plain = pending_hint
         if show_status_line:
             lines.append("")
-            lines.append(left + _fg(MUTED) + status_plain + R if status_colored is None else left + status_colored)
+            lines.append(status_left + _fg(MUTED) + status_plain + R if status_colored is None else status_left + status_colored)
 
         prompt_top = rows - len(lines) + 1
         cursor_row = prompt_top + 1 + (cursor_row_rel if text else 0)
