@@ -11,10 +11,12 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import termios
 import threading
 import time
@@ -153,6 +155,17 @@ from src.tui.media import (
     resolve_media_target,
     transcribe_audio_file,
 )
+from src.tui.mode_sessions import (
+    build_mode_context_text,
+    build_mode_review_card,
+    fallback_mode_summary_data,
+    format_mode_tldr,
+    list_mode_conversations,
+    parse_mode_summary_response,
+    sanitize_handoff_transcript,
+    save_mode_conversation,
+    search_mode_conversations,
+)
 from src.tui.notes import LittleNotesStore
 from src.tui.review_cards import file_review_card
 from src.tui.session import initialize_ui_state
@@ -202,6 +215,257 @@ except Exception:
 
 _context_cache = get_global_context_cache()
 _session_telemetry = get_global_telemetry()
+
+MODE_CLI_REGISTRY: dict[str, dict[str, object]] = {
+    "claude": {
+        "binary": "claude",
+        "name": "Claude Code",
+        "maker": "Anthropic",
+        "desc": "Repo-aware coding agent with strong edit and review workflows.",
+        "installs": [
+            "npm install -g @anthropic-ai/claude-code",
+            "curl -fsSL https://claude.ai/install.sh | bash",
+        ],
+        "verify": "claude --version",
+        "auth": "Authenticate with `claude login` or set `ANTHROPIC_API_KEY`.",
+        "version_args": [["--version"]],
+    },
+    "codex": {
+        "binary": "codex",
+        "name": "Codex CLI",
+        "maker": "OpenAI",
+        "desc": "Local coding agent with GPT-5 family models and sandboxed execution.",
+        "installs": ["npm install -g @openai/codex"],
+        "verify": "codex --version",
+        "auth": "Set `OPENAI_API_KEY` and complete any first-run login if prompted.",
+        "version_args": [["--version"]],
+    },
+    "gemini": {
+        "binary": "gemini",
+        "name": "Gemini CLI",
+        "maker": "Google",
+        "desc": "Gemini CLI with repo awareness, MCP, and Google-hosted models.",
+        "installs": ["npm install -g @google/gemini-cli"],
+        "verify": "gemini --version",
+        "auth": "Run `gemini auth login` or set `GEMINI_API_KEY`.",
+        "version_args": [["--version"]],
+    },
+    "opencode": {
+        "binary": "opencode",
+        "name": "OpenCode",
+        "maker": "SST",
+        "desc": "Provider-rich coding CLI with LSP and multi-session support.",
+        "installs": [
+            "npm install -g opencode-ai",
+            "curl -fsSL https://opencode.ai/install | bash",
+        ],
+        "verify": "opencode --version",
+        "auth": "Configure a provider in OpenCode after install.",
+        "version_args": [["--version"]],
+    },
+    "aider": {
+        "binary": "aider",
+        "name": "Aider",
+        "maker": "Paul Gauthier",
+        "desc": "Git-first terminal pair programmer with strong diff workflows.",
+        "installs": [
+            "pip install aider-chat --break-system-packages",
+            "pipx install aider-chat",
+        ],
+        "verify": "aider --version",
+        "auth": "Provide the model API keys Aider expects for your chosen backend.",
+        "version_args": [["--version"]],
+    },
+    "goose": {
+        "binary": "goose",
+        "name": "Goose",
+        "maker": "Block",
+        "desc": "Autonomous agent CLI with tooling and MCP support.",
+        "installs": ["curl -fsSL https://github.com/block/goose/releases/latest/download/install.sh | bash"],
+        "verify": "goose --version",
+        "auth": "Finish Goose setup after install and configure your provider.",
+        "version_args": [["--version"]],
+    },
+    "qwen": {
+        "binary": "qwen",
+        "name": "Qwen Code",
+        "maker": "Alibaba",
+        "desc": "Qwen coding CLI with free-tier auth and large coder models.",
+        "installs": ['bash -c "$(curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen.sh)"'],
+        "verify": "qwen --version",
+        "auth": "Complete the Qwen login flow after install.",
+        "version_args": [["--version"]],
+    },
+    "plandex": {
+        "binary": "plandex",
+        "name": "Plandex",
+        "maker": "Plandex",
+        "desc": "Plan-first coding CLI for larger multi-file tasks.",
+        "installs": ["curl -sL https://plandex.ai/install.sh | bash"],
+        "verify": "plandex --version",
+        "auth": "Run the Plandex auth/setup flow after install.",
+        "version_args": [["--version"]],
+    },
+    "kilo": {
+        "binary": "kilo",
+        "name": "Kilo Code",
+        "maker": "Kilo-Org",
+        "desc": "Multi-mode coding CLI with broad model support.",
+        "installs": ["npm install -g @kilocode/cli"],
+        "verify": "kilo --version",
+        "auth": "Sign in or configure your model provider after install.",
+        "version_args": [["--version"]],
+    },
+    "amp": {
+        "binary": "amp",
+        "name": "Amp",
+        "maker": "Sourcegraph",
+        "desc": "Agentic CLI with shared threads and high-context workflows.",
+        "installs": [
+            "npm install -g @sourcegraph/amp",
+            "curl -fsSL https://ampcode.com/install.sh | bash",
+        ],
+        "verify": "amp --version",
+        "auth": "Complete the Amp login flow after install.",
+        "version_args": [["--version"]],
+    },
+    "continue": {
+        "binary": "cn",
+        "name": "Continue CLI",
+        "maker": "Continue.dev",
+        "desc": "Resume-friendly CLI with headless and CI support.",
+        "installs": ["npm install -g @continuedev/cli"],
+        "verify": "cn --version",
+        "auth": "Configure Continue after install with your preferred provider.",
+        "version_args": [["--version"]],
+    },
+}
+
+
+def _mode_display_path(path: str | Path, *, max_len: int = 52) -> str:
+    text = str(Path(path).expanduser())
+    home = str(Path.home())
+    if text == home:
+        text = "~"
+    elif text.startswith(home + "/"):
+        text = "~/" + text[len(home) + 1 :]
+    if len(text) <= max_len:
+        return text
+    return "..." + text[-(max_len - 3) :]
+
+
+def _mode_detect_binary_version(entry: dict[str, object], binary_path: str) -> str:
+    version_args = entry.get("version_args") or [["--version"], ["version"], ["-V"]]
+    for args in version_args:
+        try:
+            result = subprocess.run(
+                [binary_path, *list(args)],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+        except Exception:
+            continue
+        output = (result.stdout or result.stderr or "").strip()
+        if output:
+            return output.splitlines()[0][:120]
+    return ""
+
+
+def _mode_binary_info(entry: dict[str, object]) -> dict[str, str | bool]:
+    binary = str(entry["binary"])
+    binary_path = shutil.which(binary)
+    if not binary_path:
+        return {
+            "installed": False,
+            "binary": binary,
+            "binary_path": "",
+            "version": "",
+            "reason": "",
+        }
+    if Path(binary_path).name != binary:
+        return {
+            "installed": False,
+            "binary": binary,
+            "binary_path": str(Path(binary_path).resolve()),
+            "version": "",
+            "reason": f"Resolved `{binary_path}` but expected executable name `{binary}`.",
+        }
+    return {
+        "installed": True,
+        "binary": binary,
+        "binary_path": str(Path(binary_path).resolve()),
+        "version": _mode_detect_binary_version(entry, binary_path),
+        "reason": "",
+    }
+
+
+def _mode_recent_lines(cli_name: str, *, limit: int = 3) -> list[str]:
+    records = list_mode_conversations(cli_name, limit=limit)
+    lines: list[str] = []
+    for record in records:
+        summary = record.get("summary", {}) if isinstance(record.get("summary"), dict) else {}
+        tldr = str(summary.get("tldr", "")).strip() or "No TL;DR available."
+        stamp = Path(str(record.get("path", ""))).stem or str(record.get("date", "")).strip() or "unknown"
+        lines.append(f"  - {stamp} · {tldr[:96]}")
+    return lines
+
+
+def _mode_memory_note(record: dict[str, object]) -> str:
+    summary = record.get("summary", {}) if isinstance(record.get("summary"), dict) else {}
+    parts = [f"[Mode session: {record.get('name', record.get('cli', 'external CLI'))}]"]
+    if summary.get("tldr"):
+        parts.append(f"TL;DR: {summary['tldr']}")
+    for label in ("files", "commands", "decisions", "next_steps"):
+        values = summary.get(label)
+        if isinstance(values, list) and values:
+            parts.append(f"{label}: " + "; ".join(str(item) for item in values[:4]))
+    if record.get("path"):
+        parts.append(f"Saved transcript: {record['path']}")
+    return " ".join(parts)
+
+
+def _index_mode_record(record: dict[str, object]) -> None:
+    path = str(record.get("path", "")).strip()
+    label = f"{record.get('name', record.get('cli', 'mode'))} {Path(path).name}" if path else str(record.get("name", "mode"))
+    key = f"mode:{record.get('cli', 'unknown')}:{Path(path).stem}" if path else f"mode:{record.get('cli', 'unknown')}"
+    _context_cache.remember_text(key, label, build_mode_context_text(record), kind="mode")
+
+
+def _build_mode_conversation_lines(
+    records: list[dict[str, object]],
+    *,
+    cli_name: str | None = None,
+    query: str = "",
+) -> tuple[str, str, list[str]]:
+    title = "mode conversations"
+    subtitle_parts: list[str] = []
+    if cli_name:
+        subtitle_parts.append(cli_name)
+    if query:
+        subtitle_parts.append(f"search: {query}")
+    subtitle = "  ·  ".join(subtitle_parts)
+    lines: list[str] = []
+    for index, record in enumerate(records[:10], 1):
+        summary = record.get("summary", {}) if isinstance(record.get("summary"), dict) else {}
+        stamp = Path(str(record.get("path", ""))).stem or str(record.get("date", "")).strip() or "unknown"
+        tldr = str(summary.get("tldr", "")).strip() or "No TL;DR available."
+        lines.append(f"{index}. {record.get('name', record.get('cli', '?'))} · {stamp}")
+        meta = [
+            _mode_display_path(str(record.get("cwd", "?"))),
+            f"{record.get('duration_seconds', '?')}s",
+        ]
+        if record.get("git_branch"):
+            meta.append(str(record["git_branch"]))
+        lines.append("   " + " · ".join(meta))
+        lines.append("   " + tldr[:104])
+        next_steps = summary.get("next_steps")
+        if isinstance(next_steps, list) and next_steps:
+            lines.append("   next: " + str(next_steps[0])[:98])
+        lines.append("")
+    if lines and not lines[-1].strip():
+        lines.pop()
+    return title, subtitle, lines
 
 
 def build_messages(system_prompt: str, history: list[dict[str, str]], *, model: str = "") -> list[dict[str, str]]:
@@ -1177,16 +1441,25 @@ class LumiTUI:
     # ── Application Main loop Thread setup / cleanup & Event bindings ───────
     def _do_handoff(self, entry: dict):
         """
-        Execute an external AI CLI synchronously on the main thread.
-        Called by the run() loop — never from a background thread.
-        This is the only correct way: main thread owns the terminal.
+        Execute an external AI CLI synchronously on the main thread and
+        capture the session under conversations/<cli>/ when possible.
         """
-        binary = entry["binary"]
-        name   = entry["name"]
-        fd     = sys.stdin.fileno()
+        binary = str(entry["binary"])
+        cli_key = str(entry.get("key", binary))
+        name = str(entry["name"])
+        binary_path = str(entry.get("binary_path") or shutil.which(binary) or binary)
+        binary_version = str(entry.get("binary_version") or "")
+        launch_cmd = list(entry.get("launch_cmd") or [binary_path])
+        fd = sys.stdin.fileno()
+        capture_path: Path | None = None
+        transcript = ""
+        captured = False
+        started_at_dt = datetime.now()
+        started_at = started_at_dt.isoformat(timespec="seconds")
+        workspace_profile = inspect_workspace(Path.cwd())
+        git_branch = workspace_profile.git_branch or ""
 
         # ── 1. Tear down Lumi's terminal state ────────────────────────────────
-        # Exit alternate screen, show cursor, restore original cooked termios
         sys.stdout.write("\033[?1049l\033[?25h\033[0m")
         sys.stdout.flush()
         if self.original_termios:
@@ -1196,26 +1469,54 @@ class LumiTUI:
                 pass
 
         # Brief banner so the user knows what happened
-        print(f"\n\033[38;2;187;154;247m◆ Entering {name}\033[0m  — exit normally to return to Lumi\n",
-              flush=True)
+        print(
+            f"\n\033[38;2;187;154;247m◆ Entering {name}\033[0m  — exit normally to return to Lumi\n",
+            flush=True,
+        )
 
-        # ── 2. Run the CLI directly — no `script` wrapper ────────────────────
-        # `script` corrupts full-TUI apps (claude, opencode, gemini, etc.)
-        # We run the binary raw so it gets a clean controlling terminal.
-        # Transcript capture is skipped for TUI tools; use the tool's own
-        # built-in history / export if you need a log.
+        # ── 2. Run the CLI, capturing a typescript when possible ─────────────
         exit_code = 1
         try:
-            result    = subprocess.run([binary], env={**os.environ})
+            script_bin = shutil.which("script")
+            if script_bin:
+                with tempfile.NamedTemporaryFile(
+                    prefix=f"lumi_{cli_key}_",
+                    suffix=".typescript",
+                    delete=False,
+                ) as handle:
+                    capture_path = Path(handle.name)
+                result = subprocess.run(
+                    [script_bin, "-qefc", shlex.join(launch_cmd), str(capture_path)],
+                    env={**os.environ},
+                    cwd=os.getcwd(),
+                )
+            else:
+                result = subprocess.run(launch_cmd, env={**os.environ}, cwd=os.getcwd())
             exit_code = result.returncode
         except FileNotFoundError:
             print(f"\033[31m✗ {binary} not found in PATH\033[0m", flush=True)
         except KeyboardInterrupt:
             pass  # user Ctrl-C'd out of the CLI — that's fine
+        finally:
+            if capture_path and capture_path.exists():
+                try:
+                    transcript = sanitize_handoff_transcript(capture_path.read_text(encoding="utf-8", errors="replace"))
+                    captured = bool(transcript.strip())
+                except Exception:
+                    log.exception("Failed to read captured handoff transcript")
+                try:
+                    capture_path.unlink(missing_ok=True)
+                except Exception:
+                    log.debug("Failed to clean temporary handoff capture")
+        ended_at_dt = datetime.now()
+        ended_at = ended_at_dt.isoformat(timespec="seconds")
+        duration_seconds = max(0.0, (ended_at_dt - started_at_dt).total_seconds())
 
         # ── 3. Restore Lumi's terminal state ─────────────────────────────────
-        print(f"\n\033[38;2;86;95;137m◆ Returned from {name}. Restoring Lumi…\033[0m\n",
-              flush=True)
+        print(
+            f"\n\033[38;2;86;95;137m◆ Returned from {name}. Restoring Lumi…\033[0m\n",
+            flush=True,
+        )
         time.sleep(0.05)
 
         try:
@@ -1228,24 +1529,96 @@ class LumiTUI:
         sys.stdout.flush()
         self.redraw()
 
-        # ── 4. Inject return-context into memory and greet ───────────────────
-        note = (f" Exit code: {exit_code}." if exit_code != 0 else "")
-        sys_msg = (
-            f"[SYSTEM NOTE: The user just returned from a {name} session.{note} "
-            f"Warmly welcome them back and ask if they need help reviewing or continuing their work.]"
-        )
-        self.memory.add("system", sys_msg)
-
         user_msg = f"(Returned from {name}.)"
         self.store.add(Msg("user", user_msg))
         self.memory.add("user", user_msg)
 
         def _welcome():
-            msgs = build_messages(self.system_prompt, self.memory.get())
-            raw  = self._tui_stream(msgs, self.current_model)
+            summary_data: dict[str, object] = {}
+            saved_path: Path | None = None
+            record: dict[str, object] | None = None
+            if transcript:
+                summary_prompt = (
+                    f"You are summarizing a {name} terminal session for Lumi.\n"
+                    "Return strict JSON only with keys:\n"
+                    '{"tldr":"", "files":[], "commands":[], "decisions":[], "next_steps":[]}\n'
+                    "Rules:\n"
+                    "- keep `tldr` to one or two sentences\n"
+                    "- only include files actually mentioned\n"
+                    "- keep each list short and high-signal\n"
+                    "- if unsure, omit instead of guessing\n\n"
+                    f"Transcript:\n{transcript[-20000:]}"
+                )
+                try:
+                    summary_raw = self._silent_call(summary_prompt, self.current_model, max_tokens=360).strip()
+                    summary_data = parse_mode_summary_response(summary_raw, name, transcript)
+                except Exception:
+                    log.exception("External CLI summary generation failed")
+            if not summary_data:
+                fallback_seed = transcript or f"{name} exited with code {exit_code}. No transcript was captured."
+                summary_data = fallback_mode_summary_data(name, fallback_seed)
+                if not transcript:
+                    exit_note = f" Exit code: {exit_code}." if exit_code != 0 else ""
+                    summary_data["tldr"] = (
+                        f"Returned from {name}.{exit_note} No transcript was captured."
+                    ).strip()
+            try:
+                saved_path = save_mode_conversation(
+                    cli_name=cli_key,
+                    display_name=name,
+                    transcript=transcript,
+                    summary=summary_data,
+                    exit_code=exit_code,
+                    cwd=os.getcwd(),
+                    started_at=started_at,
+                    ended_at=ended_at,
+                    duration_seconds=duration_seconds,
+                    git_branch=git_branch,
+                    binary=binary,
+                    binary_path=binary_path,
+                    binary_version=binary_version,
+                    captured=captured,
+                )
+            except Exception:
+                log.exception("Failed to save external CLI conversation")
+
+            record = {
+                "cli": cli_key,
+                "name": name,
+                "cwd": os.getcwd(),
+                "git_branch": git_branch,
+                "binary": binary,
+                "binary_path": binary_path,
+                "binary_version": binary_version,
+                "started_at": started_at,
+                "ended_at": ended_at,
+                "duration_seconds": round(duration_seconds, 2),
+                "exit_code": exit_code,
+                "captured": captured,
+                "summary": summary_data,
+                "transcript": transcript,
+            }
+            if saved_path:
+                record["path"] = str(saved_path)
+                record["date"] = ended_at_dt.strftime("%Y-%m-%d %H:%M")
+                self.store.add(Msg("system", f"Saved {name} conversation → {saved_path}"))
+            else:
+                record["date"] = ended_at_dt.strftime("%Y-%m-%d %H:%M")
+
+            try:
+                _index_mode_record(record)
+            except Exception:
+                log.exception("Failed to index external CLI conversation in context cache")
+
+            system_note = _mode_memory_note(record)
+            self.memory.add("system", system_note)
+            if saved_path:
+                self.set_review_card(**build_mode_review_card(record))
+            raw = format_mode_tldr(summary_data, name)
+            self.store.add(Msg("assistant", raw))
             self.memory.add("assistant", raw)
             self.last_reply = raw
-            self.turns     += 1
+            self.turns += 1
             self.set_busy(False)
             self.redraw()
 
@@ -1262,6 +1635,12 @@ class LumiTUI:
         except Exception:
             log.exception("Failed to load provider/model")
             self.current_model = "unknown"; self.client = None
+
+        try:
+            for record in list_mode_conversations(limit=40):
+                _index_mode_record(record)
+        except Exception:
+            log.exception("Failed to index saved mode conversations on startup")
 
         self._loaded_plugins = load_plugins()
         for md_path in[Path("LUMI.md"), Path("lumi.md")]:
@@ -1700,6 +2079,32 @@ def cmd_tldr(tui: LumiTUI, arg: str):
 @bg_task
 def cmd_search(tui: LumiTUI, arg: str):
     if not arg: tui._err("Search needs keywords via CLI space."); return
+    lowered = arg.strip().lower()
+    if lowered.startswith(("mode ", "mode:")):
+        query_text = arg.split(":", 1)[1].strip() if ":" in arg[:5] else arg.split(None, 1)[1].strip()
+        cli_name = None
+        query_parts = query_text.split()
+        if query_parts and query_parts[0].lower() in MODE_CLI_REGISTRY:
+            cli_name = query_parts[0].lower()
+            query_text = " ".join(query_parts[1:]).strip()
+        records = search_mode_conversations(query_text, cli_name, limit=8) if query_text else list_mode_conversations(cli_name, limit=8)
+        for record in records:
+            _index_mode_record(record)
+        if not records:
+            tui._sys("No saved mode conversations matched that search.")
+            return
+        lines = ["Mode session search results", ""]
+        for index, record in enumerate(records, 1):
+            summary = record.get("summary", {}) if isinstance(record.get("summary"), dict) else {}
+            lines.append(f" {index}. {record.get('name', record.get('cli', '?'))}")
+            lines.append(f"    - {Path(str(record.get('path', ''))).name or 'unsaved'}")
+            lines.append(f"    - {str(summary.get('tldr', 'No TL;DR available.'))[:108]}")
+        tui._sys("\n".join(lines))
+        tui.memory.add(
+            "system",
+            f"[mode search] Loaded {len(records)} saved external CLI conversations into retrieval context."
+        )
+        return
     tui.set_busy(True); tui._sys(f"◆  Searching Internet Servers... => [ {arg} ]")
     try:
         results, _ = search_display(arg); lines = [f"Result Headers Found for => {arg}", ""]
@@ -2266,138 +2671,112 @@ HELP_CATEGORIES = register_command_groups(
     log=log,
 )
 
-@registry.register("/mode", "/mode [cli]  Launch an AI coding CLI (claude, codex, gemini, opencode, aider, goose, qwen, plandex, kilo, amp, continue)")
+@registry.register("/mode", "/mode vessel <name>  Launch an external AI coding CLI and import the session back into Lumi")
 def cmd_mode(tui: LumiTUI, arg: str):
-    # ── Registry of all known AI CLI tools ────────────────────────────────────
-    # Each entry: binary, display name, description, install command(s)
-    CLI_REGISTRY = {
-        "claude": {
-            "binary":   "claude",
-            "name":     "Claude Code",
-            "maker":    "Anthropic",
-            "desc":     "Repo-aware agentic coding — edits, refactors, git workflows",
-            "install":  "npm install -g @anthropic-ai/claude-code",
-            "install2": "curl -fsSL https://claude.ai/install.sh | bash",
-        },
-        "codex": {
-            "binary":   "codex",
-            "name":     "Codex CLI",
-            "maker":    "OpenAI",
-            "desc":     "Local agentic coding with o4-mini / GPT-5, sandboxed execution",
-            "install":  "npm install -g @openai/codex",
-        },
-        "gemini": {
-            "binary":   "gemini",
-            "name":     "Gemini CLI",
-            "maker":    "Google",
-            "desc":     "Free tier, Gemini 2.5 Pro, repo-aware, MCP support",
-            "install":  "npm install -g @google/gemini-cli",
-        },
-        "opencode": {
-            "binary":   "opencode",
-            "name":     "OpenCode",
-            "maker":    "SST",
-            "desc":     "75+ providers, LSP integration, multi-session, privacy-first",
-            "install":  "npm install -g opencode-ai",
-            "install2": "curl -fsSL https://opencode.ai/install | bash",
-        },
-        "aider": {
-            "binary":   "aider",
-            "name":     "Aider",
-            "maker":    "Paul Gauthier",
-            "desc":     "Git-first pair programmer, auto-commits, 130+ languages",
-            "install":  "pip install aider-chat --break-system-packages",
-            "install2": "pipx install aider-chat",
-        },
-        "goose": {
-            "binary":   "goose",
-            "name":     "Goose",
-            "maker":    "Block (Square)",
-            "desc":     "Fully autonomous agent — execute, debug, deploy; MCP native",
-            "install":  "curl -fsSL https://github.com/block/goose/releases/latest/download/install.sh | bash",
-        },
-        "qwen": {
-            "binary":   "qwen",
-            "name":     "Qwen Code",
-            "maker":    "Alibaba",
-            "desc":     "Qwen3-Coder optimised, 1k free req/day via OAuth, 480B MoE",
-            "install":  'bash -c "$(curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen.sh)"',
-        },
-        "plandex": {
-            "binary":   "plandex",
-            "name":     "Plandex",
-            "maker":    "Plandex",
-            "desc":     "Plan-first agent, 2M token context, multi-file structured tasks",
-            "install":  "curl -sL https://plandex.ai/install.sh | bash",
-        },
-        "kilo": {
-            "binary":   "kilo",
-            "name":     "Kilo Code",
-            "maker":    "Kilo-Org",
-            "desc":     "500+ models, Architect/Debug/Orchestrator modes, Agent Skills, MCP native",
-            "install":  "npm install -g @kilocode/cli",
-        },
-        "amp": {
-            "binary":   "amp",
-            "name":     "Amp",
-            "maker":    "Sourcegraph",
-            "desc":     "Unconstrained token usage, subagents, thread sharing, GPT-5 Oracle mode",
-            "install":  "npm install -g @sourcegraph/amp",
-            "install2": "curl -fsSL https://ampcode.com/install.sh | bash",
-        },
-        "continue": {
-            "binary":   "cn",
-            "name":     "Continue CLI",
-            "maker":    "Continue.dev",
-            "desc":     "Session history, resume tasks, headless/CI mode, any model via config",
-            "install":  "npm install -g @continuedev/cli",
-        },
-    }
-
-    # ── Helper: detect installed tools ────────────────────────────────────────
-    def _installed(entry: dict) -> bool:
-        return shutil.which(entry["binary"]) is not None
-
-    # ── No arg → show status table ─────────────────────────────────────────────
-    target = arg.strip().lower()
+    parts = arg.strip().split()
+    lowered = [part.lower() for part in parts]
+    target = lowered[0] if lowered else ""
 
     if not target:
         lines = ["◆  AI CLI Launcher — available tools:\n"]
-        for key, e in CLI_REGISTRY.items():
-            status = "✓ installed" if _installed(e) else "✗ not found"
-            mark   = "●" if _installed(e) else "○"
-            lines.append(f"  {mark} /mode {key:<12} {e['name']:<16} [{e['maker']}]  {status}")
-        lines.append("\n  Usage: /mode <name>  — suspends Lumi, launches the CLI, returns when you exit")
-        lines.append("  If not installed, Lumi will show the install command.")
+        for key, entry in MODE_CLI_REGISTRY.items():
+            info = _mode_binary_info(entry)
+            status = "✓ installed" if info["installed"] else "✗ not found"
+            mark = "●" if info["installed"] else "○"
+            version = f" · {info['version']}" if info["version"] else ""
+            lines.append(
+                f"  {mark} /mode vessel {key:<8} {str(entry['name']):<16} [{entry['maker']}]  {status}{version}"
+            )
+        recent = list_mode_conversations(limit=5)
+        if recent:
+            lines.append("\n  Recent saved vessel sessions:")
+            for record in recent:
+                summary = record.get("summary", {}) if isinstance(record.get("summary"), dict) else {}
+                lines.append(
+                    f"  - {record.get('cli', '?')} · {Path(str(record.get('path', ''))).stem} · {str(summary.get('tldr', 'No TL;DR available.'))[:80]}"
+                )
+        lines.append("\n  Usage: /mode vessel <name>")
+        lines.append("  Browse saved sessions: /mode conversations [cli] [query]")
         tui._sys("\n".join(lines))
         tui.redraw()
         return
 
-    # ── Validate ───────────────────────────────────────────────────────────────
-    if target not in CLI_REGISTRY:
-        names = ", ".join(CLI_REGISTRY.keys())
-        tui._err(f"Unknown CLI: '{target}'. Choose from: {names}")
-        return
-
-    entry = CLI_REGISTRY[target]
-
-    # ── Not installed → show install hints ────────────────────────────────────
-    if not _installed(entry):
-        install_hint = f"  $ {entry['install']}"
-        if "install2" in entry:
-            install_hint += f"\n  $ {entry['install2']}  (alternative)"
-        tui._sys(
-            f"◆  {entry['name']} is not installed.\n\n"
-            f"  Install with:\n{install_hint}\n\n"
-            f"  After installing, run /mode {target} again."
+    if target == "conversations":
+        rest = lowered[1:]
+        cli_name = None
+        if rest and rest[0] in MODE_CLI_REGISTRY:
+            cli_name = rest[0]
+            rest = rest[1:]
+        query = " ".join(parts[1 + (1 if cli_name else 0) :]).strip()
+        records = (
+            search_mode_conversations(query, cli_name, limit=10)
+            if query
+            else list_mode_conversations(cli_name, limit=10)
+        )
+        for record in records:
+            _index_mode_record(record)
+        title, subtitle, lines = _build_mode_conversation_lines(records, cli_name=cli_name, query=query)
+        if not lines:
+            lines = ["No saved mode conversations found yet.", "", "Run /mode vessel <cli> and exit that CLI to create one."]
+        tui.set_pane(
+            title=title,
+            subtitle=subtitle,
+            lines=lines,
+            footer="Esc close  ·  /mode conversations [cli] [query]",
+            close_on_escape=True,
         )
         tui.redraw()
         return
 
-    # ── Signal main loop — it will call _do_handoff() on the main thread ─────
-    tui._sys(f"◆  Launching {entry['name']}…  Lumi will resume when you exit.")
+    if target == "vessel":
+        if len(lowered) < 2:
+            tui._err("Usage: /mode vessel <name>")
+            return
+        target = lowered[1]
+
+    if target not in MODE_CLI_REGISTRY:
+        names = ", ".join(MODE_CLI_REGISTRY.keys())
+        tui._err(f"Unknown CLI: '{target}'. Choose from: {names}")
+        return
+
+    entry = dict(MODE_CLI_REGISTRY[target])
+    info = _mode_binary_info(entry)
+    if not info["installed"]:
+        install_lines = [f"◆  {entry['name']} is not installed."]
+        if info["reason"]:
+            install_lines.append(f"\n  validation: {info['reason']}")
+        install_lines.append("\n  Install with:")
+        for command in entry.get("installs", []):
+            install_lines.append(f"  $ {command}")
+        install_lines.append(f"\n  Verify with:\n  $ {entry['verify']}")
+        install_lines.append(f"\n  Auth/setup:\n  {entry['auth']}")
+        install_lines.append(f"\n  After installing, run /mode vessel {target} again.")
+        tui._sys("\n".join(str(line) for line in install_lines))
+        return
+
+    recent_lines = _mode_recent_lines(target, limit=3)
+    launch_lines = [f"◆  Launching {entry['name']}…  Lumi will resume when you exit."]
+    if info["version"]:
+        launch_lines.append(f"  detected: {info['version']}")
+    if info["binary_path"]:
+        launch_lines.append(f"  binary: {_mode_display_path(str(info['binary_path']))}")
+    if recent_lines:
+        launch_lines.append("")
+        launch_lines.append("  Recent saved sessions:")
+        launch_lines.extend(recent_lines)
+
+    tui.vessel_mode = False
+    tui.active_vessel = None
+    tui.system_prompt = tui._make_system_prompt()
+    tui._sys("\n".join(launch_lines))
     tui.redraw()
-    tui._pending_handoff = entry   # consumed by run() before next key read
+    tui._pending_handoff = {
+        **entry,
+        "key": target,
+        "binary_path": str(info["binary_path"]),
+        "binary_version": str(info["version"]),
+        "launch_cmd": [str(info["binary_path"])],
+    }
 
 @registry.register("/guardian", "Toggle background code-quality watcher (ruff + pytest)")
 def cmd_guardian(tui: LumiTUI, arg: str):

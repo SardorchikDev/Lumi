@@ -11,6 +11,7 @@ from src.tui.state import Msg
 def _make_tui(tmp_path, monkeypatch) -> LumiTUI:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
+    monkeypatch.setattr("src.tui.mode_sessions.CONVERSATIONS_DIR", tmp_path / "conversations")
     tui = LumiTUI()
     notes_path = tmp_path / "little_notes.json"
     tui.little_notes = LittleNotesStore(notes_path)
@@ -108,6 +109,93 @@ def test_prompt_status_aligns_with_starter_tip(tmp_path, monkeypatch):
     status_line = next(line for line in prompt if "100% left" in line)
 
     assert len(tip_line) - len(tip_line.lstrip()) == len(status_line) - len(status_line.lstrip())
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_mode_missing_cli_shows_install_hint(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.tui.app.shutil.which", lambda _binary: None)
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.system_prompt = tui._make_system_prompt()
+
+    registry.commands["/mode"]["func"](tui, "vessel gemini")
+
+    assert tui._pending_handoff is None
+    assert any("Gemini CLI is not installed" in msg.text for msg in tui.store.snapshot() if msg.role == "system")
+    assert any("/mode vessel gemini again" in msg.text for msg in tui.store.snapshot() if msg.role == "system")
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_mode_vessel_queues_installed_cli_handoff(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.tui.app.shutil.which", lambda binary: f"/usr/bin/{binary}")
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.vessel_mode = True
+    tui.active_vessel = "gemini"
+    tui.system_prompt = "old prompt"
+
+    registry.commands["/mode"]["func"](tui, "vessel codex")
+
+    assert tui._pending_handoff is not None
+    assert tui._pending_handoff["key"] == "codex"
+    assert tui._pending_handoff["binary"] == "codex"
+    assert tui.vessel_mode is False
+    assert tui.active_vessel is None
+    assert tui.system_prompt != "old prompt"
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_mode_shorthand_still_queues_handoff(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.tui.app.shutil.which", lambda binary: f"/usr/bin/{binary}")
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    registry.commands["/mode"]["func"](tui, "qwen")
+
+    assert tui._pending_handoff is not None
+    assert tui._pending_handoff["key"] == "qwen"
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_mode_requires_cli_name_after_vessel(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    registry.commands["/mode"]["func"](tui, "vessel")
+
+    assert any("Usage: /mode vessel <name>" in msg.text for msg in tui.store.snapshot() if msg.role == "error")
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_mode_conversations_opens_pane_for_saved_records(tmp_path, monkeypatch):
+    from src.tui import mode_sessions
+
+    tui = _make_tui(tmp_path, monkeypatch)
+    monkeypatch.setattr("src.tui.app.shutil.which", lambda binary: f"/usr/bin/{binary}")
+    mode_sessions.save_mode_conversation(
+        cli_name="codex",
+        display_name="Codex CLI",
+        transcript="edited src/tui/app.py\nran pytest",
+        summary={
+            "tldr": "Adjusted the TUI prompt layout.",
+            "files": ["src/tui/app.py"],
+            "commands": ["pytest"],
+            "decisions": ["Keep the prompt bordered."],
+            "next_steps": ["Polish the status line."],
+        },
+        exit_code=0,
+        cwd=str(tmp_path),
+        started_at="2026-03-21T10:00:00",
+        ended_at="2026-03-21T10:02:00",
+        duration_seconds=120.0,
+        git_branch="main",
+        binary="codex",
+        binary_path="/usr/bin/codex",
+        binary_version="codex 1.0.0",
+        captured=True,
+    )
+
+    registry.commands["/mode"]["func"](tui, "conversations codex prompt")
+
+    assert tui.pane.active is True
+    assert tui.pane.title == "mode conversations"
+    assert any("Adjusted the TUI prompt layout." in line for line in tui.pane.content())
     tui._task_executor.shutdown(wait=False)
 
 
@@ -273,6 +361,22 @@ def test_escape_closes_closeable_side_pane(tmp_path, monkeypatch):
 
     assert tui.pane_active is False
     assert tui.pane.active is False
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_escape_closes_mode_return_review_card(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui.set_review_card(
+        title="claude return",
+        summary_lines=["cli: Claude Code", "cwd: /home/sadi/Lumi"],
+        preview_lines=["Returned from Claude Code after discussing work."],
+        footer="Esc close  ·  /mode conversations",
+    )
+
+    tui._handle_key("ESC")
+
+    assert tui.review_card.active is False
     tui._task_executor.shutdown(wait=False)
 
 

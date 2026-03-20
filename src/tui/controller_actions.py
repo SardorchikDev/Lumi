@@ -69,6 +69,10 @@ def cancel_transient_state(tui: Any) -> bool:
     if getattr(tui, "pane_active", False) and getattr(pane, "close_on_escape", False):
         tui.clear_pane()
         changed = True
+    review_card = getattr(tui, "review_card", None)
+    if getattr(review_card, "active", False):
+        tui.clear_review_card()
+        changed = True
     if tui._cancel_pending_file_plan():
         changed = True
     if tui.buf:
