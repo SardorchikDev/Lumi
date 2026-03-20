@@ -34,8 +34,9 @@ class ViewStyle:
 
 @dataclass(frozen=True)
 class PromptRender:
-    line: str
-    prefix: int
+    lines: list[str]
+    cursor_row: int
+    cursor_col: int
 
 
 @dataclass(frozen=True)
@@ -60,121 +61,241 @@ class StarterView:
         self.provider_label = provider_label
         self.spinner_frames = spinner_frames
 
+    @staticmethod
+    def _chunk_plain(text: str, width: int) -> list[str]:
+        width = max(1, width)
+        logical_lines = text.split("\n") or [""]
+        out: list[str] = []
+        for logical in logical_lines:
+            if logical == "":
+                out.append("")
+                continue
+            start = 0
+            while start < len(logical):
+                out.append(logical[start : start + width])
+                start += width
+        return out or [""]
+
     def _build_prompt(self, width: int, prefix: str, placeholder: str) -> PromptRender:
         txt = self.tui.buf
-        disp_w = max(10, width - len(prefix) - 4)
-        scroll = max(0, self.tui.cur_pos - disp_w + 1)
-        shown = txt[scroll : scroll + disp_w]
+        prompt_prefix = prefix + "  "
+        badge_prefix = prefix + "  "
+        plain_prefix = len(prompt_prefix) + 2
+        plain_cont_prefix = len(prompt_prefix) + 2
+        disp_w = max(10, width - plain_prefix - 3)
         pending_label, pending_hint = self.tui.filesystem_prompt_hint()
+        badges = ["compose"]
+        if self.tui.multiline:
+            badges.append("multiline")
+        if pending_label:
+            badges.append("approval")
+        if self.tui.response_mode:
+            badges.append(self.tui.response_mode)
+        if getattr(self.tui.history, "index", -1) != -1:
+            badges.append("history")
+        if getattr(self.tui, "agent_active_objective", None):
+            badges.append("agent")
+        meta = (
+            badge_prefix
+            + self.style.fg_fn(self.style.muted)
+            + " · ".join(badges)
+            + self.style.reset
+        )
+
         if self.tui.busy:
             frame = int(time.time() * 10) % len(self.spinner_frames)
             sym = self.style.fg_fn(self.style.cyan) + self.spinner_frames[frame] + " " + self.style.reset
-            tail = self.style.fg_fn(self.style.muted) + self.style.italic() + "thinking softly" + self.style.reset if not shown else ""
+            tail_text = "thinking softly"
         elif pending_label:
             sym = self.style.fg_fn(self.style.cyan) + self.style.bold() + "? " + self.style.reset
-            prompt_text = pending_label + (f" · {pending_hint}" if pending_hint else "")
-            tail = self.style.fg_fn(self.style.muted) + prompt_text + self.style.reset if not shown else ""
+            tail_text = pending_label + (f" · {pending_hint}" if pending_hint else "")
         else:
             sym = self.style.fg_fn(self.style.fg_hi) + self.style.bold() + "> " + self.style.reset
-            tail = self.style.fg_fn(self.style.muted) + placeholder + self.style.reset if not shown else ""
-        line = prefix + sym + self.style.fg_fn(self.style.fg_hi) + shown + tail + self.style.reset
-        return PromptRender(line=line, prefix=len(prefix) + 3)
+            tail_text = placeholder
 
-    def build(self, width: int) -> IntroRender:
-        if not getattr(self.tui, "show_starter_panel", True):
-            return IntroRender(
-                header_lines=["", ""],
-                prompt=self._build_prompt(width, " " * 4, "say something nice"),
-                trailing_lines=[""],
+        if not txt:
+            line = prompt_prefix + sym + self.style.fg_fn(self.style.muted) + tail_text + self.style.reset
+            cursor_col = plain_prefix + 1
+            return PromptRender(lines=[meta, line], cursor_row=1, cursor_col=cursor_col)
+
+        cursor_before = txt[: self.tui.cur_pos]
+        all_lines = self._chunk_plain(txt, disp_w)
+        cursor_lines = self._chunk_plain(cursor_before, disp_w)
+        cursor_row = max(0, len(cursor_lines) - 1)
+        cursor_line_col = len(cursor_lines[-1]) if cursor_lines else 0
+        visible_limit = 3 if (self.tui.multiline or "\n" in txt or len(txt) > disp_w) else 1
+        start = max(0, cursor_row - visible_limit + 1)
+        visible = all_lines[start : start + visible_limit] or [""]
+        cursor_row_rel = cursor_row - start
+
+        lines = [meta]
+        for index, segment in enumerate(visible):
+            prefix_text = prompt_prefix
+            tone = self.style.fg_hi
+            if index > 0:
+                prefix_text = prompt_prefix
+                sym = self.style.fg_fn(self.style.border) + "· " + self.style.reset
+                tone = self.style.fg
+            lines.append(prefix_text + sym + self.style.fg_fn(tone) + segment + self.style.reset)
+
+        cursor_prefix = plain_prefix if cursor_row_rel == 0 else plain_cont_prefix
+        return PromptRender(
+            lines=lines,
+            cursor_row=1 + cursor_row_rel,
+            cursor_col=cursor_prefix + cursor_line_col + 1,
+        )
+
+    def _build_review_lines(self, width: int) -> list[str]:
+        pending = getattr(self.tui, "_pending_file_plan", None)
+        if not pending:
+            return []
+        inspection = pending.get("inspection") if isinstance(pending, dict) else None
+        plan = pending.get("plan", {}) if isinstance(pending, dict) else pending[0]
+        operation = plan.get("operation", "create")
+        title = {
+            "delete": "review removal",
+            "move": "review move",
+            "copy": "review copy",
+            "rename": "review rename",
+        }.get(operation, "review filesystem plan")
+        panel_w = min(max(44, width - 16), 84)
+        left = " " * max(2, (width - panel_w) // 2)
+        summary = list((inspection or {}).get("summary_lines", []))[:5]
+        preview = list((inspection or {}).get("preview_lines", []))[:4]
+
+        def row(text: str = "", tone: str | None = None, *, center: bool = False) -> str:
+            tone = tone or self.style.fg_dim
+            rendered = text[:panel_w].center(panel_w) if center else text[:panel_w].ljust(panel_w)
+            return (
+                left
+                + self.style.fg_fn(tone)
+                + rendered
+                + self.style.reset
             )
 
+        lines = [
+            "",
+            row(title, self.style.muted, center=True),
+            left + self.style.fg_fn(self.style.border) + "─" * panel_w + self.style.reset,
+        ]
+        for line in summary or ["plan ready for review"]:
+            lines.append(row(line, self.style.fg_hi))
+        if preview:
+            lines.append("")
+            lines.append(row("preview", self.style.muted))
+            for line in preview:
+                lines.append(row(line, self.style.fg_dim))
+        lines.extend(
+            [
+                "",
+                row("y apply  ·  n cancel  ·  enter cancel", self.style.muted),
+                "",
+            ]
+        )
+        return lines
+
+    def _render_box(self, width: int, lines: list[str], *, tone: str | None = None) -> list[str]:
+        tone = tone or self.style.fg_hi
+        box_w = min(max(44, width - 8), 78)
+        left = " " * 2
+        border = self.style.fg_fn(self.style.border)
+        rendered = [left + border + "╭" + "─" * box_w + "╮" + self.style.reset]
+        for line in lines:
+            rendered.append(
+                left
+                + border
+                + "│"
+                + self.style.reset
+                + " "
+                + self.style.fg_fn(tone)
+                + line[: box_w - 2].ljust(box_w - 2)
+                + self.style.reset
+                + " "
+                + border
+                + "│"
+                + self.style.reset
+            )
+        rendered.append(left + border + "╰" + "─" * box_w + "╯" + self.style.reset)
+        return rendered
+
+    def _compact_build(self, width: int, provider: str, model: str, cwd_short: str) -> IntroRender:
+        lines = [
+            "",
+        ]
+        lines.extend(
+            self._render_box(
+                width,
+                [f"Lumi TUI  ({provider})", f"model: {model}"],
+                tone=self.style.fg_hi,
+            )
+        )
+        lines.append("")
+        approval = "confirm" if getattr(self.tui, "_pending_file_plan", None) else "suggest"
+        lines.extend(
+            self._render_box(
+                width,
+                [
+                    "local session",
+                    f"workdir: {cwd_short}",
+                    f"model: {provider} · {model}",
+                    f"approval: {approval}",
+                ],
+                tone=self.style.fg_dim,
+            )
+        )
+        lines.append("")
+        header_lines = lines + self._build_review_lines(width)
+        return IntroRender(
+            header_lines=header_lines,
+            prompt=PromptRender(lines=[], cursor_row=0, cursor_col=0),
+            trailing_lines=[""],
+        )
+
+    def build(self, width: int) -> IntroRender:
         provider_key = self.provider_resolver()
         provider = self.provider_label(provider_key)
         model = self.tui.current_model.split("/")[-1][:24]
         cwd = Path.cwd().resolve()
         cwd_text = str(cwd)
-        cwd_short = cwd_text if len(cwd_text) <= 28 else "..." + cwd_text[-25:]
-        panel_w = min(max(74, width - 10), 108)
-        panel_pad = " " * max(2, (width - panel_w - 2) // 2)
-        left_w = max(28, panel_w // 2)
-        right_w = panel_w - left_w - 1
-        border = self.style.fg_fn(self.style.border)
+        cwd_short = cwd_text if len(cwd_text) <= 52 else "..." + cwd_text[-49:]
+        if width < 88 and getattr(self.tui, "show_starter_panel", True):
+            return self._compact_build(width, provider, model, cwd_short)
 
-        def pad(text: str, width_: int) -> str:
-            return text[:width_].ljust(width_)
-
-        def center(text: str, width_: int) -> str:
-            return text[:width_].center(width_)
-
-        def row(left: str = "", right: str = "", left_tone: str | None = None, right_tone: str | None = None) -> str:
-            left_tone = left_tone or self.style.fg_hi
-            right_tone = right_tone or self.style.fg_hi
-            return (
-                panel_pad
-                + border + "│" + self.style.reset
-                + " " + self.style.fg_fn(left_tone) + pad(left, left_w - 2) + self.style.reset + " "
-                + border + "│" + self.style.reset
-                + " " + self.style.fg_fn(right_tone) + pad(right, right_w - 2) + self.style.reset + " "
-                + border + "│" + self.style.reset
+        if not getattr(self.tui, "show_starter_panel", True):
+            header_lines = self._build_review_lines(width)
+            return IntroRender(
+                header_lines=header_lines,
+                prompt=PromptRender(lines=[], cursor_row=0, cursor_col=0),
+                trailing_lines=[""],
             )
 
-        notes_store = getattr(self.tui, "little_notes", None)
-        note_lines = notes_store.display_lines(limit=3) if notes_store else [
-            cmd for cmd in getattr(self.tui, "recent_commands", []) if cmd
-        ][:3]
-        note_lines = [center(line, right_w - 2) for line in note_lines]
-        action_lines = notes_store.display_action_lines(limit=2) if notes_store else getattr(self.tui, "recent_actions", [])[:2]
-        while len(note_lines) < 3:
-            note_lines.append("")
-
-        logo_lines = [
-            "         ,",
-            "        _o_",
-            "   ._ ,'   `o'",
-            "----(_)      :",
-            "    '  `.   .o",
-            "         ~o~  `",
-            "          '",
-        ]
-        logo_box_w = max(len(line) for line in logo_lines)
-        logo_left_pad = max(0, (left_w - 2 - logo_box_w) // 2)
-        logo_rows = [(" " * logo_left_pad) + line for line in logo_lines]
-        logo_tones = [
-            self.style.fg_dim,
-            self.style.muted,
-            self.style.fg_hi,
-            self.style.fg_hi,
-            self.style.muted,
-            self.style.fg_dim,
-            self.style.fg_dim,
-        ]
-        trailing_lines = [""]
-        if action_lines:
-            trailing_lines.append("  " + self.style.fg_fn(self.style.muted) + "recent action  " + action_lines[0][: min(width - 20, 72)] + self.style.reset)
+        approval = "confirm" if getattr(self.tui, "_pending_file_plan", None) else "suggest"
+        title_box = self._render_box(
+            width,
+            ["Lumi TUI  (research preview)", f"{provider} · {model}"],
+            tone=self.style.fg_hi,
+        )
+        session_box = self._render_box(
+            width,
+            [
+                "local session",
+                f"workdir: {cwd_short}",
+                f"model: {provider} · {model}",
+                f"approval: {approval}",
+            ],
+            tone=self.style.fg_dim,
+        )
         lines = [
+            *title_box,
             "",
-            panel_pad + border + "╭" + "─" * panel_w + "╮" + self.style.reset,
-            row(center("welcome to lumi", left_w - 2), center("little notes", right_w - 2)),
-            row("", note_lines[0], self.style.fg_dim, self.style.fg_dim),
-            row(logo_rows[0], note_lines[1], logo_tones[0], self.style.fg_dim),
-            row(logo_rows[1], note_lines[2], logo_tones[1], self.style.fg_dim),
-            row(logo_rows[2], "", logo_tones[2], self.style.fg_dim),
-            row(logo_rows[3], "", logo_tones[3], self.style.fg_dim),
-            row(logo_rows[4], "", logo_tones[4], self.style.fg_dim),
-            row(logo_rows[5], "", logo_tones[5], self.style.fg_dim),
-            row(logo_rows[6], "", logo_tones[6], self.style.fg_dim),
-            row("", "", self.style.fg_dim, self.style.fg_dim),
-            row(center(f"{provider}  ·  {model}", left_w - 2), "", self.style.muted, self.style.fg_dim),
-            row(center(cwd_short, left_w - 2), "", self.style.muted, self.style.fg_dim),
-            row("", "", self.style.fg_dim, self.style.fg_dim),
-            panel_pad + border + "╰" + "─" * panel_w + "╯" + self.style.reset,
-            "",
+            *session_box,
             "",
         ]
+        lines.extend(self._build_review_lines(width))
         return IntroRender(
             header_lines=lines,
-            prompt=self._build_prompt(width, panel_pad + "  ", "say something nice"),
-            trailing_lines=trailing_lines,
+            prompt=PromptRender(lines=[], cursor_row=0, cursor_col=0),
+            trailing_lines=[""],
         )
 
 
@@ -215,10 +336,15 @@ class TranscriptView:
 
         for msg in msgs:
             if msg.role == "user":
-                rail = self.style.fg_fn(self.style.border) + "|" + self.style.reset
-                lines.append("  " + rail + " " + self.style.fg_fn(self.style.muted) + "you" + self.style.reset)
+                lines.append(
+                    "  "
+                    + self.style.fg_fn(self.style.muted)
+                    + "you"
+                    + (f"  {msg.ts}" if msg.ts else "")
+                    + self.style.reset
+                )
                 for ln in textwrap.wrap(msg.text, inner) or [msg.text]:
-                    lines.append("  " + rail + " " + self.style.fg_fn(self.style.fg_hi) + ln + self.style.reset)
+                    lines.append("    " + self.style.fg_fn(self.style.fg_hi) + ln + self.style.reset)
                 lines.append("")
                 continue
 
@@ -238,9 +364,9 @@ class TranscriptView:
                 else:
                     hdr = self.style.fg_fn(self.style.fg_hi) + self.style.bold()
 
-                rail = self.style.fg_fn(self.style.border) + "|" + self.style.reset
-                prefix = "  " + rail + " "
-                lines.append("  " + rail + " " + hdr + label + self.style.reset)
+                prefix = "    "
+                label_text = label + (f"  {msg.ts}" if msg.ts else "")
+                lines.append("  " + hdr + label_text + self.style.reset)
                 raw_lines = msg.text.split("\n") if msg.text else [""]
                 in_code = False
                 code_w = min(inner - 2, 88)
@@ -254,14 +380,13 @@ class TranscriptView:
                             bar_fill = "─" * max(0, code_w - len(code_lang) - 3)
                             lines.append(
                                 prefix
-                                + self.style.fg_fn(self.style.border) + "  " + self.style.reset
                                 + self.style.fg_fn(self.style.muted) + code_lang + self.style.reset
                                 + self.style.fg_fn(self.style.border) + " " + bar_fill + self.style.reset
                             )
                             code_lineno = 0
                         else:
                             in_code = False
-                            lines.append(prefix)
+                            lines.append("")
                         continue
 
                     if in_code:
@@ -291,9 +416,17 @@ class TranscriptView:
                             lines.append(prefix + self.style.fg_fn(self.style.cyan) + self.style.bold() + f"{num}." + self.style.reset + " " + self.style.fg_fn(self.style.fg) + body + self.style.reset)
                         else:
                             lines.append(prefix + self.style.fg_fn(self.style.fg) + ln + self.style.reset)
+                    elif ln.startswith("@@"):
+                        lines.append(prefix + self.style.fg_fn(self.style.cyan) + self.style.bold() + ln + self.style.reset)
+                    elif ln.startswith("+") and not ln.startswith("+++"):
+                        lines.append(prefix + self.style.fg_fn("#9ad27a") + ln + self.style.reset)
+                    elif (ln.startswith("-") and not ln.startswith("---")) or re.match(r"^(FAILED|ERROR|E +|AssertionError|Traceback)", ln):
+                        lines.append(prefix + self.style.fg_fn(self.style.red) + ln + self.style.reset)
+                    elif re.match(r"^(PASSED|OK|SUCCESS|collected \d+ items)", ln):
+                        lines.append(prefix + self.style.fg_fn("#9ad27a") + ln + self.style.reset)
                     elif not ln.strip():
-                        if not lines or lines[-1] != prefix:
-                            lines.append(prefix)
+                        if not lines or lines[-1] != "":
+                            lines.append("")
                     else:
                         rendered = self.inline_renderer(ln)
                         if len(self.strip_ansi(ln)) <= inner:
@@ -310,19 +443,69 @@ class TranscriptView:
                 continue
 
             if msg.role == "system":
-                rail = self.style.fg_fn(self.style.border) + "|" + self.style.reset
+                lines.append("  " + self.style.fg_fn(self.style.muted) + "note" + self.style.reset)
                 for chunk in msg.text.split("\n"):
                     for wrapped in (textwrap.wrap(chunk, inner) if chunk.strip() else [""]):
-                        lines.append("  " + rail + " " + self.style.fg_fn(self.style.fg_dim) + wrapped + self.style.reset)
+                        lines.append("    " + self.style.fg_fn(self.style.fg_dim) + wrapped + self.style.reset)
                 lines.append("")
                 continue
 
             if msg.role == "error":
-                rail = self.style.fg_fn(self.style.red) + "|" + self.style.reset
-                lines.append("  " + rail + " " + self.style.fg_fn(self.style.red) + "warning" + self.style.reset + "  " + self.style.fg_fn(self.style.fg_hi) + msg.text + self.style.reset)
+                lines.append("  " + self.style.fg_fn(self.style.red) + "warning" + self.style.reset)
+                lines.append("    " + self.style.fg_fn(self.style.fg_hi) + msg.text + self.style.reset)
                 lines.append("")
 
         return lines
+
+
+class PaneView:
+    def __init__(self, tui: Any, style: ViewStyle, strip_ansi: Callable[[str], str]) -> None:
+        self.tui = tui
+        self.style = style
+        self.strip_ansi = strip_ansi
+
+    def build(self, width: int, height: int) -> list[str]:
+        pane = getattr(self.tui, "pane", None)
+        active = getattr(self.tui, "pane_active", False) or bool(getattr(pane, "active", False))
+        if not active or width < 16:
+            return []
+
+        title = getattr(pane, "title", "") or "side pane"
+        subtitle = getattr(pane, "subtitle", "")
+        footer = getattr(pane, "footer", "") or "/pane close"
+        content = pane.content() if pane else list(getattr(self.tui, "pane_lines_output", []))
+        inner_w = max(8, width - 1)
+        lines: list[str] = []
+
+        def wrap(text: str) -> list[str]:
+            if not text:
+                return [""]
+            return textwrap.wrap(text, inner_w, break_long_words=True, break_on_hyphens=False) or [text]
+
+        def row(text: str = "", tone: str | None = None) -> str:
+            tone = tone or self.style.fg_dim
+            plain = self.strip_ansi(text)[:inner_w]
+            return self.style.fg_fn(tone) + plain.ljust(inner_w) + self.style.reset
+
+        lines.append(row(title, self.style.muted))
+        if subtitle:
+            for piece in wrap(subtitle)[:2]:
+                lines.append(row(piece, self.style.fg_hi))
+        lines.append(self.style.fg_fn(self.style.border) + "─" * inner_w + self.style.reset)
+
+        body_room = max(1, height - 4 - len(lines))
+        wrapped_content: list[str] = []
+        for item in content[-max(1, body_room * 2) :]:
+            wrapped_content.extend(wrap(item))
+        visible_content = wrapped_content[-body_room:] if wrapped_content else [""]
+        for item in visible_content:
+            lines.append(row(item, self.style.fg))
+        while len(lines) < max(0, height - 2):
+            lines.append(row("", self.style.fg_dim))
+
+        lines.append(self.style.fg_fn(self.style.border) + "─" * inner_w + self.style.reset)
+        lines.append(row(footer, self.style.muted))
+        return lines[:height]
 
 
 class OverlayView:
@@ -390,39 +573,74 @@ class OverlayView:
     def slash_popup(self, rows: int, cols: int) -> str:
         hits = self.tui.slash_hits
         sel = self.tui.slash_sel
-        pop_w = min(58, cols - 4)
+        pop_w = min(74, cols - 4)
         n = min(len(hits), 10)
         top = rows - 2 - n - 2
         left = max(2, (cols - pop_w) // 2)
         out = [self.popup_frame(top, left, pop_w, "commands")]
-        for idx, (cmd, desc) in enumerate(hits[:10]):
+        for idx, (cmd, desc, category, example) in enumerate(hits[:10]):
             is_sel = idx == sel
-            content = f"{'› ' if is_sel else '  '}{cmd[:15]:<16} {desc[:max(0, pop_w - 26)]}"
-            out.append(self.popup_line(top + 1 + idx, left, pop_w, content, self.style.fg_hi if is_sel else self.style.fg_dim, is_sel))
+            cmd_cell = f"{'› ' if is_sel else '  '}{cmd[:15]:<16}"
+            category_cell = f"[{category}]"
+            hint = example or desc
+            content = f"{cmd_cell}{category_cell:<12} {hint[:max(0, pop_w - 33)]}"
+            out.append(
+                self.popup_line(
+                    top + 1 + idx,
+                    left,
+                    pop_w,
+                    content,
+                    self.style.fg_hi if is_sel else self.style.fg_dim,
+                    is_sel,
+                )
+            )
         out.append(self.move(top + 1 + n, left) + self.style.fg_fn(self.style.border) + "  " + "─" * (pop_w - 4) + "  " + self.style.reset)
         return "".join(out)
 
     def picker_popup(self, rows: int, cols: int) -> str:
         items = self.tui.picker_items
         sel = self.tui.picker_sel
-        pop_w = min(64, cols - 4)
+        pop_w = min(78, cols - 4)
         left = max(2, (cols - pop_w) // 2)
-        top = max(2, (rows - len(items) - 5) // 2)
-        out = [self.popup_frame(top, left, pop_w, "picker")]
-        out.append(self.popup_line(top + 1, left, pop_w, "model · provider", self.style.muted, False))
+        preview_lines = list(getattr(self.tui, "picker_preview_lines", []))[:5]
+        query = getattr(self.tui, "picker_query", "")
+        stage = getattr(self.tui, "picker_stage", "providers")
+        visible_limit = min(len(items), max(8, rows - 14))
+        top = max(2, (rows - visible_limit - len(preview_lines) - 7) // 2)
+        title = "providers" if stage == "providers" else f"models · {getattr(self.tui, 'picker_provider_key', '')}"
+        out = [self.popup_frame(top, left, pop_w, title)]
+        filter_text = query or ("type to filter providers" if stage == "providers" else "type to filter models")
+        out.append(self.popup_line(top + 1, left, pop_w, f"filter: {filter_text}", self.style.muted, False))
         out.append(self.move(top + 2, left) + self.style.fg_fn(self.style.border) + "  " + "─" * (pop_w - 4) + "  " + self.style.reset)
         row = top + 3
-        for idx, (kind, _, label) in enumerate(items):
+        start = 0
+        if items:
+            start = max(0, min(sel - visible_limit // 2, max(0, len(items) - visible_limit)))
+        for idx, item in enumerate(items[start : start + visible_limit], start=start):
+            kind = item.get("kind")
+            label = item.get("label", "")
+            meta = item.get("meta", "")
             if kind == "header":
                 out.append(self.popup_line(row, left, pop_w, label[: pop_w - 6], self.style.muted, False))
+            elif kind == "hint":
+                out.append(self.popup_line(row, left, pop_w, label[: pop_w - 6], self.style.fg_dim, False))
             else:
                 is_sel = idx == sel
-                content = f"{'› ' if is_sel else '  '}{'●' if is_sel else '○'} {label[: pop_w - 12]}"
+                marker = "●" if item.get("current") else ("★" if label.startswith("★") else "○")
+                state = "× " if item.get("disabled") else f"{marker} "
+                label_width = max(12, pop_w - 32)
+                content = f"{'› ' if is_sel else '  '}{state}{label[:label_width]:<{label_width}} {meta[:max(0, pop_w - label_width - 10)]}"
                 out.append(self.popup_line(row, left, pop_w, content, self.style.fg_hi if is_sel else self.style.fg_dim, is_sel))
             row += 1
         out.append(self.move(row, left) + self.style.fg_fn(self.style.border) + "  " + "─" * (pop_w - 4) + "  " + self.style.reset)
         row += 1
-        out.append(self.popup_line(row, left, pop_w, "Esc Close  ·  ↑↓ Navigate  ·  Enter Mount", self.style.muted, False))
+        for preview in preview_lines or [getattr(self.tui, "picker_empty_message", "Type to filter")]:
+            out.append(self.popup_line(row, left, pop_w, preview[: pop_w - 6], self.style.fg_dim, False))
+            row += 1
+        out.append(self.move(row, left) + self.style.fg_fn(self.style.border) + "  " + "─" * (pop_w - 4) + "  " + self.style.reset)
+        row += 1
+        footer = "Esc close · ↑↓ move · Enter select · ← back · type filter · Ctrl+F favorite"
+        out.append(self.popup_line(row, left, pop_w, footer[: pop_w - 6], self.style.muted, False))
         row += 1
         out.append(self.move(row, left) + self.style.fg_fn(self.style.border) + "  " + "─" * (pop_w - 4) + "  " + self.style.reset)
         return "".join(out)

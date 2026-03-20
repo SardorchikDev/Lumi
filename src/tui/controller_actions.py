@@ -6,6 +6,12 @@ import os
 from pathlib import Path
 from typing import Any
 
+from src.chat.providers import (
+    get_provider_spec,
+    provider_context_limit,
+    provider_health_snapshot,
+    provider_supports,
+)
 from src.tui.state import Msg
 
 
@@ -53,6 +59,14 @@ def cancel_transient_state(tui: Any) -> bool:
         changed = True
     if tui.picker_visible:
         tui.picker_visible = False
+        tui.picker_query = ""
+        tui.picker_preview_lines = []
+        tui.picker_stage = "providers"
+        tui.picker_provider_key = ""
+        changed = True
+    pane = getattr(tui, "pane", None)
+    if getattr(tui, "pane_active", False) and getattr(pane, "close_on_escape", False):
+        tui.clear_pane()
         changed = True
     if tui._cancel_pending_file_plan():
         changed = True
@@ -212,6 +226,140 @@ def run_file_agent(
     tui._queue_filesystem_plan(plan, base_dir=workspace, label=label)
 
 
+def run_message(
+    tui: Any,
+    user_input: str,
+    *,
+    is_complex_coding_task_fn,
+    is_coding_task_fn,
+    is_file_generation_task_fn,
+    needs_plan_first_fn,
+    is_filesystem_request_fn,
+    detect_emotion_fn,
+    emotion_hint_fn,
+    should_search_fn,
+    search_fn,
+    plugin_dispatch_fn,
+    get_provider_fn,
+    get_models_fn,
+    session_save_fn,
+    auto_extract_facts_fn,
+    build_messages_fn,
+    log,
+) -> None:
+    tui.set_busy(True)
+    tui.scroll_offset = 0
+
+    is_code = is_complex_coding_task_fn(user_input) or is_coding_task_fn(user_input)
+    is_files = is_file_generation_task_fn(user_input)
+    system_prompt = tui._make_system_prompt(coding_mode=is_code, file_mode=is_files)
+
+    if needs_plan_first_fn(user_input) and is_files:
+        system_prompt += "\n\n[INSTRUCTION: Output a brief one-paragraph plan. Then write each file completely.]"
+    if is_filesystem_request_fn(user_input):
+        tui._run_file_agent(user_input, system_prompt)
+        return
+
+    emotion = detect_emotion_fn(user_input)
+    augmented = user_input
+    if emotion:
+        hint = emotion_hint_fn(emotion)
+        if hint:
+            augmented = hint + augmented
+
+    if tui.response_mode == "short":
+        augmented += "\n\n[Reply concisely — 2-3 sentences max.]"
+    elif tui.response_mode == "detailed":
+        augmented += "\n\n[Reply in detail — be thorough and comprehensive.]"
+    elif tui.response_mode == "bullets":
+        augmented += "\n\n[Reply using bullet points only.]"
+    tui.response_mode = None
+
+    if should_search_fn(user_input):
+        tui._sys("◆  searching the web…")
+        tui.redraw()
+        try:
+            results_text = search_fn(user_input, fetch_top=True)
+            if results_text and not results_text.startswith("[No"):
+                augmented = f"{augmented}\n\n[Web search results:]\n{results_text}\n[Use the above to inform your answer. Cite sources.]"
+                tui._sys("◆  found web results")
+        except Exception:
+            log.exception("Web search failed")
+
+    cmd = user_input.split()[0] if user_input.startswith("/") else None
+    if cmd:
+        plugin_args = user_input.split(None, 1)[1] if len(user_input.split(None, 1)) > 1 else ""
+        try:
+            provider = get_provider_fn()
+        except Exception:
+            provider = ""
+        handled, plug_result = plugin_dispatch_fn(
+            cmd,
+            plugin_args,
+            provider=provider,
+            model=tui.current_model,
+            name=tui.name,
+            workspace=Path.cwd(),
+        )
+        if handled:
+            if plug_result:
+                tui._sys(plug_result)
+            tui.set_busy(False)
+            return
+
+    if len(tui.memory.get()) > 15 and tui.turns % 10 == 0 and tui.turns > 0:
+        def _compress() -> None:
+            try:
+                snapshot = tui.memory.get()[:-4]
+                if not snapshot:
+                    return
+                model = tui.current_model if tui.current_model != "council" else get_models_fn(get_provider_fn())[0]
+                summary = tui._silent_call(
+                    "Summarize this conversation briefly:\n\n"
+                    + "\n".join(f"{item['role']}: {item['content'][:200]}" for item in snapshot),
+                    model,
+                    200,
+                )
+                if summary:
+                    with tui._state_lock:
+                        tui.memory.replace_with_summary(summary, tail_messages=4)
+                        tui._cached_tok_len = -1
+                    log.debug("Memory compressed to summary + last 4 messages")
+            except Exception:
+                log.exception("Memory compression failed")
+
+        tui._task_executor.submit(_compress)
+
+    tui.last_msg = user_input
+    tui.store.add(Msg("user", user_input))
+    tui.memory.add("user", augmented)
+    messages = build_messages_fn(system_prompt, tui.memory.get())
+    tui.redraw()
+
+    raw_reply = tui._tui_stream(messages, tui.current_model)
+    tui.memory.replace_last("user", user_input)
+    tui.memory.add("assistant", raw_reply)
+
+    tui.prev_reply = tui.last_reply
+    tui.last_reply = raw_reply
+    tui.turns += 1
+    tui.set_busy(False)
+
+    if tui.turns % 5 == 0:
+        tui._task_executor.submit(lambda: session_save_fn(tui.memory.get()))
+    if tui.turns % 8 == 0:
+        def _bg_remember() -> None:
+            try:
+                if auto_extract_facts_fn(tui.client, tui.current_model, tui.memory.get()):
+                    with tui._state_lock:
+                        tui.system_prompt = tui._make_system_prompt()
+                    log.debug("Auto-remember: system prompt updated")
+            except Exception:
+                log.exception("Auto-remember failed")
+
+        tui._task_executor.submit(_bg_remember)
+
+
 def queue_filesystem_plan(
     tui: Any,
     plan: dict,
@@ -324,6 +472,301 @@ def do_retry(tui: Any, *, build_messages_fn) -> None:
     tui._err("Nothing to retry.")
 
 
+def _picker_selectable_indexes(items: list[dict[str, Any]]) -> list[int]:
+    return [index for index, item in enumerate(items) if item.get("kind") not in {"header", "hint"}]
+
+
+def _picker_first_selectable(items: list[dict[str, Any]]) -> int:
+    selectable = _picker_selectable_indexes(items)
+    return selectable[0] if selectable else 0
+
+
+def _picker_move_selection(tui: Any, delta: int) -> None:
+    selectable = _picker_selectable_indexes(tui.picker_items)
+    if not selectable:
+        tui.picker_sel = 0
+        return
+    if tui.picker_sel not in selectable:
+        tui.picker_sel = selectable[0]
+        return
+    current = selectable.index(tui.picker_sel)
+    next_index = max(0, min(len(selectable) - 1, current + delta))
+    tui.picker_sel = selectable[next_index]
+    _update_picker_preview(tui)
+
+
+def _model_traits(provider: str, model: str) -> list[str]:
+    lowered = model.lower()
+    traits: list[str] = []
+    if any(token in lowered for token in ("flash", "lite", "mini", "small", "instant", "fast", "8b", "7b", "3b")):
+        traits.append("fast")
+    if any(token in lowered for token in ("code", "coder", "codestral", "devstral")):
+        traits.append("coding")
+    if any(token in lowered for token in ("reason", "r1", "o1", "o3", "deepthink", "thinking")):
+        traits.append("reasoning")
+    if provider_supports(provider, "long_context") or any(token in lowered for token in ("128k", "200k", "1m", "32k")):
+        traits.append("long")
+    if any(token in lowered for token in ("vision", "vl", "image")):
+        traits.append("vision")
+    if provider == "ollama":
+        traits.append("local")
+    return traits or ["general"]
+
+
+def _model_meta(provider: str, model: str) -> str:
+    context_limit = provider_context_limit(provider)
+    if context_limit >= 1_000_000:
+        context_label = "1M ctx"
+    elif context_limit >= 128_000:
+        context_label = "128k ctx"
+    elif context_limit >= 32_000:
+        context_label = "32k ctx"
+    else:
+        context_label = f"{context_limit // 1000}k ctx"
+    traits = _model_traits(provider, model)
+    return " · ".join([context_label, *traits[:2]])
+
+
+def _model_group(provider: str, model: str, *, recent: set[str], favorites: set[str], current_model: str, helper_hints: tuple[str, ...], heavy_hints: tuple[str, ...]) -> str:
+    lowered = model.lower()
+    if model == current_model:
+        return "Current"
+    if model in favorites:
+        return "Favorites"
+    if model in recent:
+        return "Recent"
+    if any(hint in lowered for hint in helper_hints + heavy_hints):
+        return "Recommended"
+    traits = _model_traits(provider, model)
+    if "fast" in traits:
+        return "Fast"
+    if "coding" in traits:
+        return "Coding"
+    if "reasoning" in traits:
+        return "Reasoning"
+    if "long" in traits:
+        return "Long context"
+    return "All models"
+
+
+def _provider_preview_lines(provider: str, *, provider_names: dict[str, str], health_by_key: dict[str, Any]) -> list[str]:
+    health = health_by_key.get(provider)
+    if provider == "council":
+        return [
+            "Provider: Council",
+            "Capabilities: multi-agent orchestration",
+            "Use when you want several models to debate a task.",
+        ]
+    if health is None:
+        return [f"Provider: {provider_names.get(provider, provider)}"]
+    context_limit = provider_context_limit(provider)
+    context_label = "1M" if context_limit >= 1_000_000 else f"{context_limit // 1000}k"
+    status = "configured" if health.configured else f"missing: {', '.join(health.missing_env_vars)}"
+    return [
+        f"Provider: {health.label}",
+        f"Context: {context_label} tokens",
+        f"Capabilities: {', '.join(health.capabilities)}",
+        f"Status: {status}",
+    ]
+
+
+def _model_preview_lines(provider: str, model: str, *, provider_names: dict[str, str], recommended: bool, current: bool) -> list[str]:
+    spec = get_provider_spec(provider)
+    reason = "recommended for this provider" if recommended else "available model"
+    if current:
+        reason = "currently active"
+    env_hint = ", ".join(spec.env_vars) if spec is not None else "runtime configured"
+    return [
+        f"Model: {model}",
+        f"Provider: {provider_names.get(provider, provider)}",
+        f"Profile: {_model_meta(provider, model)}",
+        f"Why: {reason}",
+        f"Setup: {env_hint}",
+    ]
+
+
+def _rebuild_picker(
+    tui: Any,
+    *,
+    get_available_providers_fn,
+    get_provider_fn,
+    get_models_fn,
+    provider_names: dict[str, str],
+) -> None:
+    available = get_available_providers_fn()
+    health_snapshot = provider_health_snapshot(has_ollama="ollama" in available)
+    health_by_key = {item.key: item for item in health_snapshot}
+    tui.picker_health_by_key = health_by_key
+    query = tui.picker_query.strip().lower()
+
+    if tui.picker_stage == "providers":
+        items: list[dict[str, Any]] = []
+        current_provider = "council" if tui.current_model == "council" else get_provider_fn()
+        configured = [item for item in health_snapshot if item.configured and item.key in available]
+        unavailable = [item for item in health_snapshot if not item.configured]
+        if configured:
+            items.append({"kind": "header", "label": "Configured providers"})
+            providers = configured
+            if query:
+                providers = [
+                    item for item in providers
+                    if query in item.label.lower()
+                    or query in item.key.lower()
+                    or query in item.description.lower()
+                    or any(query in capability for capability in item.capabilities)
+                ]
+            for item in providers:
+                meta = f"{item.description} · {provider_context_limit(item.key) // 1000}k ctx"
+                if item.key == current_provider:
+                    meta = "current · " + meta
+                items.append(
+                    {
+                        "kind": "provider",
+                        "value": item.key,
+                        "label": provider_names.get(item.key, item.label),
+                        "meta": meta,
+                        "current": item.key == current_provider,
+                        "disabled": False,
+                    }
+                )
+        if len(configured) >= 2 and (not query or "council".startswith(query) or "multi-agent".find(query) != -1):
+            if items:
+                items.append({"kind": "header", "label": "Recommended"})
+            items.append(
+                {
+                    "kind": "provider",
+                    "value": "council",
+                    "label": "⚡ Council",
+                    "meta": "multi-agent debate · strongest routing",
+                    "current": tui.current_model == "council",
+                    "disabled": False,
+                }
+            )
+        if unavailable and not query:
+            items.append({"kind": "header", "label": "Requires setup"})
+            for item in unavailable[:6]:
+                items.append(
+                    {
+                        "kind": "provider",
+                        "value": item.key,
+                        "label": provider_names.get(item.key, item.label),
+                        "meta": f"missing {', '.join(item.missing_env_vars)}",
+                        "current": False,
+                        "disabled": True,
+                    }
+                )
+        if not items:
+            items = [{"kind": "hint", "label": "No providers match this filter."}]
+        tui.picker_items = items
+        tui.picker_sel = _picker_first_selectable(items)
+        tui.picker_empty_message = "Type to filter providers"
+        _update_picker_preview(tui, provider_names=provider_names, health_by_key=health_by_key)
+        return
+
+    provider = tui.picker_provider_key or get_provider_fn()
+    items = [{"kind": "action", "value": "__back__", "label": "← back to providers", "meta": provider_names.get(provider, provider)}]
+    try:
+        models = get_models_fn(provider)
+    except Exception as exc:
+        tui.picker_items = items + [{"kind": "hint", "label": f"Could not load models: {exc}"}]
+        tui.picker_sel = 0
+        tui.picker_empty_message = "Model loading failed"
+        _update_picker_preview(tui, provider_names=provider_names, health_by_key=health_by_key)
+        return
+
+    recent = set(tui.little_notes.recent_models_for_provider(provider, limit=8))
+    favorites = set(tui.little_notes.favorite_models_for_provider(provider))
+    helper_hints, heavy_hints = ((), ())
+    spec = get_provider_spec(provider)
+    if spec is not None:
+        helper_hints = spec.helper_model_hints
+        heavy_hints = spec.heavy_model_hints
+
+    filtered = []
+    for model in models:
+        searchable = " ".join([model.lower(), _model_meta(provider, model), " ".join(_model_traits(provider, model))])
+        if query and query not in searchable:
+            continue
+        filtered.append(model)
+
+    grouped: dict[str, list[str]] = {}
+    for model in filtered:
+        group = _model_group(
+            provider,
+            model,
+            recent=recent,
+            favorites=favorites,
+            current_model=tui.current_model if provider == get_provider_fn() else "",
+            helper_hints=helper_hints,
+            heavy_hints=heavy_hints,
+        )
+        grouped.setdefault(group, []).append(model)
+
+    order = ("Current", "Favorites", "Recent", "Recommended", "Fast", "Coding", "Reasoning", "Long context", "All models")
+    for group in order:
+        group_models = grouped.get(group)
+        if not group_models:
+            continue
+        items.append({"kind": "header", "label": group})
+        for model in group_models[:12]:
+            current = provider == get_provider_fn() and model == tui.current_model
+            recommended = group == "Recommended"
+            label = model.split("/")[-1]
+            if model in favorites:
+                label = "★ " + label
+            meta = _model_meta(provider, model)
+            if current:
+                meta = "current · " + meta
+            elif recommended:
+                meta = "recommended · " + meta
+            items.append(
+                {
+                    "kind": "model",
+                    "value": model,
+                    "label": label,
+                    "meta": meta,
+                    "provider": provider,
+                    "recommended": recommended,
+                    "current": current,
+                }
+            )
+
+    if len(items) == 1:
+        items.append({"kind": "hint", "label": "No models match this filter."})
+    tui.picker_items = items
+    tui.picker_sel = _picker_first_selectable(items)
+    tui.picker_empty_message = "Type to filter models"
+    _update_picker_preview(tui, provider_names=provider_names, health_by_key=health_by_key)
+
+
+def _update_picker_preview(tui: Any, *, provider_names: dict[str, str] | None = None, health_by_key: dict[str, Any] | None = None) -> None:
+    provider_names = provider_names or getattr(tui, "picker_provider_names", {}) or {}
+    health_by_key = health_by_key or getattr(tui, "picker_health_by_key", {}) or {}
+    if not tui.picker_items:
+        tui.picker_preview_lines = []
+        return
+    try:
+        item = tui.picker_items[tui.picker_sel]
+    except IndexError:
+        tui.picker_preview_lines = []
+        return
+    kind = item.get("kind")
+    if kind == "provider":
+        tui.picker_preview_lines = _provider_preview_lines(item["value"], provider_names=provider_names, health_by_key=health_by_key)
+    elif kind == "model":
+        tui.picker_preview_lines = _model_preview_lines(
+            item.get("provider", tui.picker_provider_key),
+            item["value"],
+            provider_names=provider_names,
+            recommended=bool(item.get("recommended")),
+            current=bool(item.get("current")),
+        )
+    elif kind == "action":
+        tui.picker_preview_lines = ["Back to providers", "Use this to choose a different gateway."]
+    else:
+        tui.picker_preview_lines = [item.get("label", "")]
+
+
 def open_picker(
     tui: Any,
     *,
@@ -333,24 +776,49 @@ def open_picker(
     provider_names: dict[str, str],
     log,
 ) -> None:
-    items = []
     try:
-        available = get_available_providers_fn()
-        models = get_models_fn(get_provider_fn()) if tui.current_model not in ("council", "unknown") else []
-        items.append(("header", "", "Providers"))
-        for provider in available:
-            items.append(("provider", provider, provider_names.get(provider, provider)))
-        if len(available) >= 2:
-            items.append(("provider", "council", "⚡ Council"))
-        if models:
-            items.append(("header", "", f"Models ({provider_names.get(get_provider_fn(), get_provider_fn())})"))
-            for model in models[:16]:
-                items.append(("model", model, model.split("/")[-1]))
+        tui.picker_provider_names = dict(provider_names)
+        tui.picker_query = ""
+        tui.picker_stage = "providers"
+        tui.picker_provider_key = ""
+        _rebuild_picker(
+            tui,
+            get_available_providers_fn=get_available_providers_fn,
+            get_provider_fn=get_provider_fn,
+            get_models_fn=get_models_fn,
+            provider_names=provider_names,
+        )
     except Exception:
         log.exception("Picker open failed")
-    tui.picker_items = items
-    tui.picker_sel = 0
+        tui.picker_items = [{"kind": "hint", "label": "Picker failed to load."}]
+        tui.picker_sel = 0
+        tui.picker_preview_lines = []
     tui.picker_visible = True
+
+
+def refresh_picker(
+    tui: Any,
+    *,
+    get_available_providers_fn,
+    get_provider_fn,
+    get_models_fn,
+    provider_names: dict[str, str],
+    log,
+) -> None:
+    try:
+        tui.picker_provider_names = dict(provider_names)
+        _rebuild_picker(
+            tui,
+            get_available_providers_fn=get_available_providers_fn,
+            get_provider_fn=get_provider_fn,
+            get_models_fn=get_models_fn,
+            provider_names=provider_names,
+        )
+    except Exception:
+        log.exception("Picker refresh failed")
+        tui.picker_items = [{"kind": "hint", "label": "Picker failed to refresh."}]
+        tui.picker_sel = 0
+        tui.picker_preview_lines = []
 
 
 def confirm_picker(
@@ -367,40 +835,69 @@ def confirm_picker(
     if not tui.picker_items:
         tui.picker_visible = False
         return
-    kind, value, _label = tui.picker_items[tui.picker_sel]
+    item = tui.picker_items[tui.picker_sel]
+    kind = item.get("kind")
+    value = item.get("value")
     if kind == "header":
         return
+    if kind == "hint":
+        return
+    if kind == "action" and value == "__back__":
+        tui.picker_stage = "providers"
+        tui.picker_provider_key = ""
+        _rebuild_picker(
+            tui,
+            get_available_providers_fn=get_available_providers_fn,
+            get_provider_fn=get_provider_fn,
+            get_models_fn=get_models_fn,
+            provider_names=provider_names,
+        )
+        return
     if kind == "provider":
+        if item.get("disabled"):
+            tui._notify(f"Missing setup for {item.get('label')}", duration=2.0)
+            return
         if value == "council":
             tui.current_model = "council"
+            tui.little_notes.record_model("council", "council")
+            tui._notify("Model → Council")
+            tui.picker_visible = False
         else:
             try:
-                set_provider_fn(value)
-                tui.client = get_client_fn()
-                models = get_models_fn(value)
-                tui.current_model = models[0] if models else ""
-                tui.little_notes.record_model(value, tui.current_model)
-                open_picker(
+                tui.picker_stage = "models"
+                tui.picker_provider_key = value
+                _rebuild_picker(
                     tui,
                     get_available_providers_fn=get_available_providers_fn,
                     get_provider_fn=get_provider_fn,
                     get_models_fn=get_models_fn,
                     provider_names=provider_names,
-                    log=log,
                 )
                 return
             except Exception:
                 log.exception("Provider switch failed")
-        tui._sys(f"Provider → {provider_names.get(tui.current_model, tui.current_model)}")
+                tui._err(f"Provider failed: {value}")
+                return
     elif kind == "model":
+        provider = item.get("provider", tui.picker_provider_key)
+        try:
+            set_provider_fn(provider)
+            tui.client = get_client_fn()
+        except Exception:
+            log.exception("Provider activation failed")
+            tui._err(f"Could not activate provider: {provider_names.get(provider, provider)}")
+            return
         tui.current_model = value
+        tui.little_notes.record_model(provider, tui.current_model)
         tui._notify(f"Model → {value.split('/')[-1]}")
     try:
         provider_key = "council" if tui.current_model == "council" else get_provider_fn()
     except Exception:
         provider_key = "huggingface"
-    tui.little_notes.record_model(provider_key, tui.current_model)
+    if tui.current_model != "council":
+        tui.little_notes.record_model(provider_key, tui.current_model)
     tui.picker_visible = False
+    tui.picker_query = ""
 
 
 def execute_command(tui: Any, cmd, arg, *, registry, plugin_dispatch_fn) -> None:
@@ -451,6 +948,10 @@ def handle_key(
         if not tui.slash_visible:
             tui._open_picker()
         return
+    if tui.picker_visible and key == "CTRL_U":
+        tui.picker_query = ""
+        tui._refresh_picker()
+        return
     if key == "CTRL_L":
         tui.memory.clear()
         tui.store.clear()
@@ -489,11 +990,7 @@ def handle_key(
         elif tui.path_visible:
             tui.path_sel = max(0, tui.path_sel - 1)
         elif tui.picker_visible:
-            new_index = tui.picker_sel - 1
-            while new_index >= 0 and tui.picker_items[new_index][0] == "header":
-                new_index -= 1
-            if new_index >= 0:
-                tui.picker_sel = new_index
+            _picker_move_selection(tui, -1)
         else:
             tui._hist_nav(-1)
         return
@@ -507,13 +1004,19 @@ def handle_key(
         elif tui.path_visible:
             tui.path_sel = min(len(tui.path_hits) - 1, tui.path_sel + 1)
         elif tui.picker_visible:
-            new_index = tui.picker_sel + 1
-            while new_index < len(tui.picker_items) and tui.picker_items[new_index][0] == "header":
-                new_index += 1
-            if new_index < len(tui.picker_items):
-                tui.picker_sel = new_index
+            _picker_move_selection(tui, 1)
         else:
             tui._hist_nav(1)
+        return
+    if key == "LEFT" and tui.picker_visible:
+        if tui.picker_stage == "models":
+            tui.picker_stage = "providers"
+            tui.picker_provider_key = ""
+            tui.picker_query = ""
+            tui._refresh_picker()
+        return
+    if key == "RIGHT" and tui.picker_visible:
+        tui._confirm_picker()
         return
 
     if key == "PGUP":
@@ -533,6 +1036,8 @@ def handle_key(
             tui.path_visible = False
         elif tui.path_visible and tui.path_hits:
             tui._apply_path_suggestion(tui.path_hits[tui.path_sel])
+        elif tui.picker_visible:
+            _picker_move_selection(tui, 1)
         return
 
     if key == "ENTER":
@@ -549,6 +1054,35 @@ def handle_key(
             tui.cur_pos = 0
             tui._execute_command(cmd, "")
             return
+        if tui.multiline and tui._pending_file_plan is None:
+            tui.buf = tui.buf[: tui.cur_pos] + "\n" + tui.buf[tui.cur_pos :]
+            tui.cur_pos += 1
+            tui.path_visible = False
+            tui.slash_visible = False
+            return
+        text = tui.buf.strip()
+        tui.buf = ""
+        tui.cur_pos = 0
+        tui.slash_visible = False
+        tui.history.reset_navigation()
+        tui.path_visible = False
+        if tui._pending_file_plan is not None and not tui.busy and not text:
+            tui._consume_pending_file_plan("")
+            return
+        if text and not tui.busy:
+            if tui._consume_pending_file_plan(text):
+                return
+            tui.history.append(text)
+            if text.startswith("/"):
+                parts = text.split(None, 1)
+                tui._execute_command(parts[0].lower(), parts[1] if len(parts) > 1 else "")
+            else:
+                if tui._active_task and not tui._active_task.done():
+                    tui._err("Still busy — wait for the current reply.")
+                else:
+                    tui._active_task = tui._task_executor.submit(tui._run_message, text)
+        return
+    if key == "CTRL_D":
         text = tui.buf.strip()
         tui.buf = ""
         tui.cur_pos = 0
@@ -573,6 +1107,11 @@ def handle_key(
         return
 
     if key == "BACKSPACE":
+        if tui.picker_visible:
+            if tui.picker_query:
+                tui.picker_query = tui.picker_query[:-1]
+                tui._refresh_picker()
+            return
         if getattr(tui, "browser_visible", False):
             parent = os.path.dirname(tui.browser_cwd)
             if parent != tui.browser_cwd:
@@ -587,11 +1126,20 @@ def handle_key(
         tui._update_slash()
         return
     if key == "DELETE":
+        if tui.picker_visible:
+            return
         if tui.cur_pos < len(tui.buf):
             tui.buf = tui.buf[: tui.cur_pos] + tui.buf[tui.cur_pos + 1 :]
         tui._update_slash()
         return
     if key == "CTRL_W":
+        if tui.picker_visible:
+            if tui.picker_query:
+                tui.picker_query = tui.picker_query.rstrip()
+                cut = tui.picker_query.rfind(" ")
+                tui.picker_query = tui.picker_query[: cut + 1] if cut >= 0 else ""
+                tui._refresh_picker()
+            return
         if tui.cur_pos > 0:
             trimmed = tui.buf[: tui.cur_pos].rstrip()
             idx = trimmed.rfind(" ")
@@ -639,15 +1187,40 @@ def handle_key(
         tui._update_slash()
         return
     if key == "HOME":
+        if tui.picker_visible:
+            tui.picker_sel = _picker_first_selectable(tui.picker_items)
+            _update_picker_preview(tui)
+            return
         tui.cur_pos = 0
         tui._update_slash()
         return
     if key == "END":
+        if tui.picker_visible:
+            selectable = _picker_selectable_indexes(tui.picker_items)
+            if selectable:
+                tui.picker_sel = selectable[-1]
+                _update_picker_preview(tui)
+            return
         tui.cur_pos = len(tui.buf)
         tui._update_slash()
         return
 
-    if len(key) == 1 and (key.isprintable() or ord(key) > 127):
+    if tui.picker_visible and key == "CTRL_F":
+        selected = tui.picker_items[tui.picker_sel] if tui.picker_items else {}
+        if selected.get("kind") == "model":
+            provider = selected.get("provider", tui.picker_provider_key)
+            model = selected.get("value", "")
+            added = tui.little_notes.toggle_favorite_model(provider, model)
+            tui._refresh_picker()
+            tui._notify("Added to favorites" if added else "Removed from favorites", duration=1.5)
+        return
+
+    if tui.picker_visible and key and all((char.isprintable() or ord(char) > 127) for char in key):
+        tui.picker_query += key
+        tui._refresh_picker()
+        return
+
+    if key and all((char.isprintable() or ord(char) > 127 or char == "\n") for char in key):
         tui.buf = tui.buf[: tui.cur_pos] + key + tui.buf[tui.cur_pos :]
-        tui.cur_pos += 1
+        tui.cur_pos += len(key)
         update_slash(tui, registry=registry, suggest_paths_fn=suggest_paths_fn)

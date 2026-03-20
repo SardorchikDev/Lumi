@@ -1,34 +1,17 @@
 # lumi
 
-Minimal terminal AI for coding, repo work, file management, and agent tasks.
+Minimal terminal AI for coding, repo work, file management, and grounded agent tasks.
 
-```text
-                                  \
-                                  `\,/
-                                  .-'-.
-                                 '     `
-                                 `.   .'
-                          `._  .-~     ~-.   _,'
-                           ( )'           '.( )
-             `._    _       /               .'
-              ( )--' `-.  .'                 ;
-         .    .'        '.;                  ()
-          `.-.`           '                 .'
-----*-----;                                .'
-          .`-'.           ,                `.
-         '    '.        .';                  ()
-              (_)-   .-'  `.                 ;
-             ,'   `-'       \               `.
-                           (_).           .'(_)
-                          .'   '-._   _.-'    `.
-                                 .'   `.
-                                 '     ;
-                                  `-,-'
-                                   /`\
-                                 /`
-```
+[Install](#install) · [Quick Start](#quick-start) · [What Lumi Does](#what-lumi-does) · [Common Workflows](#common-workflows) · [Commands](#commands) · [Plugins](#plugins) · [Development](#development) · [Roadmap](ROADMAP.md)
 
-[Install](#install) · [Quick Start](#quick-start) · [What Lumi Does](#what-lumi-does) · [Agent Mode](#agent-mode) · [Commands](#commands) · [Plugins](#plugins) · [Development](#development) · [Roadmap](ROADMAP.md)
+## Why Lumi
+
+- keyboard-first TUI and classic CLI mode
+- grounded agent flow with previews, confirmations, and rollback
+- natural-language file and folder operations
+- repo-aware workflows for git, files, and verification
+- cached context for web pages, files, PDFs, images, and data
+- optional plugins with approval and permission reporting
 
 ## Install
 
@@ -43,6 +26,15 @@ The installer:
 - installs dependencies
 - creates a `lumi` launcher in `~/.local/bin`
 - creates `~/Lumi/.env` if it does not exist
+- initializes runtime state outside the repo under `~/.codex/memories/lumi` by default
+
+Useful variants:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SardorchikDev/lumi/main/install.sh | bash -s -- --dev
+curl -fsSL https://raw.githubusercontent.com/SardorchikDev/lumi/main/install.sh | bash -s -- --dir ~/apps/Lumi
+curl -fsSL https://raw.githubusercontent.com/SardorchikDev/lumi/main/install.sh | bash -s -- --help
+```
 
 ## Quick Start
 
@@ -54,7 +46,7 @@ The installer:
 lumi
 ```
 
-Recommended first steps inside Lumi:
+Good first commands inside Lumi:
 
 ```text
 /onboard
@@ -63,7 +55,7 @@ Recommended first steps inside Lumi:
 /status
 ```
 
-Useful first prompts:
+Good first prompts:
 
 ```text
 /agent add tests for this module
@@ -72,84 +64,58 @@ Useful first prompts:
 /search latest FastAPI release notes
 ```
 
-If you want the classic non-TUI mode:
+Useful launch flags:
 
 ```bash
 lumi --no-tui
-```
-
-If you want to skip confirmations:
-
-```bash
 lumi --yolo
 ```
 
 ## What Lumi Does
 
-- terminal chat with a full-screen TUI and classic CLI mode
-- council mode for multi-model answers
-- grounded agent mode with structured actions, previews, and rollback
-- natural-language file and folder operations
-- repo-aware workflows with git helpers, project context, and session memory
-- cached web, file, PDF, image, and data context
-- local notes, todos, saved sessions, and long-term memory
-- optional plugins with explicit approval
+- full-screen TUI plus classic CLI mode
+- multi-model chat and council mode
+- grounded agent mode with repo-aware planning and verification
+- natural-language file operations and structured `/fs` commands
+- git helpers inside the app
+- session memory, saved chats, notes, todos, and long-term memory
+- web, file, PDF, image, voice, and structured data helpers
+- plugin loading with approval, audit, and permission reporting
 
 ## TUI
 
-The default interface is a minimal terminal UI built for keyboard-first use:
+The default interface is built for keyboard-first use:
 
-- stable prompt and transcript layout
-- slash-command picker
-- prompt history
-- transcript scrolling
-- side pane support
-- starter panel with recent commands and actions
-- confirmation flow for file operations
+- stable transcript and prompt layout
+- slash-command picker and model picker
+- prompt history and transcript scrolling
+- starter panel and side pane
+- inline review blocks for pending filesystem actions
 
 Useful keys:
 
 - `Esc` closes transient UI and cancels pending file plans
 - `Ctrl+G` toggles the starter panel
+- `Ctrl+N` opens the model picker
 - `Up` / `Down` navigate prompt history
 - `Shift+Up` / `Shift+Down` scroll the transcript
 - `Tab` accepts slash-command or path suggestions
 
-## Agent Mode
+## Common Workflows
 
-Lumi agent mode is built around structured actions, not arbitrary shell execution.
-
-Current agent capabilities include:
-
-- inspect the repo before acting
-- read files and search code
-- create folders and structured files
-- patch files with previews
-- run repo-aware verification
-- show grouped preflight summaries
-- roll back file mutations on failure
-
-Typical agent flow:
-
-1. inspect workspace and relevant files
-2. build a grounded plan
-3. show preflight summary
-4. preview edits
-5. execute
-6. verify
-7. roll back if the run fails
-
-Example:
+### Agent Work
 
 ```text
 /agent add login validation and tests
+/review src/auth.py
+/fix type errors in src/api
 ```
 
-## File Workflows
+Lumi agent mode is built around structured actions rather than arbitrary shell execution. It can inspect the repo, plan changes, patch files, run repo-aware verification, and roll back file mutations on failure.
 
-Lumi can handle natural-language file operations directly in chat, and you can also use `/fs`.
+### File Operations
 
-Examples:
+Lumi understands natural-language file tasks directly in chat:
 
 ```text
 create a folder named api and add main.py inside it
@@ -158,7 +124,7 @@ rename app.py to main.py
 move config.yaml into app/config
 ```
 
-Useful slash commands:
+Or use explicit filesystem commands:
 
 - `/fs ls [path]`
 - `/fs cat <file>`
@@ -169,9 +135,9 @@ Useful slash commands:
 - `/fs append <file> [text]`
 - `/undo`
 
-## Git Workflows
+### Git Work
 
-Lumi includes git helpers inside the TUI:
+Built-in git helpers include:
 
 - `/git status`
 - `/git diff`
@@ -185,6 +151,20 @@ Lumi includes git helpers inside the TUI:
 - `/git prepare`
 - `/git commit`
 - `/git commit-confirm`
+
+### Context Helpers
+
+Use Lumi to pull focused context into the conversation:
+
+- `/file <path>`
+- `/project <dir>`
+- `/browse [dir]`
+- `/web <url> [question]`
+- `/search <query>`
+- `/pdf <path>`
+- `/data <path>`
+- `/image <path> [question]`
+- `/voice [seconds]`
 
 ## Commands
 
@@ -239,6 +219,8 @@ Lumi includes git helpers inside the TUI:
 | `/web <url> [question]` | Fetch and analyze a page |
 | `/pdf <path>` | Load PDF text |
 | `/data <path>` | Analyze CSV or JSON |
+| `/image <path> [question]` | Ask Lumi about an image |
+| `/voice [seconds]` | Record and transcribe voice into the prompt |
 
 ### Productivity
 
@@ -267,15 +249,21 @@ Example:
 
 ```env
 GEMINI_API_KEY=
-HF_TOKEN=
 GROQ_API_KEY=
+HF_TOKEN=
 OPENROUTER_API_KEY=
 MISTRAL_API_KEY=
 AIRFORCE_API_KEY=
 POLLINATIONS_API_KEY=
 ```
 
-Lumi can also work with local providers like Ollama depending on your setup.
+Useful runtime overrides:
+
+```env
+LUMI_HOME=~/Lumi
+LUMI_STATE_DIR=~/.codex/memories/lumi/state
+LUMI_CACHE_DIR=~/.codex/memories/lumi/cache
+```
 
 After changing `.env`, run:
 
@@ -309,7 +297,7 @@ Plugins live in:
 ~/Lumi/plugins/
 ```
 
-Plugin loading is approval-based now:
+Plugin loading is approval-based:
 
 - Lumi scans plugin files before import
 - plugins must declare `PLUGIN_META`
@@ -347,9 +335,9 @@ COMMANDS = {"/greet": greet}
 
 ## Benchmarks
 
-Lumi includes a small benchmark harness for agent work.
+Lumi includes a benchmark harness for agent work.
 
-It now scores real outcomes instead of summary text only:
+It measures real outcomes rather than summary text alone:
 
 - temp workspaces per scenario
 - setup files per scenario

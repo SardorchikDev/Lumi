@@ -13,7 +13,7 @@ from difflib import unified_diff
 from pathlib import Path
 from typing import Any
 
-from src.config import DATA_DIR
+from src.config import UNDO_DIR
 
 # ── Intent detection ──────────────────────────────────────────────────────────
 
@@ -57,7 +57,7 @@ RENAME_PATTERNS = [
     r"\brename\b.{0,40}\b[A-Za-z0-9._/-]+\b.{0,20}\bto\b",
 ]
 
-UNDO_ROOT = DATA_DIR / "ui" / "undo"
+UNDO_ROOT = UNDO_DIR
 MAX_PREVIEW_LINES = 6
 MAX_DIFF_LINES = 24
 MAX_SUGGESTIONS = 8

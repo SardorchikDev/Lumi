@@ -29,6 +29,45 @@ class WorkspaceProfile:
     changed_files: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class TaskWorkspaceProfile:
+    workspace: WorkspaceProfile
+    relevant_files: tuple[str, ...]
+    task: str = ""
+
+    @property
+    def base_dir(self) -> Path:
+        return self.workspace.base_dir
+
+    @property
+    def package_manager(self) -> str | None:
+        return self.workspace.package_manager
+
+    @property
+    def frameworks(self) -> tuple[str, ...]:
+        return self.workspace.frameworks
+
+    @property
+    def entrypoints(self) -> tuple[str, ...]:
+        return self.workspace.entrypoints
+
+    @property
+    def config_files(self) -> tuple[str, ...]:
+        return self.workspace.config_files
+
+    @property
+    def changed_files(self) -> tuple[str, ...]:
+        return self.workspace.changed_files
+
+    @property
+    def verification_commands(self) -> dict[str, tuple[str, ...]]:
+        return self.workspace.verification_commands
+
+    @property
+    def notes(self) -> tuple[str, ...]:
+        return self.workspace.notes
+
+
 def command_available(command: str) -> bool:
     return bool(shutil.which(command))
 
@@ -339,6 +378,22 @@ def inspect_workspace(base_dir: Path | None = None) -> WorkspaceProfile:
         notes=tuple(notes),
         git_branch=detect_git_branch(root),
         changed_files=detect_changed_files(root),
+    )
+
+
+def inspect_task_workspace(
+    base_dir: Path | None = None,
+    *,
+    task: str = "",
+    relevant_limit: int = 8,
+) -> TaskWorkspaceProfile:
+    root = (base_dir or Path.cwd()).resolve()
+    workspace = inspect_workspace(root)
+    relevant = find_relevant_paths(root, task, limit=relevant_limit)
+    return TaskWorkspaceProfile(
+        workspace=workspace,
+        relevant_files=relevant,
+        task=task,
     )
 
 

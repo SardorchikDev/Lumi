@@ -13,14 +13,14 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass, field
-from difflib import unified_diff
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from src.agents import edit_engine as agent_edit_engine
 from src.agents.task_memory import (
     clear_active_run,
     record_run,
@@ -28,7 +28,21 @@ from src.agents.task_memory import (
     start_active_run,
     update_active_run,
 )
-from src.utils.repo_profile import build_planning_context, find_relevant_paths, inspect_workspace
+from src.agents.verification import (
+    classify_failure_output as classify_failure_output_impl,
+)
+from src.agents.verification import (
+    run_verification_command as run_verification_command_impl,
+)
+from src.agents.verification import (
+    summarize_verification_output as summarize_verification_output_impl,
+)
+from src.utils.repo_profile import (
+    TaskWorkspaceProfile,
+    build_planning_context,
+    inspect_task_workspace,
+    inspect_workspace,
+)
 
 R = "\033[0m"
 B = "\033[1m"
@@ -247,17 +261,7 @@ class ChangeJournal:
         return rolled_back
 
 
-@dataclass(frozen=True)
-class RepoProfile:
-    base_dir: Path
-    package_manager: str | None
-    frameworks: tuple[str, ...]
-    entrypoints: tuple[str, ...]
-    config_files: tuple[str, ...]
-    relevant_files: tuple[str, ...]
-    changed_files: tuple[str, ...]
-    verification_commands: dict[str, tuple[str, ...]]
-    notes: tuple[str, ...] = ()
+RepoProfile = TaskWorkspaceProfile
 
 
 @dataclass(frozen=True)
@@ -490,23 +494,16 @@ def _build_filesystem_scaffold_plan(task: str, base_dir: Path) -> list[dict] | N
 
 def inspect_repo(base_dir: Path | None = None, task: str = "") -> RepoProfile:
     base_dir = (base_dir or Path.cwd()).resolve()
-    shared = inspect_workspace(base_dir)
-    relevant_paths = find_relevant_paths(base_dir, task, limit=MAX_CONTEXT_MATCHES)
-    notes = list(shared.notes)
-    verification = shared.verification_commands
-    if not verification and "no verification commands detected" not in notes:
+    profile = inspect_task_workspace(base_dir, task=task, relevant_limit=MAX_CONTEXT_MATCHES)
+    notes = list(profile.notes)
+    if not profile.verification_commands and "no verification commands detected" not in notes:
         notes.append("no verification commands detected")
-
+    if tuple(notes) == profile.notes:
+        return profile
     return RepoProfile(
-        base_dir=base_dir,
-        package_manager=shared.package_manager,
-        frameworks=shared.frameworks,
-        entrypoints=shared.entrypoints,
-        config_files=shared.config_files,
-        relevant_files=relevant_paths,
-        changed_files=shared.changed_files,
-        verification_commands=verification,
-        notes=tuple(notes),
+        workspace=dataclass_replace(profile.workspace, notes=tuple(notes)),
+        relevant_files=profile.relevant_files,
+        task=profile.task,
     )
 
 
@@ -849,34 +846,12 @@ def validate_file_write_path(path: str, base_dir: Path) -> tuple[bool, str]:
 
 
 def build_file_write_preview(path: Path, new_content: str) -> str:
-    if not path.exists():
-        return ""
-    try:
-        old_content = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return f"[Could not read existing file for preview: {exc}]"
-    if old_content == new_content:
-        return "[No changes]"
-    diff_lines = list(
-        unified_diff(
-            old_content.splitlines(),
-            new_content.splitlines(),
-            fromfile=f"{path.name} (current)",
-            tofile=f"{path.name} (agent)",
-            lineterm="",
-        )
+    return agent_edit_engine.build_file_write_preview(
+        path,
+        new_content,
+        max_diff_lines=MAX_DIFF_LINES,
+        max_diff_chars=MAX_DIFF_CHARS,
     )
-    truncated = False
-    if len(diff_lines) > MAX_DIFF_LINES:
-        diff_lines = diff_lines[:MAX_DIFF_LINES]
-        truncated = True
-    preview = "\n".join(diff_lines)
-    if len(preview) > MAX_DIFF_CHARS:
-        preview = preview[:MAX_DIFF_CHARS].rstrip()
-        truncated = True
-    if truncated:
-        preview += "\n... diff truncated ..."
-    return preview
 
 
 def print_diff_preview(path: Path, updated_content: str) -> None:
@@ -896,239 +871,44 @@ def print_diff_preview(path: Path, updated_content: str) -> None:
 
 
 def _compute_patch_file_update(step: dict, path: Path) -> tuple[bool, str]:
-    old_text = str(step.get("old_text", ""))
-    new_text = str(step.get("new_text", ""))
-    replace_all = bool(step.get("replace_all", False))
-    try:
-        current = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return False, str(exc)
-    matches = current.count(old_text)
-    if matches == 0:
-        return False, "Blocked: patch_file old_text was not found"
-    if matches > 1 and not replace_all:
-        return False, "Blocked: patch_file old_text is ambiguous; set replace_all=true"
-    updated = current.replace(old_text, new_text) if replace_all else current.replace(old_text, new_text, 1)
-    return True, updated
+    return agent_edit_engine.compute_patch_file_update(step, path)
 
 
 def _compute_patch_lines_update(step: dict, path: Path) -> tuple[bool, str]:
-    try:
-        start_line = int(step.get("start_line"))
-        end_line = int(step.get("end_line"))
-    except (TypeError, ValueError):
-        return False, "Blocked: patch_lines requires integer line bounds"
-    if start_line < 1 or end_line < start_line:
-        return False, "Blocked: patch_lines has invalid line bounds"
-
-    try:
-        current = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return False, str(exc)
-
-    lines = current.splitlines(keepends=True)
-    if end_line > len(lines):
-        return False, "Blocked: patch_lines line range is outside the file"
-
-    current_block = "".join(lines[start_line - 1:end_line])
-    old_block = step.get("old_block")
-    if old_block is not None and str(old_block) != current_block:
-        return False, "Blocked: patch_lines old_block does not match the current file"
-
-    replacement = str(step.get("replacement", ""))
-    new_lines = replacement.splitlines(keepends=True)
-    if replacement and not replacement.endswith(("\n", "\r")) and current_block.endswith("\n"):
-        new_lines.append("\n")
-    updated_lines = lines[:start_line - 1] + new_lines + lines[end_line:]
-    return True, "".join(updated_lines)
+    return agent_edit_engine.compute_patch_lines_update(step, path)
 
 
 def _compute_patch_context_update(step: dict, path: Path) -> tuple[bool, str]:
-    before_context = str(step.get("before_context", ""))
-    after_context = str(step.get("after_context", ""))
-    old_block = step.get("old_block")
-    replacement = str(step.get("replacement", ""))
-
-    if not before_context and not after_context:
-        return False, "Blocked: patch_context requires before_context or after_context"
-    if old_block is None and not (before_context and after_context):
-        return False, "Blocked: patch_context requires old_block when only one context anchor is provided"
-
-    try:
-        current = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return False, str(exc)
-
-    matches: list[tuple[int, int]] = []
-    expected = str(old_block) if old_block is not None else None
-
-    if before_context and after_context:
-        search_from = 0
-        while True:
-            before_index = current.find(before_context, search_from)
-            if before_index == -1:
-                break
-            start = before_index + len(before_context)
-            end = current.find(after_context, start)
-            if end != -1:
-                matches.append((start, end))
-            search_from = before_index + 1
-    elif before_context:
-        token = before_context + expected
-        search_from = 0
-        while True:
-            match_index = current.find(token, search_from)
-            if match_index == -1:
-                break
-            start = match_index + len(before_context)
-            end = start + len(expected)
-            matches.append((start, end))
-            search_from = match_index + 1
-    else:
-        token = expected + after_context
-        search_from = 0
-        while True:
-            match_index = current.find(token, search_from)
-            if match_index == -1:
-                break
-            start = match_index
-            end = start + len(expected)
-            matches.append((start, end))
-            search_from = match_index + 1
-
-    if not matches:
-        return False, "Blocked: patch_context could not find a matching anchored block"
-    if len(matches) > 1:
-        return False, "Blocked: patch_context matched multiple regions"
-
-    start, end = matches[0]
-    current_block = current[start:end]
-    if expected is not None and current_block != expected:
-        return False, "Blocked: patch_context old_block does not match the current file"
-    if replacement and not replacement.endswith(("\n", "\r")) and current_block.endswith("\n"):
-        replacement += "\n"
-    updated = current[:start] + replacement + current[end:]
-    return True, updated
+    return agent_edit_engine.compute_patch_context_update(step, path)
 
 
 def _compute_patch_apply_update(step: dict, path: Path) -> tuple[bool, str]:
-    hunks = step.get("hunks", [])
-    if not isinstance(hunks, list) or not hunks:
-        return False, "Blocked: patch_apply requires a non-empty hunks list"
-    try:
-        current = path.read_text(encoding="utf-8", errors="replace")
-    except OSError as exc:
-        return False, str(exc)
-
-    updated = current
-    for index, raw_hunk in enumerate(hunks, start=1):
-        if not isinstance(raw_hunk, dict):
-            return False, f"Blocked: patch_apply hunk {index} is not an object"
-        temp_step = dict(raw_hunk)
-        temp_step.setdefault("path", str(path))
-        with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8") as handle:
-            handle.write(updated)
-            temp_path = Path(handle.name)
-        try:
-            if "old_text" in temp_step:
-                ok, updated = _compute_patch_file_update(temp_step, temp_path)
-            elif temp_step.get("start_line") is not None or temp_step.get("end_line") is not None:
-                ok, updated = _compute_patch_lines_update(temp_step, temp_path)
-            elif temp_step.get("before_context") or temp_step.get("after_context"):
-                ok, updated = _compute_patch_context_update(temp_step, temp_path)
-            else:
-                return False, f"Blocked: patch_apply hunk {index} has no supported patch shape"
-        finally:
-            temp_path.unlink(missing_ok=True)
-        if not ok:
-            return False, f"Blocked: patch_apply hunk {index} failed: {updated}"
-        if updated == current:
-            return False, f"Blocked: patch_apply hunk {index} made no changes"
-        current = updated
-    return True, updated
+    return agent_edit_engine.compute_patch_apply_update(step, path)
 
 
 def _detect_symbol_pattern(path: Path) -> str:
-    suffix = path.suffix.lower()
-    if suffix == ".py":
-        return r"^\s*(def|class)\s+([A-Za-z_][A-Za-z0-9_]*)"
-    if suffix in {".js", ".ts", ".jsx", ".tsx"}:
-        return r"^\s*(export\s+)?(async\s+)?(function|class|const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)"
-    if suffix == ".go":
-        return r"^\s*func\s+([A-Za-z_][A-Za-z0-9_]*)"
-    if suffix == ".rs":
-        return r"^\s*(pub\s+)?(fn|struct|enum|trait)\s+([A-Za-z_][A-Za-z0-9_]*)"
-    return ""
+    return agent_edit_engine.detect_symbol_pattern(path)
 
 
 def _search_symbols(base_dir: Path, target: Path, symbol: str, symbol_kind: str = "") -> str:
-    matches: list[str] = []
-    for path in sorted(target.rglob("*")) if target.is_dir() else [target]:
-        if not path.is_file():
-            continue
-        pattern = _detect_symbol_pattern(path)
-        if not pattern:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        regex = re.compile(pattern)
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            match = regex.search(line)
-            if not match:
-                continue
-            groups = match.groups()
-            name = next((group for group in reversed(groups) if group and re.match(r"[A-Za-z_$]", group)), "")
-            kind = next((group for group in groups if group in {"def", "class", "function", "const", "let", "var", "fn", "struct", "enum", "trait"}), "")
-            if symbol and symbol.lower() not in name.lower():
-                continue
-            if symbol_kind and kind and symbol_kind.lower() != kind.lower():
-                continue
-            matches.append(f"{path.relative_to(base_dir)}:{lineno}: {kind or 'symbol'} {name}".strip())
-            if len(matches) >= 50:
-                return "\n".join(matches) + "\n... symbol search truncated ..."
-    return "\n".join(matches) if matches else "(no symbols found)"
+    return agent_edit_engine.search_symbols(base_dir, target, symbol, symbol_kind)
 
 
 def _run_verification_command(command: tuple[str, ...], base_dir: Path, timeout: int = 90) -> tuple[bool, str]:
-    ok, output = _run_command(list(command), base_dir, timeout=timeout)
-    return ok, _summarize_verification_output(command, output)
+    return run_verification_command_impl(
+        command,
+        base_dir,
+        timeout=timeout,
+        run_command=_run_command,
+    )
 
 
 def _summarize_verification_output(command: tuple[str, ...], output: str) -> str:
-    lowered = output.lower()
-    summary_bits = [" ".join(command)]
-    match = re.search(r"(\d+)\s+passed", lowered)
-    if match:
-        summary_bits.append(f"{match.group(1)} passed")
-    match = re.search(r"(\d+)\s+failed", lowered)
-    if match:
-        summary_bits.append(f"{match.group(1)} failed")
-    match = re.search(r"found\s+(\d+)\s+error", lowered)
-    if match:
-        summary_bits.append(f"{match.group(1)} errors")
-    if "success" in lowered and len(summary_bits) == 1:
-        summary_bits.append("success")
-    preview = output[:600].rstrip()
-    if preview:
-        summary_bits.append(preview)
-    return " | ".join(summary_bits)
+    return summarize_verification_output_impl(command, output)
 
 
 def _classify_failure_output(output: str) -> str:
-    lowered = (output or "").lower()
-    if any(token in lowered for token in ("timed out", "timeout")):
-        return "timeout"
-    if any(token in lowered for token in ("not found", "no such file", "does not exist")):
-        return "missing_path"
-    if any(token in lowered for token in ("syntaxerror", "parse error", "yamlerror", "jsondecodeerror")):
-        return "syntax_or_parse_error"
-    if any(token in lowered for token in ("ambiguous", "matched multiple", "old_text was not found", "old_block does not match")):
-        return "stale_patch_context"
-    if any(token in lowered for token in ("failed", "error", "assert", "traceback", "exception")):
-        return "verification_or_runtime_error"
-    return "unknown"
+    return classify_failure_output_impl(output)
 
 
 def compute_step_file_change(step: dict, base_dir: Path) -> tuple[bool, str, Path | None, str | None]:

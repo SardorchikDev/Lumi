@@ -10,13 +10,31 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from src.agents.task_memory import render_task_memory_context
-from src.chat.providers import provider_context_limit, provider_model_hints
+from src.chat.providers import get_provider_spec, provider_context_limit, provider_model_hints, provider_supports
+
+_TOKEN_ESTIMATE_LOCK = threading.Lock()
+_AVG_CHARS_PER_TOKEN = 4.0
+_AVG_WORDS_PER_TOKEN = 0.77
+
+
+def _record_token_sample(text: str, tokens: int) -> None:
+    global _AVG_CHARS_PER_TOKEN, _AVG_WORDS_PER_TOKEN
+    if not text or tokens <= 0:
+        return
+    char_ratio = max(1.0, len(text) / tokens)
+    word_ratio = max(0.2, len(text.split()) / tokens)
+    with _TOKEN_ESTIMATE_LOCK:
+        _AVG_CHARS_PER_TOKEN = (_AVG_CHARS_PER_TOKEN * 0.85) + (char_ratio * 0.15)
+        _AVG_WORDS_PER_TOKEN = (_AVG_WORDS_PER_TOKEN * 0.85) + (word_ratio * 0.15)
 
 
 def estimate_tokens(text: str) -> int:
     text = text or ""
-    char_estimate = len(text) / 4
-    word_estimate = len(text.split()) * 1.3
+    with _TOKEN_ESTIMATE_LOCK:
+        chars_per_token = _AVG_CHARS_PER_TOKEN
+        words_per_token = _AVG_WORDS_PER_TOKEN
+    char_estimate = len(text) / chars_per_token
+    word_estimate = len(text.split()) / words_per_token
     return max(1, math.ceil(max(char_estimate, word_estimate)))
 
 
@@ -50,7 +68,12 @@ def model_context_limit(model: str, provider: str = "") -> int:
         ("default", 8_192),
     )
     model_limit = next((value for needle, value in limits if needle in lowered), limits[-1][1])
-    return max(model_limit, provider_context_limit(provider)) if provider else model_limit
+    if not provider:
+        return model_limit
+    provider_limit = provider_context_limit(provider)
+    if provider_supports(provider, "long_context"):
+        provider_limit = max(provider_limit, 256_000)
+    return max(model_limit, provider_limit)
 
 
 def infer_request_mode(text: str) -> str:
@@ -159,6 +182,12 @@ def route_model(current_model: str, available_models: list[str], mode: str, prov
         for model, lowered in lowered_models.items():
             if has_signal(lowered, heavy_needles):
                 return model
+    if provider:
+        spec = get_provider_spec(provider)
+        if spec and "fast" in spec.capabilities and mode in {"summary", "search"}:
+            for model, lowered in lowered_models.items():
+                if any(token in lowered for token in ("flash", "instant", "mini")):
+                    return model
     for model in available_models:
         if lowered_models[model] == current_lower:
             return model
@@ -223,6 +252,7 @@ class CachedContext:
     summary: str
     symbols: tuple[str, ...] = ()
     imports: tuple[str, ...] = ()
+    snippets: tuple[str, ...] = ()
 
 
 class ContextCache:
@@ -240,6 +270,7 @@ class ContextCache:
             summary=summary,
             symbols=tuple(_extract_symbols(content)),
             imports=tuple(_extract_imports(content)),
+            snippets=(),
         )
         with self._lock:
             self._docs[key] = doc
@@ -268,7 +299,7 @@ class ContextCache:
             docs = list(self._docs.values())
         if not docs:
             return []
-        scored: list[tuple[int, CachedContext, str]] = []
+        scored: list[tuple[int, CachedContext, tuple[str, ...]]] = []
         for doc in docs:
             haystack = f"{doc.label}\n{doc.summary}\n{' '.join(doc.symbols)}\n{' '.join(doc.imports)}".lower()
             base_score = 0
@@ -277,33 +308,34 @@ class ContextCache:
                     base_score += 4
                 if word in haystack:
                     base_score += 2
-            best_chunk = ""
-            best_score = 0
+            chunk_hits: list[tuple[int, str]] = []
             for chunk in _chunk_text(doc.content, chunk_chars=min(900, max_chars), overlap_chars=160):
                 score = base_score
                 lowered_chunk = chunk.lower()
                 for word in words:
                     if word in lowered_chunk:
                         score += 3 if "." in word or "/" in word else 2
-                if score > best_score:
-                    best_score = score
-                    best_chunk = chunk
-            if best_score:
-                scored.append((best_score, doc, best_chunk))
+                if score > 0:
+                    chunk_hits.append((score, chunk))
+            if chunk_hits:
+                chunk_hits.sort(key=lambda item: item[0], reverse=True)
+                snippets = tuple(chunk[: max_chars // 2].rstrip() for _, chunk in chunk_hits[:2])
+                scored.append((chunk_hits[0][0], doc, snippets))
         scored.sort(key=lambda item: (-item[0], item[1].label))
         picked = scored[:limit]
         trimmed: list[CachedContext] = []
-        for _, doc, snippet in picked:
-            snippet = snippet[:max_chars].rstrip()
+        for _, doc, snippets in picked:
+            merged = "\n\n".join(snippets)[:max_chars].rstrip()
             trimmed.append(
                 CachedContext(
                     key=doc.key,
                     label=doc.label,
                     kind=doc.kind,
-                    content=snippet,
+                    content=merged,
                     summary=doc.summary,
                     symbols=doc.symbols,
                     imports=doc.imports,
+                    snippets=snippets,
                 )
             )
         return trimmed
@@ -411,6 +443,8 @@ class SessionTelemetry:
 
     def record_response(self, output_text: str, *, actual_tokens: int | None = None) -> None:
         output_tokens = actual_tokens if actual_tokens is not None else estimate_tokens(output_text)
+        if actual_tokens is not None:
+            _record_token_sample(output_text, actual_tokens)
         with self._lock:
             self.output_tokens += output_tokens
             if self.records:
@@ -556,7 +590,15 @@ def optimize_messages(
 
     limit = model_context_limit(model, provider)
     base_response_budget = MODE_RESPONSE_BUDGETS.get(mode, MODE_RESPONSE_BUDGETS["chat"])
-    response_budget = min(limit // 3, telemetry.suggest_response_budget(mode, base_response_budget))
+    capability_multiplier = 1.0
+    if provider_supports(provider, "long_context") and mode in {"code", "review", "debug", "files"}:
+        capability_multiplier += 0.15
+    if provider_supports(provider, "fast") and mode in {"summary", "search"}:
+        capability_multiplier -= 0.10
+    response_budget = min(
+        limit // 3,
+        max(128, int(telemetry.suggest_response_budget(mode, base_response_budget) * capability_multiplier)),
+    )
     prompt_budget = max(1_024, limit - response_budget)
 
     retrieval_docs = context_cache.retrieve(query, limit=3)
@@ -574,7 +616,11 @@ def optimize_messages(
                 detail.append(f"symbols: {', '.join(doc.symbols[:6])}")
             if doc.imports:
                 detail.append(f"imports: {', '.join(doc.imports[:6])}")
-            detail.append(doc.content)
+            if doc.snippets:
+                for index, snippet in enumerate(doc.snippets, start=1):
+                    detail.append(f"snippet {index}:\n{snippet}")
+            else:
+                detail.append(doc.content)
             parts.append("\n".join(detail))
         retrieval_block = "Relevant cached context:\n\n" + "\n\n---\n\n".join(parts)
     task_memory_tokens = estimate_tokens(task_memory_block) if task_memory_block else 0

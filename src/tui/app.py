@@ -9,8 +9,10 @@ import concurrent.futures
 import io
 import json
 import logging
+import mimetypes
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -44,6 +46,7 @@ load_dotenv(dotenv_path=ROOT / ".env")
 
 # ── CLI Modules ──────────────────────────────────────────────────────────────
 from src.agents.council import LEAD_AGENTS, _get_available_agents, classify_task, council_ask
+from src.chat.client_factory import make_client as make_provider_client
 from src.chat.hf_client import (
     chat_stream,
     get_available_providers,
@@ -59,6 +62,7 @@ from src.chat.optimizer import (
     route_model,
 )
 from src.chat.runtime import build_runtime_messages
+from src.chat.streaming import stream_once
 from src.memory.conversation_store import load_by_name, load_latest
 from src.memory.conversation_store import (
     save as session_save,
@@ -124,7 +128,13 @@ from src.tui.controller_actions import (
     refresh_browser as controller_refresh_browser,
 )
 from src.tui.controller_actions import (
+    refresh_picker as controller_refresh_picker,
+)
+from src.tui.controller_actions import (
     run_file_agent as controller_run_file_agent,
+)
+from src.tui.controller_actions import (
+    run_message as controller_run_message,
 )
 from src.tui.controller_actions import (
     undo_last_filesystem_action as controller_undo_last_filesystem_action,
@@ -134,8 +144,9 @@ from src.tui.controller_actions import (
 )
 from src.tui.input import InputHistory, read_key
 from src.tui.notes import LittleNotesStore
-from src.tui.state import AgentState, Msg, Store
-from src.tui.views import OverlayView, StarterView, TranscriptView, ViewStyle
+from src.tui.session import initialize_ui_state
+from src.tui.state import AgentState, Msg, PaneState, Store
+from src.tui.views import OverlayView, PaneView, StarterView, TranscriptView, ViewStyle
 from src.utils.autoremember import auto_extract_facts
 from src.utils.filesystem import (
     execute_operation_plan,
@@ -170,13 +181,14 @@ from src.utils.plugins import (
     revoke_plugin,
 )
 from src.utils.plugins import dispatch as plugin_dispatch
+from src.utils.repo_profile import inspect_workspace
 from src.utils.system_reports import build_doctor_report, build_status_report
 from src.utils.web import fetch_url
 
 try:
-    from src.utils.tools import clipboard_get, clipboard_set, get_weather, load_project, read_pdf
+    from src.utils.tools import clipboard_get, clipboard_set, encode_image_base64, get_weather, load_project, read_pdf
 except Exception:
-    clipboard_get = clipboard_set = get_weather = load_project = read_pdf = None
+    clipboard_get = clipboard_set = encode_image_base64 = get_weather = load_project = read_pdf = None
 
 _context_cache = get_global_context_cache()
 _session_telemetry = get_global_telemetry()
@@ -195,6 +207,133 @@ def build_messages(system_prompt: str, history: list[dict[str, str]], *, model: 
         file_markers=("loaded file", "<file path=", "cached for retrieval"),
         include_coding_detector=True,
     )
+
+
+def _parse_image_command(arg: str) -> tuple[Path, str] | None:
+    stripped = arg.strip()
+    if not stripped:
+        return None
+    try:
+        tokens = shlex.split(stripped)
+    except ValueError:
+        tokens = stripped.split()
+    if not tokens:
+        return None
+    for end in range(len(tokens), 0, -1):
+        candidate = Path(" ".join(tokens[:end])).expanduser()
+        if candidate.exists():
+            question = " ".join(tokens[end:]).strip()
+            return candidate, question
+    candidate = Path(tokens[0]).expanduser()
+    question = " ".join(tokens[1:]).strip()
+    return candidate, question
+
+
+def _image_mime(path: Path) -> str | None:
+    guessed, _encoding = mimetypes.guess_type(path.name)
+    if guessed and guessed.startswith("image/"):
+        return guessed
+    fallback = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+        ".bmp": "image/bmp",
+    }
+    return fallback.get(path.suffix.lower())
+
+
+def _resolve_vision_target(current_provider: str, current_model: str) -> tuple[str, str, bool]:
+    configured = set(get_available_providers())
+    if "gemini" not in configured:
+        raise RuntimeError("Vision needs Gemini. Add GEMINI_API_KEY=... or switch provider.")
+    models = get_models("gemini")
+    model = route_model(current_model, models, "chat", provider="gemini") if models else "gemini-2.0-flash"
+    auto_routed = current_provider != "gemini"
+    return "gemini", model, auto_routed
+
+
+def _stream_direct_completion(
+    tui: LumiTUI,
+    *,
+    client,
+    messages: list[dict[str, object]],
+    model: str,
+    label: str = "◆ lumi",
+) -> str:
+    idx = tui.store.add(Msg("streaming", "", label))
+    chunks: list[str] = []
+    try:
+        full = stream_once(
+            client,
+            model,
+            messages,
+            max_tokens=2048,
+            temperature=0.2,
+            on_delta=lambda delta: (
+                chunks.append(delta),
+                tui.store.append(idx, delta),
+                tui.redraw(),
+            ),
+        )
+    except Exception as ex:
+        tui.store.set_text(idx, f"⚠  {ex}")
+        tui.store.finalize(idx)
+        return f"⚠  {ex}"
+    tui.store.finalize(idx)
+    if not full:
+        full = "".join(chunks).strip()
+    _session_telemetry.record_response(full)
+    return full
+
+
+def _parse_voice_duration(arg: str) -> int:
+    raw = arg.strip()
+    if not raw:
+        return 5
+    if not raw.isdigit():
+        raise ValueError("Usage: /voice [seconds]")
+    seconds = int(raw)
+    if seconds < 1 or seconds > 30:
+        raise ValueError("Voice duration must be between 1 and 30 seconds.")
+    return seconds
+
+
+def _transcribe_voice_audio(audio_path: str) -> tuple[str, str]:
+    from src.utils.voice import transcribe_groq
+
+    if os.getenv("GROQ_API_KEY"):
+        text = transcribe_groq(audio_path).strip()
+        if text:
+            return text, "Groq Whisper"
+
+    if os.getenv("HF_TOKEN"):
+        from src.tools.voice import transcribe_audio_hf
+
+        text = transcribe_audio_hf(audio_path).strip()
+        if text:
+            return text, "HuggingFace Whisper"
+
+    if os.getenv("GROQ_API_KEY") or os.getenv("HF_TOKEN"):
+        return "", ""
+    raise RuntimeError("Voice transcription needs GROQ_API_KEY or HF_TOKEN in .env.")
+
+
+def _inject_text_at_cursor(tui: LumiTUI, text: str) -> None:
+    if not text:
+        return
+    left = tui.buf[: tui.cur_pos]
+    right = tui.buf[tui.cur_pos :]
+    needs_left_space = bool(left and not left.endswith((" ", "\n")))
+    needs_right_space = bool(right and not right.startswith((" ", "\n")))
+    injected = text
+    if needs_left_space:
+        injected = " " + injected
+    if needs_right_space:
+        injected = injected + " "
+    tui.buf = left + injected + right
+    tui.cur_pos = len(left + injected)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  ANSI Colors & Deep Tokyo Night Math
@@ -345,6 +484,24 @@ def _read_key():
 class CommandRegistry:
     def __init__(self):
         self.commands = {}
+        self.examples = {
+            "/agent": "/agent fix the failing tests and keep the diff small",
+            "/browse": "/browse src",
+            "/file": "/file src/tui/app.py",
+            "/fs": "/fs mkdir docs",
+            "/git": "/git status",
+            "/help": "/help",
+            "/memory": "/memory",
+            "/model": "/model",
+            "/onboard": "/onboard",
+            "/pane": "/pane pytest -q",
+            "/permissions": "/permissions all",
+            "/project": "/project .",
+            "/rag": "/rag how does the agent patch files?",
+            "/review": "/review src/chat/hf_client.py",
+            "/search": "/search latest ruff rule docs",
+            "/status": "/status",
+        }
     def register(self, name, desc, aliases=None):
         def decorator(func):
             self.commands[name] = {
@@ -363,6 +520,20 @@ class CommandRegistry:
             return func
         return decorator
 
+    @staticmethod
+    def _subsequence_score(query: str, text: str) -> int | None:
+        if not query:
+            return 0
+        pos = -1
+        score = 0
+        for char in query:
+            next_pos = text.find(char, pos + 1)
+            if next_pos == -1:
+                return None
+            score += next_pos - pos
+            pos = next_pos
+        return score
+
     def _infer_category(self, name):
         if name in {"/model", "/theme", "/persona", "/mode", "/offline", "/plugins", "/permissions", "/status", "/doctor", "/onboard", "/benchmark", "/quit", "/exit"}:
             return "settings"
@@ -378,16 +549,41 @@ class CommandRegistry:
 
     def get_hits(self, query):
         q = query.lower().strip()
+        needle = q[1:] if q.startswith("/") else q
         hits = []
         seen = set()
         for cmd, data in self.commands.items():
             if cmd in seen:
                 continue
-            if q in cmd.lower() or q in data["desc"].lower():
-                hits.append((cmd, data["desc"], data.get("category", "chat")))
-                seen.add(cmd)
-        hits.sort(key=lambda item: (0 if item[0].startswith(q) else 1, item[2], item[0]))
-        return [(cmd, f"[{category}] {desc}") for cmd, desc, category in hits]
+            cmd_lower = cmd.lower()
+            alias_matches = " ".join(alias.lower() for alias in data.get("aliases", ()))
+            desc_lower = data["desc"].lower()
+            haystack = " ".join([cmd_lower, cmd_lower.lstrip("/"), desc_lower, alias_matches]).strip()
+            score: tuple[int, int, str] | None = None
+            if not needle:
+                score = (0, 0, cmd_lower)
+            elif cmd_lower.startswith(q) or cmd_lower.lstrip("/").startswith(needle):
+                score = (0, len(cmd_lower), cmd_lower)
+            elif needle in cmd_lower or needle in desc_lower or needle in alias_matches:
+                score = (1, len(cmd_lower), cmd_lower)
+            else:
+                fuzzy = self._subsequence_score(needle, haystack)
+                if fuzzy is not None:
+                    score = (2, fuzzy, cmd_lower)
+            if score is None:
+                continue
+            hits.append(
+                (
+                    score,
+                    cmd,
+                    data["desc"],
+                    data.get("category", "chat"),
+                    self.examples.get(cmd, ""),
+                )
+            )
+            seen.add(cmd)
+        hits.sort(key=lambda item: item[0])
+        return [(cmd, desc, category, example) for _score, cmd, desc, category, example in hits[:12]]
 
 registry = CommandRegistry()
 
@@ -432,6 +628,11 @@ class Renderer:
             strip_ansi=_strip_ansi,
             visible_len=_visible_len,
         )
+        self._pane_view = PaneView(
+            tui,
+            style,
+            strip_ansi=_strip_ansi,
+        )
         self._overlay_view = OverlayView(
             tui,
             style,
@@ -455,7 +656,8 @@ class Renderer:
 
     def _draw(self):
         rows, cols = _term_size()
-        pane_active = getattr(self.tui, "pane_active", False)
+        pane_state = getattr(self.tui, "pane", None)
+        pane_active = bool(getattr(self.tui, "pane_active", False) or getattr(pane_state, "active", False))
         chat_w = int(cols * 0.6) if pane_active else cols
         pane_w = cols - chat_w - 1 if pane_active else 0
         buf =[]
@@ -463,20 +665,19 @@ class Renderer:
 
         w(_hide_cur())
 
-        # Keep the top area quiet; the welcome panel owns the empty state.
-        w(_move(1, 1) + _bg(BG) + _erase_line())
-        w(_move(2, 1) + _bg(BG) + _erase_line())
-
         starter_lines = self._build_starter_lines(chat_w)
+        prompt_lines, prompt_cursor_row, prompt_cursor_col = self._prompt_bar(rows, cols, chat_w)
+        prompt_height = len(prompt_lines)
         starter_rows = len(starter_lines)
-        for i, line in enumerate(starter_lines, start=3):
+        for i, line in enumerate(starter_lines, start=1):
             if i > rows:
                 break
             w(_move(i, 1))
             w(_bg(BG) + _erase_line() + line + _bg(BG))
 
-        transcript_top = 3 + starter_rows
-        chat_rows = max(0, rows - transcript_top + 1)
+        transcript_top = 1 + starter_rows
+        prompt_top = max(transcript_top, rows - prompt_height + 1)
+        chat_rows = max(0, prompt_top - transcript_top)
 
         # Build and render chat area below the starter panel
         chat_lines = self._build_chat_lines(chat_w)
@@ -489,6 +690,8 @@ class Renderer:
         while len(chat_lines) < chat_rows:
             chat_lines.insert(0, "")
 
+        pane_lines = self._build_pane_lines(pane_w, chat_rows) if pane_active else []
+
         for i in range(chat_rows):
             w(_move(i + transcript_top, 1))
             cl = chat_lines[i] if i < len(chat_lines) else ""
@@ -497,21 +700,28 @@ class Renderer:
                 cl_stripped = _strip_ansi(cl)
                 pad = max(0, chat_w - len(cl_stripped))
                 cl_padded = cl + " " * pad
-
-                pane_lines = getattr(self.tui, "pane_lines_output", [])
-                p_idx = i - chat_rows + len(pane_lines)
-                pane_line = pane_lines[p_idx] if p_idx >= 0 and p_idx < len(pane_lines) else ""
-                pane_inner = max(0, pane_w - 3)
-                pane_line_padded = (_fg(FG_DIM) + pane_line[:pane_inner].ljust(pane_inner) + R) if pane_inner else ""
+                pane_line = pane_lines[i] if i < len(pane_lines) else ""
 
                 divider = _fg(BORDER) + "│" + R
-                pane_prefix = _fg(MUTED) + " " + R if pane_w > 2 else ""
-                w(_bg(BG) + cl_padded + divider + pane_prefix + pane_line_padded + _bg(BG))
+                w(_bg(BG) + cl_padded + divider + pane_line + _bg(BG))
             else:
                 w(_bg(BG) + _erase_line() + cl + _bg(BG))
 
-        # Clear any rows below the transcript region
-        for clear_row in range(transcript_top + chat_rows, rows + 1):
+        for idx, line in enumerate(prompt_lines, start=prompt_top):
+            if idx > rows:
+                break
+            w(_move(idx, 1))
+            if pane_active:
+                prompt_stripped = _strip_ansi(line)
+                pad = max(0, chat_w - len(prompt_stripped))
+                divider = _fg(BORDER) + "│" + R
+                blank_pane = " " * max(0, pane_w)
+                w(_bg(BG) + line + " " * pad + divider + blank_pane + _bg(BG))
+            else:
+                w(_bg(BG) + _erase_line() + line + _bg(BG))
+
+        # Clear any rows below the transcript region and above the prompt
+        for clear_row in range(transcript_top + chat_rows, prompt_top):
             w(_move(clear_row, 1) + _bg(BG) + _erase_line())
 
         if getattr(self.tui, "browser_visible", False): w(self._browser_popup(rows, cols))
@@ -520,11 +730,8 @@ class Renderer:
         if self.tui.picker_visible and self.tui.picker_items: w(self._picker_popup(rows, cols))
         if self.tui.notification: w(self._notification_bar(rows, cols))
 
-        inline_prefix = getattr(self.tui, "_inline_prompt_prefix", 4)
-        disp_w = max(10, chat_w - inline_prefix - 2)
-        scroll = max(0, self.tui.cur_pos - disp_w + 1)
-        cur_col = inline_prefix + self.tui.cur_pos - scroll
-        cursor_row = min(rows, 3 + getattr(self.tui, "_inline_prompt_row", 0))
+        cur_col = prompt_cursor_col
+        cursor_row = min(rows, prompt_cursor_row)
         w(_move(cursor_row, min(cur_col, cols - 1)))
         w(_show_cur())
 
@@ -533,13 +740,13 @@ class Renderer:
 
     def _build_starter_lines(self, width):
         intro = self._starter_view.build(width)
-        lines = intro.header_lines + [intro.prompt.line] + intro.trailing_lines
-        self.tui._inline_prompt_row = len(intro.header_lines)
-        self.tui._inline_prompt_prefix = intro.prompt.prefix
-        return lines
+        return intro.header_lines + intro.trailing_lines
 
     def _build_chat_lines(self, width):
         return self._transcript_view.build(width)
+
+    def _build_pane_lines(self, width, height):
+        return self._pane_view.build(width, height)
 
     def _inline(self, text):
         out = ""
@@ -612,36 +819,61 @@ class Renderer:
         return _move(1, 1) + _bg(BG) + _erase_line() + _move(2, 1) + _bg(BG) + _erase_line()
 
     def _prompt_bar(self, rows, cols, chat_w):
-        """Bottom row: single-line prompt."""
-        tui   = self.tui
-        t_now = time.time()
-        pending_label, pending_hint = tui.filesystem_prompt_hint()
-        if tui.busy:
-            frame = int(t_now * 10) % len(SPINNER_FRAMES)
-            sym  = _fg(CYAN) + SPINNER_FRAMES[frame] + R
-            hint = _fg(MUTED) + _italic() + "thinking" + PULSE_DOTS[int(t_now * 2) % len(PULSE_DOTS)] + R
-        elif pending_label:
-            sym  = _fg(CYAN) + _bold() + "?" + R
-            hint = _fg(MUTED) + pending_hint + R
-        else:
-            sym  = _fg(FG_HI) + _bold() + ">" + R
-            hint = ""
+        tui = self.tui
+        text = tui.buf
+        content_w = max(24, chat_w - 8)
 
-        txt    = tui.buf
-        disp_w = max(10, chat_w - 7)
-        scroll = max(0, tui.cur_pos - disp_w + 1)
-        shown  = txt[scroll:scroll + disp_w]
-        placeholder_text = (
-            pending_label + (f" · {pending_hint}" if pending_label and pending_hint else "")
-        ) or "ask lumi anything"
-        placeholder = _fg(MUTED) + placeholder_text + R if not shown and not tui.busy else ""
-        prompt = _move(rows - 1, 1) + _bg(BG) + _erase_line() + "  " + _fg(BORDER) + "─" * max(0, chat_w - 4) + R
-        prompt += _move(rows, 1) + _bg(BG) + _erase_line() + "  " + sym + " " + _fg(FG_HI) + shown + (placeholder if not shown else hint) + R
-        return prompt
+        def chunk_plain(value: str) -> list[str]:
+            logical = value.split("\n") or [""]
+            out: list[str] = []
+            for line in logical:
+                if line == "":
+                    out.append("")
+                    continue
+                start = 0
+                while start < len(line):
+                    out.append(line[start : start + content_w])
+                    start += content_w
+            return out or [""]
+
+        if not text:
+            visible = [""]
+            cursor_row_rel = 0
+            cursor_col = 0
+        else:
+            cursor_before = text[: tui.cur_pos]
+            all_lines = chunk_plain(text)
+            cursor_lines = chunk_plain(cursor_before)
+            cursor_line = max(0, len(cursor_lines) - 1)
+            cursor_col = len(cursor_lines[-1]) if cursor_lines else 0
+            visible_limit = 2 if (tui.multiline or "\n" in text or len(text) > content_w) else 1
+            start = max(0, cursor_line - visible_limit + 1)
+            visible = all_lines[start : start + visible_limit] or [""]
+            cursor_row_rel = cursor_line - start
+
+        left = " " * 2
+        border = _fg(BORDER)
+        lines = [left + border + "╭" + "─" * content_w + "╮" + R]
+        if text:
+            for segment in visible:
+                lines.append(left + border + "│" + R + " " + _fg(FG_HI) + segment.ljust(content_w - 2) + R + " " + border + "│" + R)
+        else:
+            placeholder = "send a message"
+            lines.append(left + border + "│" + R + " " + _fg(MUTED) + placeholder.ljust(content_w - 2) + R + " " + border + "│" + R)
+        lines.append(left + border + "╰" + "─" * content_w + "╯" + R)
+
+        prompt_top = rows - len(lines) + 1
+        cursor_row = prompt_top + 1 + (cursor_row_rel if text else 0)
+        cursor_col_abs = len(left) + 3 + cursor_col
+        return lines, cursor_row, cursor_col_abs
 
     # kept for any external callers; delegates to the two new methods
     def _input_area(self, rows, cols, chat_w):
-        return self._top_bar(rows, cols, chat_w) + self._prompt_bar(rows, cols, chat_w)
+        prompt_lines, _cursor_row, _cursor_col = self._prompt_bar(rows, cols, chat_w)
+        return self._top_bar(rows, cols, chat_w) + "".join(
+            _move(rows - len(prompt_lines) + idx + 1, 1) + line
+            for idx, line in enumerate(prompt_lines)
+        )
 
     def _browser_popup(self, rows, cols):
         return self._overlay_view.browser_popup(rows, cols)
@@ -692,27 +924,41 @@ class LumiTUI:
         self.vessel_mode   = False   # True when acting as a pure AI conduit
         self.active_vessel = None    # "gemini" | "qwen" | "opencode" | None
         self._pending_handoff = None # set by /mode; consumed by main loop
-        self._pending_file_plan = None
-        self._last_filesystem_undo = None
 
         self._loaded_plugins =[]; self.renderer = Renderer(self)
         self.original_termios = None
+        initialize_ui_state(
+            self,
+            history=self.history,
+            notes_store=LittleNotesStore(),
+        )
+        self.browser_cwd = os.getcwd()
+        self.workspace_profile = inspect_workspace(Path.cwd())
+
+    def set_pane(
+        self,
+        *,
+        title: str,
+        lines: list[str] | None = None,
+        subtitle: str = "",
+        footer: str = "",
+        close_on_escape: bool = False,
+    ) -> None:
+        self.pane = PaneState(
+            active=True,
+            title=title,
+            subtitle=subtitle,
+            lines=list(lines or []),
+            footer=footer,
+            close_on_escape=close_on_escape,
+        )
+        self.pane_active = True
+        self.pane_lines_output = self.pane.content()
+
+    def clear_pane(self) -> None:
+        self.pane = PaneState()
         self.pane_active = False
         self.pane_lines_output = []
-        self.show_starter_panel = True
-        self.little_notes = LittleNotesStore()
-        self.recent_commands: list[str] = self.little_notes.recent_commands
-        self.recent_actions: list[str] = self.little_notes.recent_actions
-        self.path_hits: list[str] = []
-        self.path_sel = 0
-        self.path_visible = False
-        self._path_span = (0, 0)
-
-        # ── Browser Mode ──────────────────────────────────────────────────────
-        self.browser_visible = False
-        self.browser_cwd = os.getcwd()
-        self.browser_items = []
-        self.browser_sel = 0
 
     def _make_system_prompt(self, coding_mode=False, file_mode=False):
         return build_system_prompt({**self.persona, **self.persona_override}, build_memory_block(), coding_mode, file_mode)
@@ -1091,86 +1337,26 @@ class LumiTUI:
 
     # ── Master LLM Task Query Send Operation Routing  ───────────────────────
     def _run_message(self, user_input):
-        self.set_busy(True); self.scroll_offset = 0
-
-        _is_code = is_complex_coding_task(user_input) or is_coding_task(user_input)
-        _is_files = is_file_generation_task(user_input)
-        sp = self._make_system_prompt(coding_mode=_is_code, file_mode=_is_files)
-
-        if needs_plan_first(user_input) and _is_files:
-            sp += "\n\n[INSTRUCTION: Output a brief one-paragraph plan. Then write each file completely.]"
-        if is_filesystem_request(user_input):
-            self._run_file_agent(user_input, sp)
-            return
-
-        emotion = detect_emotion(user_input); augmented = user_input
-        if emotion: hint = emotion_hint(emotion); augmented = (hint + augmented) if hint else augmented
-
-        if self.response_mode == "short": augmented += "\n\n[Reply concisely — 2-3 sentences max.]"
-        elif self.response_mode == "detailed": augmented += "\n\n[Reply in detail — be thorough and comprehensive.]"
-        elif self.response_mode == "bullets": augmented += "\n\n[Reply using bullet points only.]"
-        self.response_mode = None
-
-        if should_search(user_input):
-            self._sys("◆  searching the web…"); self.redraw()
-            try:
-                results_text = search(user_input, fetch_top=True)
-                if results_text and not results_text.startswith("[No"):
-                    augmented = f"{augmented}\n\n[Web search results:]\n{results_text}\n[Use the above to inform your answer. Cite sources.]"
-                    self._sys("◆  found web results")
-            except Exception:
-                log.exception("Web search failed")
-
-        cmd = user_input.split()[0] if user_input.startswith("/") else None
-        if cmd:
-            handled, plug_result = plugin_dispatch(cmd, user_input.split(None, 1)[1] if len(user_input.split(None, 1)) > 1 else "", client=self.client, model=self.current_model, memory=self.memory, system_prompt=sp, name=self.name)
-            if handled:
-                if plug_result: self._sys(plug_result)
-                self.set_busy(False); return
-
-        if len(self.memory.get()) > 15 and self.turns % 10 == 0 and self.turns > 0:
-            def _compress():
-                try:
-                    snapshot = self.memory.get()[:-4]
-                    if not snapshot: return
-                    m = self.current_model if self.current_model != "council" else get_models(get_provider())[0]
-                    summ = self._silent_call(
-                        "Summarize this conversation briefly:\n\n" +
-                        "\n".join(f"{x['role']}: {x['content'][:200]}" for x in snapshot), m, 200
-                    )
-                    if summ:
-                        with self._state_lock:
-                            self.memory.replace_with_summary(summ, tail_messages=4)
-                            self._cached_tok_len = -1  # invalidate token cache
-                        log.debug("Memory compressed to summary + last 4 messages")
-                except Exception:
-                    log.exception("Memory compression failed")
-            self._task_executor.submit(_compress)
-
-        self.last_msg = user_input
-        self.store.add(Msg("user", user_input)); self.memory.add("user", augmented)
-        messages = build_messages(sp, self.memory.get())
-        self.redraw()
-
-        raw_reply = self._tui_stream(messages, self.current_model)
-        self.memory.replace_last("user", user_input)
-        self.memory.add("assistant", raw_reply)
-
-        self.prev_reply = self.last_reply; self.last_reply = raw_reply
-        self.turns += 1; self.set_busy(False)
-
-        if self.turns % 5 == 0:
-            self._task_executor.submit(lambda: session_save(self.memory.get()))
-        if self.turns % 8 == 0:
-            def _bg_remember():
-                try:
-                    if auto_extract_facts(self.client, self.current_model, self.memory.get()):
-                        with self._state_lock:
-                            self.system_prompt = self._make_system_prompt()
-                        log.debug("Auto-remember: system prompt updated")
-                except Exception:
-                    log.exception("Auto-remember failed")
-            self._task_executor.submit(_bg_remember)
+        controller_run_message(
+            self,
+            user_input,
+            is_complex_coding_task_fn=is_complex_coding_task,
+            is_coding_task_fn=is_coding_task,
+            is_file_generation_task_fn=is_file_generation_task,
+            needs_plan_first_fn=needs_plan_first,
+            is_filesystem_request_fn=is_filesystem_request,
+            detect_emotion_fn=detect_emotion,
+            emotion_hint_fn=emotion_hint,
+            should_search_fn=should_search,
+            search_fn=search,
+            plugin_dispatch_fn=plugin_dispatch,
+            get_provider_fn=get_provider,
+            get_models_fn=get_models,
+            session_save_fn=session_save,
+            auto_extract_facts_fn=auto_extract_facts,
+            build_messages_fn=build_messages,
+            log=log,
+        )
 
     def _run_file_agent(self, user_input, sp):
         controller_run_file_agent(
@@ -1225,6 +1411,16 @@ class LumiTUI:
             get_client_fn=get_client,
             get_models_fn=get_models,
             get_provider_fn=get_provider,
+            provider_names=PROV_NAME,
+            log=log,
+        )
+
+    def _refresh_picker(self):
+        controller_refresh_picker(
+            self,
+            get_available_providers_fn=get_available_providers,
+            get_provider_fn=get_provider,
+            get_models_fn=get_models,
             provider_names=PROV_NAME,
             log=log,
         )
@@ -1708,8 +1904,54 @@ def cmd_run(tui: LumiTUI, arg: str):
 
 @registry.register("/image", "Vision: describe or query image")
 def cmd_image(tui: LumiTUI, arg: str):
-    if not arg.strip(): tui._err("Usage: /image <path> [question]"); return
-    tui._sys("Vision requires multimodal model — use Gemini provider")
+    parsed = _parse_image_command(arg)
+    if not parsed:
+        tui._err("Usage: /image <path> [question]"); return
+    path, question = parsed
+    if not path.is_file():
+        tui._err(f"Not found: {path}"); return
+    if encode_image_base64 is None:
+        tui._err("Image support is unavailable right now."); return
+    mime = _image_mime(path)
+    if not mime:
+        tui._err(f"Not an image: {path}"); return
+
+    def _go():
+        tui.set_busy(True)
+        try:
+            current_provider = get_provider()
+        except Exception:
+            current_provider = ""
+        try:
+            provider, model, auto_routed = _resolve_vision_target(current_provider, tui.current_model)
+            client = make_provider_client(provider)
+            prompt = question or "Describe this image clearly and concisely."
+            if auto_routed:
+                tui._sys(f"Using Gemini vision via {model}.")
+            data_url = f"data:{mime};base64,{encode_image_base64(str(path))}"
+            messages = [
+                {
+                    "role": "system",
+                    "content": "You are Lumi. Analyze the provided image and answer the user's question clearly and concisely.",
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": data_url}},
+                    ],
+                },
+            ]
+            reply = _stream_direct_completion(tui, client=client, messages=messages, model=model)
+            if not reply.startswith("⚠"):
+                tui.last_reply = reply
+                tui.turns += 1
+        except Exception as ex:
+            tui._err(str(ex))
+        finally:
+            tui.set_busy(False)
+
+    threading.Thread(target=_go, daemon=True).start()
 
 @registry.register("/data", "Analyze CSV/JSON: /data stats.csv")
 def cmd_data(tui: LumiTUI, arg: str):
@@ -2231,22 +2473,33 @@ def cmd_godmode(tui: LumiTUI, arg: str):
 @registry.register("/pane", "Launch a command in a side pane")
 def cmd_pane(tui: LumiTUI, arg: str):
     if not arg or arg.strip() == "close":
-        tui.pane_active = False
+        tui.clear_pane()
         tui.redraw()
         return
 
-    tui.pane_active = True
-    tui.pane_lines_output = []
+    tui.set_pane(
+        title="live command",
+        subtitle=arg.strip(),
+        lines=[],
+        footer="Esc close  ·  /pane close",
+        close_on_escape=True,
+    )
 
     def _read_pane():
         proc = subprocess.Popen(arg, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if tui.pane.lines is None:
+            tui.pane.lines = []
         for line in iter(proc.stdout.readline, ""):
             if not getattr(tui, "_running", True) or not tui.pane_active:
                 proc.terminate()
                 break
-            tui.pane_lines_output.append(line.rstrip('\n')[:120]) # Limit width
-            if len(tui.pane_lines_output) > 100:
-                tui.pane_lines_output = tui.pane_lines_output[-100:]
+            tui.pane.lines.append(line.rstrip("\n")[:160])
+            tui.pane.lines = tui.pane.lines[-140:]
+            tui.pane_lines_output = tui.pane.content()
+            tui.redraw()
+        exit_code = proc.wait()
+        if tui.pane_active:
+            tui.pane.footer = f"command finished  ·  exit {exit_code}  ·  /pane close"
             tui.redraw()
 
     threading.Thread(target=_read_pane, daemon=True).start()
@@ -2354,21 +2607,31 @@ def cmd_rag(tui: LumiTUI, arg: str):
 @registry.register("/voice", "Record 5s of voice and transcribe")
 @bg_task
 def cmd_voice(tui: LumiTUI, arg: str):
+    audio_file = None
     tui.set_busy(True)
-    tui._sys("◆  Listening for 5 seconds... Speak now!")
     try:
-        from src.tools.voice import record_audio, transcribe_audio_hf
-        audio_file = record_audio(duration=5)
-        tui._sys("◆  Transcribing...")
-        text = transcribe_audio_hf(audio_file)
+        from src.utils.voice import record_audio
 
-        # Inject the transcribed text directly into the user's input buffer
-        tui.buf = text
-        tui.cur_pos = len(text)
-        tui._sys(f"Transcribed: '{text}' (Press Enter to send)")
+        seconds = _parse_voice_duration(arg)
+        tui._sys(f"◆  Listening for {seconds} second{'s' if seconds != 1 else ''}... Speak now!")
+        audio_file = record_audio(seconds=seconds)
+        if not audio_file:
+            raise RuntimeError("No recorder found. Install arecord, sox, or ffmpeg.")
+        tui._sys("◆  Transcribing...")
+        text, backend = _transcribe_voice_audio(audio_file)
+        if not text:
+            raise RuntimeError("No speech detected. Try again a little closer to the mic.")
+        _inject_text_at_cursor(tui, text)
+        tui._sys(f"Transcribed via {backend}: '{text}'")
     except Exception as e:
         tui._err(f"Voice failed: {e}")
-    tui.set_busy(False)
+    finally:
+        if audio_file:
+            try:
+                Path(audio_file).unlink(missing_ok=True)
+            except OSError:
+                pass
+        tui.set_busy(False)
 
 # ── Entry System Level ─────────────────────────────────────────────────────────────
 def launch(): LumiTUI().run()

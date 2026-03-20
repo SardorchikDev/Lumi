@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.tui.app import LumiTUI, _strip_ansi
+from src.tui.app import LumiTUI, _strip_ansi, registry
 from src.tui.notes import LittleNotesStore
 from src.tui.state import Msg
 
@@ -19,7 +19,7 @@ def _make_tui(tmp_path, monkeypatch) -> LumiTUI:
     return tui
 
 
-def test_starter_panel_renders_persisted_little_notes(tmp_path, monkeypatch):
+def test_starter_panel_renders_session_boxes(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.little_notes.record_command("/agent")
     tui.little_notes.record_command("/help")
@@ -28,11 +28,10 @@ def test_starter_panel_renders_persisted_little_notes(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
 
-    assert "welcome to lumi" in joined
-    assert "little notes" in joined
-    assert "/help" in joined
-    assert "/agent" in joined
-    assert "say something nice" in joined
+    assert "Lumi TUI" in joined
+    assert "local session" in joined
+    assert "workdir:" in joined
+    assert "approval:" in joined
     tui._task_executor.shutdown(wait=False)
 
 
@@ -42,11 +41,13 @@ def test_chat_layout_keeps_prompt_and_transcript_separate(tmp_path, monkeypatch)
     tui.store.add(Msg("assistant", "hello back"))
 
     starter = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
+    prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(36, 110, 110)
+    prompt = [_strip_ansi(line) for line in prompt_lines]
     chat = [_strip_ansi(line) for line in tui.renderer._build_chat_lines(110)]
 
-    assert any("say something nice" in line for line in starter)
-    assert any("welcome to lumi" in line for line in starter)
-    assert any("| you" in line for line in chat)
+    assert any("local session" in line for line in starter)
+    assert any("send a message" in line for line in prompt)
+    assert any("you" in line for line in chat)
     assert any("hello back" in line for line in chat)
     tui._task_executor.shutdown(wait=False)
 
@@ -56,9 +57,11 @@ def test_ctrl_g_toggles_to_prompt_only_layout(tmp_path, monkeypatch):
 
     tui._handle_key("CTRL_G")
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(90)]
+    prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
+    prompt = [_strip_ansi(line) for line in prompt_lines]
 
-    assert not any("welcome to lumi" in line for line in lines)
-    assert any("say something nice" in line for line in lines)
+    assert not any("local session" in line for line in lines)
+    assert any("send a message" in line for line in prompt)
     tui._task_executor.shutdown(wait=False)
 
 
@@ -74,13 +77,13 @@ def test_recent_commands_clear_between_tui_sessions(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in second.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
     assert "/clear" not in joined
-    assert "no commands this session" in joined
+    assert "local session" in joined
 
     first._task_executor.shutdown(wait=False)
     second._task_executor.shutdown(wait=False)
 
 
-def test_starter_panel_shows_recent_action(tmp_path, monkeypatch):
+def test_starter_panel_shows_session_summary(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.little_notes.record_action("Created 2 file(s) and 1 folder(s).")
     tui.recent_actions = tui.little_notes.recent_actions[:4]
@@ -88,8 +91,8 @@ def test_starter_panel_shows_recent_action(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
 
-    assert "recent action" in joined
-    assert "Created 2 file(s) and 1 folder(s)." in joined
+    assert "local session" in joined
+    assert "approval: suggest" in joined
     tui._task_executor.shutdown(wait=False)
 
 
@@ -97,11 +100,32 @@ def test_pending_plan_changes_prompt_hint(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui._pending_file_plan = {"plan": {"operation": "delete"}, "base_dir": str(tmp_path), "inspection": {}}
 
+    lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(36, 110, 110)
+    lines = [_strip_ansi(line) for line in lines]
+    joined = "\n".join(lines)
+
+    assert "send a message" in joined
+    assert "╭" in joined
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_pending_plan_renders_inline_review_panel(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui._pending_file_plan = {
+        "plan": {"operation": "delete", "targets": [{"path": "docs", "kind": "dir"}]},
+        "base_dir": str(tmp_path),
+        "inspection": {
+            "summary_lines": ["1 folder will be removed", "2 files are inside"],
+            "preview_lines": ["- docs/", "- docs/README.md"],
+        },
+    }
+
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
 
-    assert "confirm removal" in joined
-    assert "y apply" in joined
+    assert "review removal" in joined
+    assert "1 folder will be removed" in joined
+    assert "docs/README.md" in joined
     tui._task_executor.shutdown(wait=False)
 
 
@@ -142,6 +166,18 @@ def test_escape_closes_transient_ui_and_clears_prompt(tmp_path, monkeypatch):
     assert tui.picker_visible is False
     assert tui.buf == ""
     assert tui.cur_pos == 0
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_escape_closes_closeable_side_pane(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui.set_pane(title="live command", subtitle="pytest -q", lines=["running"], close_on_escape=True)
+
+    tui._handle_key("ESC")
+
+    assert tui.pane_active is False
+    assert tui.pane.active is False
     tui._task_executor.shutdown(wait=False)
 
 
@@ -218,6 +254,121 @@ def test_path_suggestions_complete_with_tab(tmp_path, monkeypatch):
     tui._task_executor.shutdown(wait=False)
 
 
+def test_multiline_enter_inserts_newline_and_prompt_shows_badges(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.multiline = True
+    tui.buf = "hello"
+    tui.cur_pos = len(tui.buf)
+
+    tui._handle_key("ENTER")
+    tui.buf += "world"
+    tui.cur_pos = len(tui.buf)
+
+    lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(36, 110, 110)
+    lines = [_strip_ansi(line) for line in lines]
+    joined = "\n".join(lines)
+
+    assert tui.buf == "hello\nworld"
+    assert "╭" in joined
+    assert "world" in joined
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_registry_fuzzy_hits_match_non_contiguous_queries():
+    hits = registry.get_hits("/prj")
+
+    assert any(hit[0] == "/project" for hit in hits)
+
+
+def test_side_pane_renders_title_subtitle_and_footer(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.set_pane(
+        title="live command",
+        subtitle="pytest -q",
+        lines=["collected 1 item", "tests/test_tui.py ."],
+        footer="Esc close",
+        close_on_escape=True,
+    )
+
+    lines = [_strip_ansi(line) for line in tui.renderer._build_pane_lines(40, 12)]
+    joined = "\n".join(lines)
+
+    assert "live command" in joined
+    assert "pytest -q" in joined
+    assert "collected 1 item" in joined
+    assert "Esc close" in joined
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_model_picker_opens_in_provider_stage(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "x")
+    monkeypatch.setenv("GEMINI_API_KEY", "y")
+    monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["huggingface", "gemini"])
+    monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
+    monkeypatch.setattr("src.tui.app.get_models", lambda provider=None: ["meta-llama/Llama-3.3-70B-Instruct"])
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    tui._open_picker()
+
+    assert tui.picker_visible is True
+    assert tui.picker_stage == "providers"
+    assert any(item.get("kind") == "provider" for item in tui.picker_items)
+    assert any("Provider:" in line for line in tui.picker_preview_lines)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_model_picker_provider_confirm_enters_model_stage_and_filters(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "x")
+    monkeypatch.setenv("GEMINI_API_KEY", "y")
+    monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["huggingface", "gemini"])
+    monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
+
+    def fake_models(provider=None):
+        if provider == "gemini":
+            return ["gemini-2.5-flash-lite", "gemini-2.5-pro"]
+        return ["meta-llama/Llama-3.3-70B-Instruct"]
+
+    monkeypatch.setattr("src.tui.app.get_models", fake_models)
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._open_picker()
+    tui.picker_sel = next(index for index, item in enumerate(tui.picker_items) if item.get("value") == "gemini")
+    tui._confirm_picker()
+
+    assert tui.picker_stage == "models"
+    assert tui.picker_provider_key == "gemini"
+    assert any(item.get("kind") == "model" for item in tui.picker_items)
+
+    tui._handle_key("l")
+    tui._handle_key("i")
+    tui._handle_key("t")
+
+    model_values = [item.get("value") for item in tui.picker_items if item.get("kind") == "model"]
+    assert model_values == ["gemini-2.5-flash-lite"]
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_model_picker_can_toggle_favorite_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "x")
+    monkeypatch.setenv("GEMINI_API_KEY", "y")
+    monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["huggingface", "gemini"])
+    monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
+    monkeypatch.setattr("src.tui.app.get_models", lambda provider=None: ["gemini-2.5-flash-lite"] if provider == "gemini" else ["meta-llama/Llama-3.3-70B-Instruct"])
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._open_picker()
+    tui.picker_sel = next(index for index, item in enumerate(tui.picker_items) if item.get("value") == "gemini")
+    tui._confirm_picker()
+    tui.picker_sel = next(index for index, item in enumerate(tui.picker_items) if item.get("kind") == "model")
+
+    tui._handle_key("CTRL_F")
+
+    assert "gemini-2.5-flash-lite" in tui.little_notes.favorite_models_for_provider("gemini")
+    tui._task_executor.shutdown(wait=False)
+
+
 def test_undo_restores_last_filesystem_action(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.redraw = lambda: None
@@ -272,3 +423,133 @@ def test_onboard_command_renders_guidance(tmp_path, monkeypatch):
     assert any(msg.role == "system" and "Lumi onboarding" in msg.text for msg in messages)
     assert any(msg.role == "system" and "Starter prompts" in msg.text for msg in messages)
     tui._task_executor.shutdown(wait=False)
+
+
+def test_image_command_auto_routes_to_gemini_and_streams_reply(tmp_path, monkeypatch):
+    class ImmediateThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            if self._target is not None:
+                self._target(*self._args, **self._kwargs)
+
+    class FakeChunk:
+        def __init__(self, text: str):
+            self.choices = [type("Choice", (), {"delta": type("Delta", (), {"content": text})()})()]
+
+    class FakeCompletions:
+        def __init__(self):
+            self.calls: list[dict[str, object]] = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return [FakeChunk("It looks"), FakeChunk(" like a test.")]
+
+    class FakeClient:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    image_path = tmp_path / "sample.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n\x00")
+    fake_client = FakeClient()
+
+    monkeypatch.setattr("src.tui.app.threading.Thread", ImmediateThread)
+    monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
+    monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["huggingface", "gemini"])
+    monkeypatch.setattr(
+        "src.tui.app.get_models",
+        lambda provider=None: ["gemini-2.5-flash"] if provider == "gemini" else ["meta-llama/Llama-3.3-70B-Instruct"],
+    )
+    monkeypatch.setattr("src.tui.app.make_provider_client", lambda provider: fake_client)
+
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._execute_command("/image", f"{image_path} what is in this image?")
+
+    assert tui.last_reply == "It looks like a test."
+    messages = tui.store.snapshot()
+    assert any(msg.role == "system" and "Using Gemini vision via gemini-2.5-flash." in msg.text for msg in messages)
+    payload = fake_client.chat.completions.calls[0]
+    content = payload["messages"][1]["content"]
+    assert content[0]["text"] == "what is in this image?"
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_image_command_reports_missing_file(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    tui._execute_command("/image", "missing.png what is this")
+
+    messages = tui.store.snapshot()
+    assert any(msg.role == "error" and "Not found:" in msg.text for msg in messages)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_voice_command_records_and_injects_transcript(tmp_path, monkeypatch):
+    class ImmediateExecutor:
+        def submit(self, fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+    audio_path = tmp_path / "voice.wav"
+    audio_path.write_bytes(b"RIFFtest")
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+    monkeypatch.setattr("src.utils.voice.record_audio", lambda seconds=5: str(audio_path))
+    monkeypatch.setattr("src.utils.voice.transcribe_groq", lambda path: "hello from voice")
+
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui._task_executor.shutdown(wait=False)
+    tui._task_executor = ImmediateExecutor()
+
+    tui._execute_command("/voice", "7")
+
+    assert tui.buf == "hello from voice"
+    assert tui.cur_pos == len("hello from voice")
+    assert not audio_path.exists()
+    messages = tui.store.snapshot()
+    assert any(msg.role == "system" and "Listening for 7 seconds" in msg.text for msg in messages)
+    assert any(msg.role == "system" and "Transcribed via Groq Whisper" in msg.text for msg in messages)
+
+
+def test_voice_command_rejects_invalid_duration(tmp_path, monkeypatch):
+    class ImmediateExecutor:
+        def submit(self, fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui._task_executor.shutdown(wait=False)
+    tui._task_executor = ImmediateExecutor()
+
+    tui._execute_command("/voice", "abc")
+
+    messages = tui.store.snapshot()
+    assert any(msg.role == "error" and "Usage: /voice [seconds]" in msg.text for msg in messages)
+
+
+def test_voice_command_reports_missing_transcription_backend(tmp_path, monkeypatch):
+    class ImmediateExecutor:
+        def submit(self, fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+    audio_path = tmp_path / "voice.wav"
+    audio_path.write_bytes(b"RIFFtest")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr("src.utils.voice.record_audio", lambda seconds=5: str(audio_path))
+
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui._task_executor.shutdown(wait=False)
+    tui._task_executor = ImmediateExecutor()
+
+    tui._execute_command("/voice", "")
+
+    messages = tui.store.snapshot()
+    assert any(msg.role == "error" and "Voice transcription needs GROQ_API_KEY or HF_TOKEN" in msg.text for msg in messages)
+    assert not audio_path.exists()

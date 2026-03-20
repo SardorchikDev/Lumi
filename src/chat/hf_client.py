@@ -19,27 +19,24 @@ from src.chat.client_factory import make_vertex_client as _factory_make_vertex_c
 from src.chat.model_catalogs import (
     AIRFORCE_MODELS,
     BYTEZ_MODELS,
-    CLOUDFLARE_MODELS,
-    COHERE_MODELS,
     GITHUB_MODELS,
     GROQ_FALLBACK,
     HF_FALLBACKS,
-    HF_MODELS,
-    MISTRAL_MODELS,
     OPENROUTER_MODELS,
     POLLINATIONS_MODELS,
     VERCEL_MODELS,
-    VERTEX_MODELS,
 )
 from src.chat.model_fetchers import fetch_airforce_models as _fetch_airforce_models
 from src.chat.model_fetchers import fetch_bytez_models as _fetch_bytez_models
-from src.chat.model_fetchers import fetch_gemini_models as _fetch_gemini_models
 from src.chat.model_fetchers import fetch_github_models as _fetch_github_models
 from src.chat.model_fetchers import fetch_groq_models as _fetch_groq_models
 from src.chat.model_fetchers import fetch_openrouter_models as _fetch_openrouter_models
 from src.chat.model_fetchers import fetch_pollinations_models as _fetch_pollinations_models
 from src.chat.model_fetchers import fetch_vercel_models as _fetch_vercel_models
 from src.chat.model_registry import ModelRegistry, ProviderCatalog
+from src.chat.provider_catalogs import (
+    provider_catalog as resolve_provider_catalog,
+)
 from src.chat.provider_session import resolve_active_client, set_active_provider
 from src.chat.providers import (
     get_configured_providers,
@@ -49,7 +46,7 @@ from src.chat.providers import (
 )
 from src.chat.streaming import SKIP_ERRORS as _STREAM_SKIP_ERRORS
 from src.chat.streaming import stream_once, stream_with_fallback
-from src.config import DATA_DIR
+from src.config import MODEL_CACHE_DIR
 
 OLLAMA_BASE = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 
@@ -76,18 +73,8 @@ _active_client_provider: str | None = None
 _active_client_expires_at: float | None = None
 _models_cache: dict = {}       # provider → list of models
 _models_cache_fetched_at: dict[str, float] = {}
-MODEL_CACHE_DIR = DATA_DIR / "model_catalogs"
 MODEL_CACHE_TTL_SECONDS = 900
 _MODEL_REGISTRY = ModelRegistry(cache_dir=MODEL_CACHE_DIR, ttl_seconds=MODEL_CACHE_TTL_SECONDS)
-_STATIC_PROVIDER_CATALOGS: dict[str, ProviderCatalog] = {
-    "mistral": ProviderCatalog(tuple(MISTRAL_MODELS)),
-    "cohere": ProviderCatalog(tuple(COHERE_MODELS)),
-    "cloudflare": ProviderCatalog(tuple(CLOUDFLARE_MODELS)),
-    "vertex": ProviderCatalog(tuple(VERTEX_MODELS)),
-    "huggingface": ProviderCatalog(tuple(HF_MODELS)),
-}
-
-
 def _sync_registry_state() -> None:
     _MODEL_REGISTRY.cache_dir = MODEL_CACHE_DIR
     _MODEL_REGISTRY.ttl_seconds = MODEL_CACHE_TTL_SECONDS
@@ -102,17 +89,28 @@ def _sync_registry_globals() -> None:
 
 
 def _provider_catalog(provider: str) -> ProviderCatalog | None:
-    dynamic_catalogs: dict[str, ProviderCatalog] = {
-        "gemini": ProviderCatalog(("gemini-3.1-flash-lite-preview", "gemini-2.0-flash"), _fetch_gemini_models),
-        "groq": ProviderCatalog(tuple(GROQ_FALLBACK), _fetch_groq_models),
-        "openrouter": ProviderCatalog(tuple(OPENROUTER_MODELS), _fetch_openrouter_models),
-        "github": ProviderCatalog(tuple(GITHUB_MODELS), _fetch_github_models),
-        "bytez": ProviderCatalog(tuple(BYTEZ_MODELS), _fetch_bytez_models),
-        "airforce": ProviderCatalog(tuple(AIRFORCE_MODELS), _fetch_airforce_models),
-        "vercel": ProviderCatalog(tuple(VERCEL_MODELS), _fetch_vercel_models),
-        "pollinations": ProviderCatalog(tuple(POLLINATIONS_MODELS), _fetch_pollinations_models),
+    catalog = resolve_provider_catalog(provider)
+    local_fetchers = {
+        "groq": _fetch_groq_models,
+        "openrouter": _fetch_openrouter_models,
+        "github": _fetch_github_models,
+        "bytez": _fetch_bytez_models,
+        "airforce": _fetch_airforce_models,
+        "vercel": _fetch_vercel_models,
+        "pollinations": _fetch_pollinations_models,
     }
-    return dynamic_catalogs.get(provider) or _STATIC_PROVIDER_CATALOGS.get(provider)
+    local_curated = {
+        "groq": tuple(GROQ_FALLBACK),
+        "openrouter": tuple(OPENROUTER_MODELS),
+        "github": tuple(GITHUB_MODELS),
+        "bytez": tuple(BYTEZ_MODELS),
+        "airforce": tuple(AIRFORCE_MODELS),
+        "vercel": tuple(VERCEL_MODELS),
+        "pollinations": tuple(POLLINATIONS_MODELS),
+    }
+    if provider in local_fetchers:
+        return ProviderCatalog(local_curated[provider], local_fetchers[provider])
+    return catalog
 
 
 def _validate_provider(provider: str) -> None:
@@ -234,10 +232,10 @@ def get_models(provider: str = None) -> list:
         catalog = _provider_catalog(p)
         if catalog is None:
             raise ValueError(f"Unsupported provider: {p}")
-        if catalog.fetcher is not None:
-            models = _discover_models(p, list(catalog.curated), catalog.fetcher)
-        else:
+        if catalog.fetcher is None:
             models = list(catalog.curated)
+        else:
+            models = _discover_models(p, list(catalog.curated), catalog.fetcher)
     _models_cache[p] = models
     _models_cache_fetched_at[p] = time.time()
     _sync_registry_globals()

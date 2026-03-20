@@ -21,14 +21,16 @@ from __future__ import annotations
 
 import ast
 import hashlib
-import importlib.util
 import json
 import pathlib
-from collections.abc import Callable
+import subprocess
+import sys
 from dataclasses import dataclass
 
-PLUGIN_DIR = pathlib.Path.home() / "Lumi" / "plugins"
-PLUGIN_TRUST_FILE = pathlib.Path.home() / ".lumi" / "plugin_trust.json"
+from src.config import PLUGINS_DIR, STATE_ROOT
+
+PLUGIN_DIR = PLUGINS_DIR
+PLUGIN_TRUST_FILE = STATE_ROOT / "plugins" / "trust.json"
 ALLOWED_PERMISSIONS = frozenset(
     {"read_workspace", "write_workspace", "network", "clipboard", "shell"}
 )
@@ -40,7 +42,7 @@ PERMISSION_DESCRIPTIONS = {
     "shell": "Run shell commands on the local machine.",
 }
 
-_registry: dict[str, tuple[Callable, str]] = {}
+_registry: dict[str, tuple[PluginMeta, str]] = {}
 _plugin_meta: dict[str, PluginMeta] = {}
 _plugin_inventory: dict[str, PluginMeta] = {}
 
@@ -338,16 +340,6 @@ def revoke_plugin(identifier: str) -> tuple[bool, str]:
     return True, f"Revoked plugin approval: {meta.name}"
 
 
-def _import_plugin_module(path: pathlib.Path, fingerprint: str):
-    module_name = f"lumi_plugin_{path.stem}_{fingerprint[:12]}"
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise ValueError("could not create import spec")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def load_plugins() -> list[str]:
     """Load all trusted plugins from ``~/Lumi/plugins``."""
     loaded: list[str] = []
@@ -359,49 +351,18 @@ def load_plugins() -> list[str]:
         meta = _plugin_inventory[key]
         if not meta.trusted or meta.issues or meta.warnings:
             continue
-        path = pathlib.Path(meta.path)
-        try:
-            module = _import_plugin_module(path, meta.fingerprint)
-            commands = getattr(module, "COMMANDS", {})
-            descs = getattr(module, "DESCRIPTION", {})
-            if not isinstance(commands, dict):
-                raise ValueError("COMMANDS must be a dict")
-            if descs is None:
-                descs = {}
-            if not isinstance(descs, dict):
-                raise ValueError("DESCRIPTION must be a dict when provided")
-
-            normalized_commands: dict[str, Callable] = {}
-            for cmd, fn in commands.items():
-                if not callable(fn):
-                    raise ValueError(f"Handler for {cmd!r} is not callable")
-                normalized = cmd if str(cmd).startswith("/") else "/" + str(cmd)
-                normalized_commands[normalized] = fn
-
-            loaded_meta = PluginMeta(
-                **{
-                    **meta.__dict__,
-                    "commands": tuple(sorted(normalized_commands)),
-                    "loaded": True,
-                    "status": "loaded",
-                }
-            )
-            for cmd, fn in normalized_commands.items():
-                desc = descs.get(cmd, descs.get(cmd.lstrip("/"), loaded_meta.description))
-                _registry[cmd] = (fn, desc)
-            _plugin_meta[key] = loaded_meta
-            _plugin_inventory[key] = loaded_meta
-            loaded.append(loaded_meta.name)
-        except Exception as exc:
-            blocked_meta = PluginMeta(
-                **{
-                    **meta.__dict__,
-                    "loaded": False,
-                    "status": "blocked",
-                    "issues": meta.issues + (f"import failed: {exc}",),
-                }
-            )
-            _plugin_inventory[key] = blocked_meta
+        loaded_meta = PluginMeta(
+            **{
+                **meta.__dict__,
+                "loaded": True,
+                "status": "loaded",
+            }
+        )
+        for cmd in loaded_meta.commands:
+            _registry[cmd] = (loaded_meta, loaded_meta.description)
+        _plugin_meta[key] = loaded_meta
+        _plugin_inventory[key] = loaded_meta
+        loaded.append(loaded_meta.name)
     return loaded
 
 
@@ -514,9 +475,64 @@ def render_permission_report(scope: str = "summary") -> str:
 def dispatch(cmd: str, args: str, **kwargs) -> tuple[bool, str | None]:
     if cmd not in _registry:
         return False, None
-    fn, _ = _registry[cmd]
+    meta, _ = _registry[cmd]
+    payload = _sanitize_dispatch_context(meta, kwargs)
     try:
-        result = fn(args, **kwargs)
+        result = _run_plugin_subprocess(meta, cmd, args, payload)
         return True, result
     except Exception as exc:
         return True, f"Plugin error: {exc}"
+
+
+def _sanitize_dispatch_context(meta: PluginMeta, kwargs: dict) -> dict[str, object]:
+    permissions = set(meta.permissions)
+    payload: dict[str, object] = {
+        "name": kwargs.get("name", ""),
+        "model": kwargs.get("model", ""),
+        "provider": kwargs.get("provider", ""),
+    }
+    workspace = kwargs.get("workspace") or kwargs.get("base_dir") or pathlib.Path.cwd()
+    workspace_path = pathlib.Path(workspace).expanduser().resolve()
+    payload["workspace"] = str(workspace_path)
+    if "read_workspace" in permissions:
+        payload["cwd"] = str(pathlib.Path.cwd())
+    if "write_workspace" in permissions:
+        payload["write_workspace"] = True
+    if "network" in permissions:
+        payload["network"] = True
+    if "shell" in permissions:
+        payload["shell"] = True
+    if "clipboard" in permissions:
+        payload["clipboard"] = True
+    return payload
+
+
+def _run_plugin_subprocess(meta: PluginMeta, cmd: str, args: str, payload: dict[str, object]) -> str | None:
+    runner = [
+        sys.executable,
+        "-m",
+        "src.utils.plugin_runner",
+        meta.path,
+        cmd,
+    ]
+    proc = subprocess.run(
+        runner,
+        input=json.dumps({"args": args, "context": payload}),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip() or f"exit {proc.returncode}"
+        raise RuntimeError(detail)
+    try:
+        response = json.loads(proc.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"invalid plugin response: {exc}") from exc
+    if not isinstance(response, dict):
+        raise RuntimeError("invalid plugin response payload")
+    if response.get("ok") is not True:
+        raise RuntimeError(str(response.get("error") or "plugin failed"))
+    result = response.get("result")
+    return None if result is None else str(result)

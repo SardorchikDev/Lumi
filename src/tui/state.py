@@ -23,6 +23,19 @@ class Msg:
             self.ts = current_hm()
 
 
+@dataclass(slots=True)
+class PaneState:
+    active: bool = False
+    title: str = ""
+    subtitle: str = ""
+    lines: list[str] | None = None
+    footer: str = ""
+    close_on_escape: bool = False
+
+    def content(self) -> list[str]:
+        return list(self.lines or [])
+
+
 class Store:
     def __init__(self) -> None:
         self._lock = threading.Lock()

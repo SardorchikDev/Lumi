@@ -90,6 +90,8 @@ def read_key(fd: int) -> str:
                 return "CTRL_Q"
             if ch == b"\x07":
                 return "CTRL_G"
+            if ch == b"\x06":
+                return "CTRL_F"
             if ch == b"\x03":
                 return "CTRL_C"
             if ch == b"\x0e":
@@ -104,6 +106,8 @@ def read_key(fd: int) -> str:
                 return "CTRL_U"
             if ch == b"\x12":
                 return "CTRL_R"
+            if ch == b"\x04":
+                return "CTRL_D"
 
             buf = ch
             while True:
