@@ -10,6 +10,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import tomllib
+
+
+def _load_app_version() -> str:
+    try:
+        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+        project = data.get("project", {})
+        version = str(project.get("version", "")).strip()
+        return version or "dev"
+    except Exception:
+        return "dev"
+
+
+APP_VERSION = _load_app_version()
+
 
 @dataclass(frozen=True)
 class ViewStyle:
@@ -75,6 +91,18 @@ class StarterView:
                 out.append(logical[start : start + width])
                 start += width
         return out or [""]
+
+    @staticmethod
+    def _display_path(path: Path, *, max_len: int = 56) -> str:
+        text = str(path.resolve())
+        home = str(Path.home())
+        if text == home:
+            text = "~"
+        elif text.startswith(home + "/"):
+            text = "~/" + text[len(home) + 1 :]
+        if len(text) <= max_len:
+            return text
+        return "..." + text[-(max_len - 3) :]
 
     def _build_prompt(self, width: int, prefix: str, placeholder: str) -> PromptRender:
         txt = self.tui.buf
@@ -202,10 +230,25 @@ class StarterView:
         )
         return lines
 
-    def _render_box(self, width: int, lines: list[str], *, tone: str | None = None) -> list[str]:
+    def _render_box(
+        self,
+        width: int,
+        lines: list[str],
+        *,
+        tone: str | None = None,
+        box_w: int | None = None,
+        align: str = "center",
+    ) -> list[str]:
         tone = tone or self.style.fg_hi
-        box_w = min(max(44, width - 8), 78)
+        target_w = max((len(line) for line in lines), default=36) + 2
+        if box_w is None:
+            box_w = min(max(44, width - 8), 78)
+            box_w = min(box_w, max(44, target_w))
+        else:
+            box_w = min(box_w, max(36, width - 8))
         left = " " * 2
+        if align == "center" and width > box_w + 4:
+            left = " " * max(2, (width - (box_w + 2)) // 2)
         border = self.style.fg_fn(self.style.border)
         rendered = [left + border + "╭" + "─" * box_w + "╮" + self.style.reset]
         for line in lines:
@@ -227,28 +270,22 @@ class StarterView:
         return rendered
 
     def _compact_build(self, width: int, provider: str, model: str, cwd_short: str) -> IntroRender:
+        card_w = min(max(42, max(len(provider) + len(model) + 18, len(cwd_short) + 13)), max(42, width - 8))
         lines = [
             "",
         ]
         lines.extend(
             self._render_box(
                 width,
-                [f"Lumi TUI  ({provider})", f"model: {model}"],
-                tone=self.style.fg_hi,
-            )
-        )
-        lines.append("")
-        approval = "confirm" if getattr(self.tui, "_pending_file_plan", None) else "suggest"
-        lines.extend(
-            self._render_box(
-                width,
                 [
-                    "local session",
-                    f"workdir: {cwd_short}",
-                    f"model: {provider} · {model}",
-                    f"approval: {approval}",
+                    f">_ Lumi (v{APP_VERSION})",
+                    "",
+                    f"model:     {provider} · {model}",
+                    f"directory: {cwd_short}",
                 ],
-                tone=self.style.fg_dim,
+                tone=self.style.fg_hi,
+                box_w=card_w,
+                align="left",
             )
         )
         lines.append("")
@@ -262,10 +299,9 @@ class StarterView:
     def build(self, width: int) -> IntroRender:
         provider_key = self.provider_resolver()
         provider = self.provider_label(provider_key)
-        model = self.tui.current_model.split("/")[-1][:24]
+        model = self.tui.current_model.split("/")[-1][:26]
         cwd = Path.cwd().resolve()
-        cwd_text = str(cwd)
-        cwd_short = cwd_text if len(cwd_text) <= 52 else "..." + cwd_text[-49:]
+        cwd_short = self._display_path(cwd)
         if width < 88 and getattr(self.tui, "show_starter_panel", True):
             return self._compact_build(width, provider, model, cwd_short)
 
@@ -274,29 +310,24 @@ class StarterView:
             return IntroRender(
                 header_lines=header_lines,
                 prompt=PromptRender(lines=[], cursor_row=0, cursor_col=0),
-                trailing_lines=[""],
+                trailing_lines=[],
             )
 
-        approval = "confirm" if getattr(self.tui, "_pending_file_plan", None) else "suggest"
+        card_w = min(max(46, max(len(provider) + len(model) + 26, len(cwd_short) + 14)), max(46, width - 8))
         title_box = self._render_box(
             width,
-            ["Lumi TUI  (research preview)", f"{provider} · {model}"],
-            tone=self.style.fg_hi,
-        )
-        session_box = self._render_box(
-            width,
             [
-                "local session",
-                f"workdir: {cwd_short}",
-                f"model: {provider} · {model}",
-                f"approval: {approval}",
+                f">_ Lumi (v{APP_VERSION})",
+                "",
+                f"model:     {provider} · {model}   /model to change",
+                f"directory: {cwd_short}",
             ],
-            tone=self.style.fg_dim,
+            tone=self.style.fg_hi,
+            box_w=card_w,
+            align="left",
         )
         lines = [
             *title_box,
-            "",
-            *session_box,
             "",
         ]
         lines.extend(self._build_review_lines(width))

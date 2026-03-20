@@ -581,10 +581,11 @@ class Renderer:
         w = buf.append
 
         w(_hide_cur())
+        for clear_row in range(1, rows + 1):
+            w(_move(clear_row, 1) + _bg(BG) + _erase_line())
 
         starter_lines = self._build_starter_lines(chat_w)
         prompt_lines, prompt_cursor_row, prompt_cursor_col = self._prompt_bar(rows, cols, chat_w)
-        prompt_height = len(prompt_lines)
         starter_rows = len(starter_lines)
         for i, line in enumerate(starter_lines, start=1):
             if i > rows:
@@ -593,12 +594,12 @@ class Renderer:
             w(_bg(BG) + _erase_line() + line + _bg(BG))
 
         transcript_top = 1 + starter_rows
-        prompt_top = max(transcript_top, rows - prompt_height + 1)
-        chat_rows = max(0, prompt_top - transcript_top)
-
-        # Build and render chat area below the starter panel
         chat_lines = self._build_chat_lines(chat_w)
         total = len(chat_lines)
+        prompt_height = len(prompt_lines)
+        prompt_top = self._prompt_top(rows, transcript_top, prompt_height, total)
+        chat_rows = max(0, prompt_top - transcript_top)
+
         offset = max(0, min(self.tui.scroll_offset, max(0, total - chat_rows)))
         end = total - offset
         start = max(0, end - chat_rows)
@@ -648,7 +649,7 @@ class Renderer:
         if self.tui.notification: w(self._notification_bar(rows, cols))
 
         cur_col = prompt_cursor_col
-        cursor_row = min(rows, prompt_cursor_row)
+        cursor_row = min(rows, self._prompt_cursor_row(rows, prompt_height, prompt_top, prompt_cursor_row))
         w(_move(cursor_row, min(cur_col, cols - 1)))
         w(_show_cur())
 
@@ -661,6 +662,16 @@ class Renderer:
 
     def _build_chat_lines(self, width):
         return self._transcript_view.build(width)
+
+    def _prompt_top(self, rows, transcript_top, prompt_height, chat_line_count):
+        max_prompt_top = max(transcript_top, rows - prompt_height + 1)
+        desired_top = transcript_top + max(0, chat_line_count)
+        return min(desired_top, max_prompt_top)
+
+    def _prompt_cursor_row(self, rows, prompt_height, prompt_top, prompt_cursor_row):
+        default_prompt_top = rows - prompt_height + 1
+        relative = prompt_cursor_row - default_prompt_top
+        return prompt_top + relative
 
     def _build_pane_lines(self, width, height):
         return self._pane_view.build(width, height)
@@ -696,28 +707,40 @@ class Renderer:
             parts.append(f"vessel {self.tui.active_vessel}")
         return " · ".join(parts)
 
+    def _cwd_display(self, max_len=28):
+        cwd = str(Path.cwd().resolve())
+        home = str(Path.home())
+        if cwd == home:
+            display = "~"
+        elif cwd.startswith(home + "/"):
+            display = "~/" + cwd[len(home) + 1 :]
+        else:
+            display = cwd
+        if len(display) <= max_len:
+            return display
+        return "..." + display[-(max_len - 3) :]
+
     def _stat_info(self, chat_w):
         """Compute status string (plain + colored) for top bar."""
         tui = self.tui
         pname = PROV_NAME.get(tui.current_model if tui.current_model == "council" else get_provider(), get_provider())
-        model = tui.current_model.split("/")[-1][:22]
-        mem = tui.memory.get()
-        if _session_telemetry.last_budget is not None:
-            toks = _session_telemetry.last_budget.total_prompt_tokens
-        elif len(mem) != tui._cached_tok_len:
-            tui._cached_tok_count = sum(_tok(m["content"]) for m in mem)
-            tui._cached_tok_len = len(mem)
-            toks = tui._cached_tok_count
-        else:
-            toks = tui._cached_tok_count
-        mode = f" {tui.response_mode}" if tui.response_mode else ""
+        model = tui.current_model.split("/")[-1][:28]
+        cwd = self._cwd_display()
 
         if tui.vessel_mode and tui.active_vessel:
-            stat_str   = f"vessel {tui.active_vessel.lower()} · ~{toks:,}tk{mode}"
-            stat_colored = _fg(RED) + _bold() + f"vessel {tui.active_vessel.lower()}" + R + _fg(COMMENT) + f" · ~{toks:,}tk{mode}"
+            stat_str = f"vessel {tui.active_vessel.lower()} · 100% left · {cwd}"
+            stat_colored = (
+                _fg(RED) + _bold() + f"vessel {tui.active_vessel.lower()}" + R
+                + _fg(COMMENT) + f" · 100% left · {cwd}" + R
+            )
         else:
-            stat_str   = f"{pname} · {model} · ~{toks:,}tk{mode}"
-            stat_colored = _fg(FG_DIM) + pname + R + _fg(COMMENT) + f" · {model} · ~{toks:,}tk{mode}"
+            stat_str = f"{pname} · {model} · 100% left · {cwd}"
+            stat_colored = (
+                _fg(FG_DIM) + pname + R
+                + _fg(COMMENT) + " · " + R
+                + _fg(FG_HI) + model + R
+                + _fg(COMMENT) + f" · 100% left · {cwd}" + R
+            )
 
         if tui.current_model == "council" and getattr(tui, "agents", None):
             names_plain, rail_segments = [], []
@@ -727,7 +750,7 @@ class Renderer:
                 nm  = ag.name.split()[0][:6]
                 names_plain.append(nm)
                 rail_segments.append(_fg(col) + ico + " " + nm + R)
-            stat_str     = "Council " + " ".join(names_plain) + mode
+            stat_str     = "Council " + " ".join(names_plain) + " · 100% left · " + cwd
             stat_colored = _fg(COMMENT) + "council" + _fg(FG_DIM) + " · " + _fg(FG_DIM) + "  ".join(rail_segments) + R
 
         return stat_str, stat_colored
@@ -738,7 +761,10 @@ class Renderer:
     def _prompt_bar(self, rows, cols, chat_w):
         tui = self.tui
         text = tui.buf
-        content_w = max(24, chat_w - 8)
+        left = " " * 2
+        body_w = max(24, chat_w - len(left) - 6)
+        text_w = max(10, body_w - 2)
+        status_plain, status_colored = self._stat_info(chat_w)
 
         def chunk_plain(value: str) -> list[str]:
             logical = value.split("\n") or [""]
@@ -749,8 +775,8 @@ class Renderer:
                     continue
                 start = 0
                 while start < len(line):
-                    out.append(line[start : start + content_w])
-                    start += content_w
+                    out.append(line[start : start + text_w])
+                    start += text_w
             return out or [""]
 
         if not text:
@@ -763,25 +789,66 @@ class Renderer:
             cursor_lines = chunk_plain(cursor_before)
             cursor_line = max(0, len(cursor_lines) - 1)
             cursor_col = len(cursor_lines[-1]) if cursor_lines else 0
-            visible_limit = 2 if (tui.multiline or "\n" in text or len(text) > content_w) else 1
+            visible_limit = 2 if (tui.multiline or "\n" in text or len(text) > text_w) else 1
             start = max(0, cursor_line - visible_limit + 1)
             visible = all_lines[start : start + visible_limit] or [""]
             cursor_row_rel = cursor_line - start
 
-        left = " " * 2
-        border = _fg(BORDER)
-        lines = [left + border + "╭" + "─" * content_w + "╮" + R]
+        pending_label, pending_hint = tui.filesystem_prompt_hint()
+        content_rows: list[tuple[str, str, str]] = []
         if text:
-            for segment in visible:
-                lines.append(left + border + "│" + R + " " + _fg(FG_HI) + segment.ljust(content_w - 2) + R + " " + border + "│" + R)
+            for idx, segment in enumerate(visible):
+                marker = "› " if idx == 0 else "  "
+                tone = FG_HI if idx == 0 else FG
+                content_rows.append((marker, tone, segment))
+        elif tui.busy:
+            frame = int(time.time() * 10) % len(SPINNER_FRAMES)
+            content_rows.append((SPINNER_FRAMES[frame] + " ", MUTED, "thinking"))
+        elif pending_label:
+            content_rows.append(("› ", FG_HI, pending_label))
         else:
-            placeholder = "send a message"
-            lines.append(left + border + "│" + R + " " + _fg(MUTED) + placeholder.ljust(content_w - 2) + R + " " + border + "│" + R)
-        lines.append(left + border + "╰" + "─" * content_w + "╯" + R)
+            content_rows.append(("› ", FG_HI, ""))
+
+        inner_w = body_w + 2
+        lines = [
+            left + _fg(BORDER) + "╭" + "─" * inner_w + "╮" + R,
+        ]
+        for marker, tone, segment in content_rows:
+            plain = f"{marker}{segment}"[:body_w]
+            pad = max(0, body_w - len(plain))
+            marker_color = CYAN if (tui.busy or pending_label) and marker.strip() else FG_HI
+            lines.append(
+                left
+                + _fg(BORDER)
+                + "│"
+                + R
+                + " "
+                + _fg(marker_color)
+                + marker
+                + R
+                + _fg(tone)
+                + segment[: max(0, body_w - len(marker))]
+                + R
+                + " " * pad
+                + " "
+                + _fg(BORDER)
+                + "│"
+                + R
+            )
+        lines.append(left + _fg(BORDER) + "╰" + "─" * inner_w + "╯" + R)
+
+        show_status_line = True
+        if pending_hint:
+            status_colored = _fg(COMMENT) + pending_hint + R
+            status_plain = pending_hint
+        if show_status_line:
+            lines.append("")
+            lines.append(left + _fg(MUTED) + status_plain + R if status_colored is None else left + status_colored)
 
         prompt_top = rows - len(lines) + 1
         cursor_row = prompt_top + 1 + (cursor_row_rel if text else 0)
-        cursor_col_abs = len(left) + 3 + cursor_col
+        active_marker = content_rows[min(cursor_row_rel if text else 0, len(content_rows) - 1)][0]
+        cursor_col_abs = len(left) + len(active_marker) + 3 + cursor_col
         return lines, cursor_row, cursor_col_abs
 
     # kept for any external callers; delegates to the two new methods

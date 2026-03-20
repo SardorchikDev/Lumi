@@ -20,7 +20,7 @@ def _make_tui(tmp_path, monkeypatch) -> LumiTUI:
     return tui
 
 
-def test_starter_panel_renders_session_boxes(tmp_path, monkeypatch):
+def test_starter_panel_renders_single_top_box(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.little_notes.record_command("/agent")
     tui.little_notes.record_command("/help")
@@ -29,10 +29,12 @@ def test_starter_panel_renders_session_boxes(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
 
-    assert "Lumi TUI" in joined
-    assert "local session" in joined
-    assert "workdir:" in joined
-    assert "approval:" in joined
+    assert ">_ Lumi" in joined
+    assert "local session" not in joined
+    assert "HuggingFace" in joined
+    assert "Llama-3.3-70B-Instruct" in joined
+    assert "research preview" not in joined
+    assert "approval:" not in joined
     tui._task_executor.shutdown(wait=False)
 
 
@@ -45,11 +47,29 @@ def test_chat_layout_keeps_prompt_and_transcript_separate(tmp_path, monkeypatch)
     prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(36, 110, 110)
     prompt = [_strip_ansi(line) for line in prompt_lines]
     chat = [_strip_ansi(line) for line in tui.renderer._build_chat_lines(110)]
+    prompt_top = tui.renderer._prompt_top(36, 1 + len(starter), len(prompt_lines), len(chat))
 
-    assert any("local session" in line for line in starter)
-    assert any("send a message" in line for line in prompt)
+    assert any(">_ Lumi" in line for line in starter)
+    assert any("›" in line for line in prompt)
     assert any("you" in line for line in chat)
     assert any("hello back" in line for line in chat)
+    assert prompt_top == 1 + len(starter) + len(chat)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_empty_state_keeps_prompt_directly_under_starter_card(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    starter = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
+    prompt_lines, cursor_row, _cursor_col = tui.renderer._prompt_bar(36, 110, 110)
+    prompt_lines = [_strip_ansi(line) for line in prompt_lines]
+    prompt_top = tui.renderer._prompt_top(36, 1 + len(starter), len(prompt_lines), 0)
+    resolved_cursor_row = tui.renderer._prompt_cursor_row(36, len(prompt_lines), prompt_top, cursor_row)
+
+    assert prompt_top == 1 + len(starter)
+    assert resolved_cursor_row == prompt_top + 1
+    assert prompt_lines[0].strip().startswith("╭")
+    assert prompt_lines[2].strip().startswith("╰")
     tui._task_executor.shutdown(wait=False)
 
 
@@ -58,11 +78,27 @@ def test_ctrl_g_toggles_to_prompt_only_layout(tmp_path, monkeypatch):
 
     tui._handle_key("CTRL_G")
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(90)]
+    prompt_lines, cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
+    prompt = [_strip_ansi(line) for line in prompt_lines]
+    prompt_top = tui.renderer._prompt_top(30, 1 + len(lines), len(prompt_lines), 0)
+    resolved_cursor_row = tui.renderer._prompt_cursor_row(30, len(prompt_lines), prompt_top, cursor_row)
+
+    assert not lines
+    assert prompt_top == 1
+    assert resolved_cursor_row == 2
+    assert any("›" in line for line in prompt)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_prompt_bar_renders_bordered_input(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+
     prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
     prompt = [_strip_ansi(line) for line in prompt_lines]
 
-    assert not any("local session" in line for line in lines)
-    assert any("send a message" in line for line in prompt)
+    assert prompt[0].strip().startswith("╭")
+    assert any("│" in line and "›" in line for line in prompt)
+    assert any(line.strip().startswith("╰") for line in prompt)
     tui._task_executor.shutdown(wait=False)
 
 
@@ -78,7 +114,7 @@ def test_recent_commands_clear_between_tui_sessions(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in second.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
     assert "/clear" not in joined
-    assert "local session" in joined
+    assert ">_ Lumi" in joined
 
     first._task_executor.shutdown(wait=False)
     second._task_executor.shutdown(wait=False)
@@ -92,8 +128,8 @@ def test_starter_panel_shows_session_summary(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
 
-    assert "local session" in joined
-    assert "approval: suggest" in joined
+    assert "HuggingFace" in joined
+    assert "approval:" not in joined
     tui._task_executor.shutdown(wait=False)
 
 
@@ -105,8 +141,8 @@ def test_pending_plan_changes_prompt_hint(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in lines]
     joined = "\n".join(lines)
 
-    assert "send a message" in joined
-    assert "╭" in joined
+    assert "confirm removal" in joined
+    assert "y apply" in joined
     tui._task_executor.shutdown(wait=False)
 
 
@@ -270,7 +306,7 @@ def test_multiline_enter_inserts_newline_and_prompt_shows_badges(tmp_path, monke
     joined = "\n".join(lines)
 
     assert tui.buf == "hello\nworld"
-    assert "╭" in joined
+    assert "› hello" in joined
     assert "world" in joined
     tui._task_executor.shutdown(wait=False)
 
