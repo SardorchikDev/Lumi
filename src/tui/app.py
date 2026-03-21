@@ -70,8 +70,10 @@ from src.memory.conversation_store import (
 from src.memory.longterm import (
     add_fact,
     build_memory_block,
+    clear_facts,
     get_facts,
     get_persona_override,
+    remove_fact,
 )
 from src.memory.short_term import ShortTermMemory
 from src.prompts.builder import (
@@ -2176,14 +2178,17 @@ def cmd_multi(tui: LumiTUI, arg: str):
 @registry.register("/remember", "Save a fact to long-term memory")
 def cmd_rem(tui: LumiTUI, arg: str):
     if not arg: tui._err("Usage: /remember <fact>"); return
-    n = add_fact(arg.strip()); tui.system_prompt = tui._make_system_prompt()
-    tui._notify(f"Remembered fact #{n}")
+    fact = " ".join(arg.strip().split())
+    n = add_fact(fact); tui.system_prompt = tui._make_system_prompt()
+    tui._sys(f"Remembered fact #{n}: {fact}")
 
 @registry.register("/memory", "Show all stored long-term facts")
 def cmd_mem(tui: LumiTUI, arg: str):
     f = get_facts()
     if f:
         lines = ["Long-term memory:"] + [f"  {i}. {val}" for i, val in enumerate(f, 1)]
+        lines.append("")
+        lines.append("Use /forget <number> to remove one fact or /forget all to clear everything.")
         tui._sys("\n".join(lines))
     else: tui._sys("No facts stored. Use /remember <fact>")
 
@@ -2191,8 +2196,30 @@ def cmd_mem(tui: LumiTUI, arg: str):
 def cmd_forg(tui: LumiTUI, arg: str):
     f = get_facts()
     if not f: tui._err("No facts to forget"); return
-    lines = ["Facts:"] + [f"  {i}. {val}" for i, val in enumerate(f, 1)]
-    tui._sys("\n".join(lines) + "\n  Use: /forget <number>")
+    target = arg.strip().lower()
+    if not target:
+        lines = ["Facts:"] + [f"  {i}. {val}" for i, val in enumerate(f, 1)]
+        tui._sys("\n".join(lines) + "\n  Use: /forget <number>  or  /forget all")
+        return
+    if target == "all":
+        clear_facts()
+        tui.system_prompt = tui._make_system_prompt()
+        tui._sys("Cleared all remembered facts.")
+        return
+    try:
+        index = int(target) - 1
+    except ValueError:
+        tui._err("Usage: /forget <number>  or  /forget all")
+        return
+    if not (0 <= index < len(f)):
+        tui._err(f"Fact #{index + 1} does not exist.")
+        return
+    removed = f[index]
+    if not remove_fact(index):
+        tui._err(f"Failed to forget fact #{index + 1}.")
+        return
+    tui.system_prompt = tui._make_system_prompt()
+    tui._sys(f"Forgot fact #{index + 1}: {removed}")
 
 @registry.register("/short", "Next reply: be concise")
 def cmd_short(tui: LumiTUI, arg: str): tui.response_mode = "short"; tui._notify("Mode: concise")

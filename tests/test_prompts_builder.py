@@ -74,6 +74,12 @@ class TestBuildSystemPrompt:
         prompt = build_system_prompt(persona)
         assert "Never break character" in prompt
 
+    def test_identity_rules_require_answering_as_lumi(self):
+        persona = {"name": "Lumi", "creator": "Dev", "tone": "calm", "traits": ["precise"]}
+        prompt = build_system_prompt(persona)
+        assert "If the user asks who you are" in prompt
+        assert "Never claim to be Claude Code" in prompt
+
 
 class TestIsCodingTask:
     def test_coding_task_detected(self):

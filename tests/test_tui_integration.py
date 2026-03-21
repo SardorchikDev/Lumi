@@ -12,6 +12,7 @@ def _make_tui(tmp_path, monkeypatch) -> LumiTUI:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
     monkeypatch.setattr("src.tui.mode_sessions.CONVERSATIONS_DIR", tmp_path / "conversations")
+    monkeypatch.setattr("src.memory.longterm.MEMORY_FILE", tmp_path / "longterm.json")
     tui = LumiTUI()
     notes_path = tmp_path / "little_notes.json"
     tui.little_notes = LittleNotesStore(notes_path)
@@ -196,6 +197,52 @@ def test_mode_conversations_opens_pane_for_saved_records(tmp_path, monkeypatch):
     assert tui.pane.active is True
     assert tui.pane.title == "mode conversations"
     assert any("Adjusted the TUI prompt layout." in line for line in tui.pane.content())
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_identity_questions_answer_as_lumi(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._run_message("hi whats your name")
+
+    messages = tui.store.snapshot()
+    assert any(msg.role == "assistant" and "I’m Lumi." in msg.text for msg in messages)
+    assert all("Claude Code" not in msg.text for msg in messages if msg.role == "assistant")
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_creator_questions_answer_with_sardor_identity(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._run_message("do you know your creator")
+
+    messages = tui.store.snapshot()
+    assert any(
+        msg.role == "assistant"
+        and "Sardor Sodiqov" in msg.text
+        and "SardorchikDev" in msg.text
+        for msg in messages
+    )
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_memory_commands_remember_and_forget_fact(tmp_path, monkeypatch):
+    from src.memory.longterm import get_facts
+
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    registry.commands["/remember"]["func"](tui, "User prefers TypeScript")
+    assert get_facts() == ["User prefers TypeScript"]
+
+    registry.commands["/forget"]["func"](tui, "1")
+    assert get_facts() == []
+
+    messages = tui.store.snapshot()
+    assert any(msg.role == "system" and "Remembered fact #1" in msg.text for msg in messages)
+    assert any(msg.role == "system" and "Forgot fact #1" in msg.text for msg in messages)
     tui._task_executor.shutdown(wait=False)
 
 

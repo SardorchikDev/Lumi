@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,59 @@ from src.chat.providers import (
     provider_supports,
 )
 from src.tui.state import Msg
+
+
+def _normalized_prompt(text: str) -> str:
+    lowered = (text or "").strip().lower()
+    lowered = re.sub(r"[^a-z0-9\s]", " ", lowered)
+    return " ".join(lowered.split())
+
+
+def _is_identity_prompt(text: str) -> bool:
+    lowered = _normalized_prompt(text)
+    phrases = (
+        "who are you",
+        "what are you",
+        "what is your name",
+        "whats your name",
+        "what s your name",
+        "what are you called",
+        "what should i call you",
+        "are you lumi",
+        "aren t you lumi",
+        "arent you lumi",
+    )
+    return any(phrase in lowered for phrase in phrases)
+
+
+def _is_creator_prompt(text: str) -> bool:
+    lowered = _normalized_prompt(text)
+    direct_phrases = (
+        "who is your creator",
+        "who created you",
+        "who made you",
+        "who built you",
+        "who is your developer",
+        "who is your maker",
+        "do you know your creator",
+        "tell me your creator",
+        "who s your creator",
+        "whos your creator",
+    )
+    if any(phrase in lowered for phrase in direct_phrases):
+        return True
+    return "creator" in lowered and any(token in lowered for token in ("you", "your", "lumi"))
+
+
+def _creator_reply(tui: Any) -> str:
+    creator = (
+        getattr(tui, "persona_override", {}).get("creator")
+        or getattr(tui, "persona", {}).get("creator")
+        or "Sardor Sodiqov (SardorchikDev)"
+    )
+    if "SardorchikDev" in creator:
+        return "I'm Lumi, created by Sardor Sodiqov, aka SardorchikDev on GitHub."
+    return f"I'm Lumi, created by {creator}."
 
 
 def filesystem_prompt_hint(tui: Any) -> tuple[str, str]:
@@ -254,6 +308,34 @@ def run_message(
 ) -> None:
     tui.set_busy(True)
     tui.scroll_offset = 0
+
+    if _is_identity_prompt(user_input):
+        reply = (
+            "I’m Lumi. The underlying model/provider can vary, but in this chat you’re talking to Lumi."
+        )
+        tui.last_msg = user_input
+        tui.store.add(Msg("user", user_input))
+        tui.memory.add("user", user_input)
+        tui.store.add(Msg("assistant", reply))
+        tui.memory.add("assistant", reply)
+        tui.prev_reply = tui.last_reply
+        tui.last_reply = reply
+        tui.turns += 1
+        tui.set_busy(False)
+        return
+
+    if _is_creator_prompt(user_input):
+        reply = _creator_reply(tui)
+        tui.last_msg = user_input
+        tui.store.add(Msg("user", user_input))
+        tui.memory.add("user", user_input)
+        tui.store.add(Msg("assistant", reply))
+        tui.memory.add("assistant", reply)
+        tui.prev_reply = tui.last_reply
+        tui.last_reply = reply
+        tui.turns += 1
+        tui.set_busy(False)
+        return
 
     is_code = is_complex_coding_task_fn(user_input) or is_coding_task_fn(user_input)
     is_files = is_file_generation_task_fn(user_input)
