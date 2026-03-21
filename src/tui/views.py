@@ -10,16 +10,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import tomllib
+try:
+    import tomllib  # type: ignore[attr-defined]
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
+    tomllib = None
 
 
 def _load_app_version() -> str:
     try:
         pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        project = data.get("project", {})
-        version = str(project.get("version", "")).strip()
-        return version or "dev"
+        content = pyproject.read_text(encoding="utf-8")
+        if tomllib is not None:
+            data = tomllib.loads(content)
+            project = data.get("project", {})
+            version = str(project.get("version", "")).strip()
+            if version:
+                return version
+        match = re.search(r'(?m)^\s*version\s*=\s*"([^"]+)"\s*$', content)
+        if match:
+            return match.group(1).strip() or "dev"
+        return "dev"
     except Exception:
         return "dev"
 

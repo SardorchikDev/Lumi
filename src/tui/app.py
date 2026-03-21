@@ -3015,6 +3015,9 @@ def cmd_voice(tui: LumiTUI, arg: str):
         if not audio_file:
             raise RuntimeError("No recorder found. Install arecord, sox, or ffmpeg.")
         tui._sys("◆  Transcribing...")
+        text, backend = transcribe_audio_file(audio_file)
+        if not text:
+            raise RuntimeError("No speech detected. Try again a little closer to the mic.")
         provider, _model, auto_routed = resolve_media_target(
             capability="audio_transcription",
             current_provider=get_provider() if tui.current_model != "council" else "",
@@ -3022,9 +3025,6 @@ def cmd_voice(tui: LumiTUI, arg: str):
             configured_providers=get_available_providers(),
             get_models_fn=get_models,
         )
-        text, backend = transcribe_audio_file(audio_file)
-        if not text:
-            raise RuntimeError("No speech detected. Try again a little closer to the mic.")
         tui.buf, tui.cur_pos = inject_text_at_cursor(tui.buf, tui.cur_pos, text)
         label = backend
         if auto_routed:
