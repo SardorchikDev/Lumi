@@ -1,4 +1,4 @@
-"""Lumi - rebirth capability profiling helpers."""
+"""Rebirth capability profiling helpers for Lumi."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ def _file_ready(path: Path) -> bool:
 
 def load_rebirth_profile() -> dict[str, Any]:
     default_profile: dict[str, Any] = {
-        "name": "Lumi - rebirth",
+        "name": "Rebirth profile",
         "version": 1,
         "defaults": {
             "response_mode": "detailed",
@@ -183,7 +183,7 @@ def render_rebirth_report() -> str:
     ready, total, ratio = rebirth_readiness()
 
     lines = [
-        f"{profile.get('name', 'Lumi - rebirth')} capability matrix",
+        f"{profile.get('name', 'Rebirth profile')} capability matrix",
         f"  Readiness: {ready}/{total} ({ratio:.0%})",
         "",
     ]

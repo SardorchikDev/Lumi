@@ -38,6 +38,7 @@ def initialize_ui_state(
     tui.pane = PaneState()
     tui.review_card = ReviewCard()
     tui.show_starter_panel = True
+    tui.starter_panel_pinned = False
     tui.shortcuts_visible = False
     tui.workspace_trust_visible = False
     tui.workspace_trust_sel = 0

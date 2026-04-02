@@ -6,11 +6,77 @@ import os
 import select
 from pathlib import Path
 
+_PENDING_BYTES = bytearray()
+_BRACKETED_PASTE_START = b"\x1b[200~"
+_BRACKETED_PASTE_END = b"\x1b[201~"
+
+
+def _push_pending(data: bytes) -> None:
+    if not data:
+        return
+    _PENDING_BYTES[:0] = data
+
+
+def _read_chunk(fd: int, size: int) -> bytes:
+    if size <= 0:
+        return b""
+    if _PENDING_BYTES:
+        take = min(size, len(_PENDING_BYTES))
+        chunk = bytes(_PENDING_BYTES[:take])
+        del _PENDING_BYTES[:take]
+        if take == size:
+            return chunk
+        return chunk + os.read(fd, size - take)
+    return os.read(fd, size)
+
+
+def _decode_paste(payload: bytes) -> str:
+    text = payload.decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _read_bracketed_paste(fd: int, initial: bytes) -> tuple[str, str] | None:
+    if not initial.startswith(_BRACKETED_PASTE_START):
+        return None
+    payload = initial[len(_BRACKETED_PASTE_START) :]
+    while True:
+        marker = payload.find(_BRACKETED_PASTE_END)
+        if marker != -1:
+            remainder = payload[marker + len(_BRACKETED_PASTE_END) :]
+            _push_pending(remainder)
+            return ("PASTE", _decode_paste(payload[:marker]))
+        ready, _, _ = select.select([fd], [], [], 0.1)
+        if not ready:
+            return ("PASTE", _decode_paste(payload))
+        payload += _read_chunk(fd, 4096)
+
+
+def _parse_sgr_mouse(full: bytes) -> str:
+    """Parse SGR mouse sequences and normalize wheel events."""
+    if not (full.startswith(b"\x1b[<") and full[-1:] in {b"M", b"m"}):
+        return ""
+    try:
+        encoded = full[3:-1].decode("ascii")
+        button_str, _x, _y = encoded.split(";")
+        button = int(button_str)
+    except (UnicodeDecodeError, ValueError):
+        return ""
+    if button & 64:
+        wheel = button & 0b11
+        if wheel == 0:
+            return "WHEEL_UP"
+        if wheel == 1:
+            return "WHEEL_DOWN"
+    return ""
+
 
 def parse_escape_sequence(full: bytes) -> str:
     """Normalize common terminal escape sequences into logical key names."""
     if not full:
         return ""
+    mouse_key = _parse_sgr_mouse(full)
+    if mouse_key:
+        return mouse_key
     if full.startswith(b"\x1b["):
         if full.endswith(b"A"):
             if b";2" in full or b"[a" in full:
@@ -64,18 +130,22 @@ def parse_escape_sequence(full: bytes) -> str:
     return fallback.get(full, "")
 
 
-def read_key(fd: int) -> str:
+def read_key(fd: int) -> str | tuple[str, str]:
     """Read a key press from a raw terminal file descriptor."""
     while True:
         try:
-            ch = os.read(fd, 1)
+            ch = _read_chunk(fd, 1)
             if not ch:
                 return ""
             if ch == b"\x1b":
                 ready, _, _ = select.select([fd], [], [], 0.05)
                 if ready:
-                    seq = os.read(fd, 16)
-                    return parse_escape_sequence(ch + seq)
+                    seq = _read_chunk(fd, 32)
+                    full = ch + seq
+                    paste = _read_bracketed_paste(fd, full)
+                    if paste is not None:
+                        return paste
+                    return parse_escape_sequence(full)
                 return "ESC"
 
             if ch in (b"\r", b"\n"):
@@ -116,7 +186,7 @@ def read_key(fd: int) -> str:
                 except UnicodeDecodeError:
                     ready, _, _ = select.select([fd], [], [], 0.1)
                     if ready:
-                        buf += os.read(fd, 1)
+                        buf += _read_chunk(fd, 1)
                     else:
                         return ""
         except InterruptedError:

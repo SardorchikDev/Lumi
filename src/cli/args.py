@@ -9,7 +9,7 @@ def parse_cli_args(version: str):
     """Return parsed CLI options for the Lumi entrypoint."""
     ap = argparse.ArgumentParser(
         prog="lumi",
-        description=f"Lumi AI {version} — terminal assistant",
+        description=f"Lumi AI {version} — terminal coding workbench",
         formatter_class=argparse.RawTextHelpFormatter,
         add_help=False,
     )
@@ -33,7 +33,7 @@ def parse_cli_args(version: str):
     ap.add_argument("--no-color", action="store_true", help="Disable ANSI colors")
     ap.add_argument("--list-sessions", action="store_true", help="List sessions and exit")
     ap.add_argument("--delete-session", metavar="ID", help="Delete a session by id and exit")
-    ap.add_argument("--rebirth", action="store_true", help="Start with Lumi - rebirth defaults")
+    ap.add_argument("--rebirth", action="store_true", help="Start with rebirth profile defaults")
     return ap.parse_known_args()[0]
 
 

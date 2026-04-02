@@ -16,6 +16,7 @@ from src.utils.repo_profile import (
     inspect_workspace,
     render_workspace_overview,
 )
+from src.utils.workbench import workbench_status_summary
 
 
 def _env_candidates(base_dir: Path) -> list[Path]:
@@ -79,6 +80,7 @@ def build_status_report(
         f"{longterm['persona_override_keys']} persona override key(s)"
     )
     lines.append(f"  Rebirth:   {rebirth_status_summary()}")
+    lines.append(f"  Workbench: {workbench_status_summary(root)}")
     lines.append(f"  Runtime:   state {STATE_ROOT} · cache {CACHE_ROOT}")
     if vision_ready or voice_ready:
         lines.append(
@@ -160,6 +162,7 @@ def build_doctor_report(
     lines.append(f"  UI state:  {UI_STATE_DIR}")
     lines.append(f"  Plugins:   {PLUGINS_DIR}")
     lines.append(f"  Rebirth:   {rebirth_status_summary()}")
+    lines.append(f"  Workbench: {workbench_status_summary(root)}")
     suspicious_plugins = sum(1 for item in plugin_audit if item["warnings"])
     if suspicious_plugins:
         lines.append(f"  Plugin audit: {suspicious_plugins} plugin(s) need attention")

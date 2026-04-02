@@ -35,7 +35,7 @@ def test_starter_panel_renders_single_top_box(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
 
-    assert "Lumi - rebirth" in joined
+    assert "Forge" in joined
     assert "Welcome back!" in joined
     assert "Tips for getting started" in joined
     assert "Recent activity" in joined
@@ -43,8 +43,9 @@ def test_starter_panel_renders_single_top_box(tmp_path, monkeypatch):
     assert "Llama-3.3" in joined
     assert "▝▜█████▛▘" in joined
     assert "approval:" not in joined
-    assert any(line.strip().startswith("╭") for line in lines)
-    assert any(line.strip().startswith("╰") for line in lines)
+    assert any(line.startswith("╭") for line in lines)
+    assert any(line.startswith("╰") for line in lines)
+    assert len(lines[0]) == 110
     tui._task_executor.shutdown(wait=False)
 
 
@@ -75,11 +76,11 @@ def test_chat_layout_keeps_prompt_and_transcript_separate(tmp_path, monkeypatch)
     chat = [_strip_ansi(line) for line in tui.renderer._build_chat_lines(110)]
     prompt_top = tui.renderer._prompt_top(36, 1 + len(starter), len(prompt_lines), len(chat))
 
-    assert any("Welcome back!" in line for line in starter)
+    assert starter == []
     assert any("❯" in line for line in prompt)
     assert any("you" in line for line in chat)
     assert any("hello back" in line for line in chat)
-    assert prompt_top == 1 + len(starter)
+    assert prompt_top == 36 - len(prompt_lines) + 1
     tui._task_executor.shutdown(wait=False)
 
 
@@ -104,6 +105,7 @@ def test_starter_tip_aligns_with_transcript_headers(tmp_path, monkeypatch):
     )
     tui = _make_tui(tmp_path, monkeypatch)
     tui.show_starter_panel = True
+    tui.starter_panel_pinned = True
     tui.store.add(Msg("user", "hi"))
 
     starter = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
@@ -133,6 +135,7 @@ def test_prompt_line_stays_flush_when_starter_tip_is_visible(tmp_path, monkeypat
     assert prompt[0].strip().startswith("─")
     assert prompt[-1].strip().endswith("/effort")
     assert prompt_line.startswith("❯")
+    assert len(prompt[0]) == 110
     tui._task_executor.shutdown(wait=False)
 
 
@@ -299,7 +302,7 @@ def test_capability_questions_answer_with_lumi_self_profile(tmp_path, monkeypatc
     messages = tui.store.snapshot()
     assert any(
         msg.role == "assistant"
-        and "I’m Lumi - rebirth." in msg.text
+        and "In Forge" in msg.text
         and "edit" in msg.text
         and "search the web" in msg.text
         for msg in messages
@@ -368,7 +371,8 @@ def test_empty_state_keeps_prompt_under_starter_card(tmp_path, monkeypatch):
     resolved_cursor_row = tui.renderer._prompt_cursor_row(36, len(prompt_lines), prompt_top, cursor_row)
 
     assert any("Welcome back!" in line for line in starter)
-    assert prompt_top == 1 + len(starter)
+    assert prompt_top == 36 - len(prompt_lines) + 1
+    assert prompt_top > 1 + len(starter)
     assert resolved_cursor_row == prompt_top + 1
     assert len(prompt_lines) == 4
     assert prompt_lines[0].strip().startswith("─")
@@ -389,9 +393,38 @@ def test_ctrl_g_toggles_starter_panel(tmp_path, monkeypatch):
     resolved_cursor_row = tui.renderer._prompt_cursor_row(30, len(prompt_lines), prompt_top, cursor_row)
 
     assert not lines
-    assert prompt_top == 1
-    assert resolved_cursor_row == 2
+    assert prompt_top == 30 - len(prompt_lines) + 1
+    assert resolved_cursor_row == prompt_top + 1
     assert any("❯" in line for line in prompt)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_starter_panel_auto_hides_after_chat_begins(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.store.add(Msg("user", "hi"))
+
+    lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
+
+    assert lines == []
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_ctrl_g_can_pin_starter_panel_during_active_chat(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.store.add(Msg("user", "hi"))
+
+    tui._handle_key("CTRL_G")
+    lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
+
+    assert any("Welcome back!" in line for line in lines)
+    assert tui.starter_panel_pinned is True
+
+    tui._handle_key("CTRL_G")
+    lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
+
+    assert lines == []
+    assert tui.show_starter_panel is False
+    assert tui.starter_panel_pinned is False
     tui._task_executor.shutdown(wait=False)
 
 
@@ -406,6 +439,7 @@ def test_prompt_bar_renders_claude_style_rail(tmp_path, monkeypatch):
     assert prompt[1].strip().startswith("❯")
     assert prompt[2].strip().startswith("─")
     assert prompt[3].strip().endswith("/effort")
+    assert len(prompt[0]) == 90
     tui._task_executor.shutdown(wait=False)
 
 
@@ -427,7 +461,7 @@ def test_recent_commands_clear_between_tui_sessions(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in second.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
     assert "/clear" not in joined
-    assert "Lumi - rebirth" in joined
+    assert "Forge" in joined
 
     first._task_executor.shutdown(wait=False)
     second._task_executor.shutdown(wait=False)
@@ -534,7 +568,7 @@ def test_question_mark_toggles_shortcuts_popup_when_prompt_is_empty(tmp_path, mo
     first_cursor = re.match(r"\x1b\[(\d+);(\d+)H", popup)
 
     assert first_cursor is not None
-    assert first_cursor.group(2) == "2"
+    assert first_cursor.group(2) == "1"
     assert "Ctrl+N" in _strip_ansi(popup)
     assert "open the model picker" in _strip_ansi(popup)
 
@@ -555,6 +589,68 @@ def test_question_mark_is_inserted_into_prompt_when_typing(tmp_path, monkeypatch
     assert tui.shortcuts_visible is False
     assert tui.buf == "who?"
     assert tui.cur_pos == len("who?")
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_bracketed_paste_inserts_multiline_text_without_submitting(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._handle_key(("PASTE", "line one\nline two"))
+
+    assert tui.buf == "line one\nline two"
+    assert tui.cur_pos == len("line one\nline two")
+    assert tui.store.snapshot() == []
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_bracketed_paste_updates_picker_query(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "x")
+    monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["huggingface"])
+    monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
+    monkeypatch.setattr(
+        "src.tui.app.get_models",
+        lambda provider=None: ["meta-llama/Llama-3.3-70B-Instruct", "Qwen/Qwen3-Coder"],
+    )
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui._open_picker()
+    tui.picker_stage = "models"
+    tui.picker_provider_key = "huggingface"
+    tui._refresh_picker()
+
+    tui._handle_key(("PASTE", "qwen"))
+
+    assert tui.picker_query == "qwen"
+    assert any(item.get("value") == "Qwen/Qwen3-Coder" for item in tui.picker_items if item.get("kind") == "model")
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_empty_prompt_arrow_keys_scroll_transcript(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._handle_key("UP")
+    assert tui.scroll_offset == 3
+
+    tui._handle_key("DOWN")
+    assert tui.scroll_offset == 0
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_arrow_keys_keep_history_navigation_when_prompt_has_text(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    seen: list[int] = []
+    tui.buf = "who"
+    tui.cur_pos = len(tui.buf)
+    tui._hist_nav = lambda direction: seen.append(direction)
+
+    tui._handle_key("UP")
+    tui._handle_key("DOWN")
+
+    assert seen == [-1, 1]
+    assert tui.scroll_offset == 0
     tui._task_executor.shutdown(wait=False)
 
 
@@ -839,7 +935,7 @@ def test_model_picker_opens_in_provider_stage(tmp_path, monkeypatch):
     tui._task_executor.shutdown(wait=False)
 
 
-def test_picker_popup_anchors_below_top_prompt_on_left(tmp_path, monkeypatch):
+def test_picker_popup_anchors_above_lower_prompt_on_left(tmp_path, monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "x")
     monkeypatch.setenv("GEMINI_API_KEY", "y")
     monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["huggingface", "gemini"])
@@ -850,16 +946,17 @@ def test_picker_popup_anchors_below_top_prompt_on_left(tmp_path, monkeypatch):
     tui._open_picker()
     starter = tui.renderer._build_starter_lines(90)
     prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
+    prompt_top = tui.renderer._prompt_top(30, 1 + len(starter), len(prompt_lines), 0)
     popup = tui.renderer._picker_popup(30, 90)
     first_cursor = re.match(r"\x1b\[(\d+);(\d+)H", popup)
 
     assert first_cursor is not None
-    assert first_cursor.group(2) == "2"
-    assert int(first_cursor.group(1)) == 1 + len(starter) + len(prompt_lines)
+    assert first_cursor.group(2) == "1"
+    assert int(first_cursor.group(1)) < prompt_top
     tui._task_executor.shutdown(wait=False)
 
 
-def test_browser_popup_anchors_below_top_prompt_on_left(tmp_path, monkeypatch):
+def test_browser_popup_anchors_above_lower_prompt_on_left(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.browser_visible = True
     tui.browser_cwd = str(tmp_path)
@@ -867,12 +964,27 @@ def test_browser_popup_anchors_below_top_prompt_on_left(tmp_path, monkeypatch):
 
     starter = tui.renderer._build_starter_lines(90)
     prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
+    prompt_top = tui.renderer._prompt_top(30, 1 + len(starter), len(prompt_lines), 0)
     popup = tui.renderer._browser_popup(30, 90)
     first_cursor = re.match(r"\x1b\[(\d+);(\d+)H", popup)
 
     assert first_cursor is not None
-    assert first_cursor.group(2) == "2"
-    assert int(first_cursor.group(1)) == 1 + len(starter) + len(prompt_lines)
+    assert first_cursor.group(2) == "1"
+    assert int(first_cursor.group(1)) < prompt_top
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_browser_popup_stays_compact_and_shows_paging_hint(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.browser_visible = True
+    tui.browser_cwd = str(tmp_path)
+    tui.browser_items = [("dir", f"dir-{index}", str(tmp_path / f"dir-{index}")) for index in range(24)]
+    tui.browser_sel = 12
+
+    popup = _strip_ansi(tui.renderer._browser_popup(30, 90))
+    assert "PgUp/PgDn" in popup
+    assert "browser ↑ ↓" in popup
+    assert popup.count("dir-") <= 10
     tui._task_executor.shutdown(wait=False)
 
 
@@ -887,6 +999,89 @@ def test_slash_popup_renders_codex_style_command_and_description(tmp_path, monke
     assert "[settings]" not in popup
     assert "/agent" in popup
     assert "Plan a multi-step agent workflow" in popup
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_slash_popup_footer_stays_above_prompt_rail(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.buf = "/"
+    tui.cur_pos = 1
+    tui._update_slash()
+
+    prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
+    prompt_top = tui.renderer._prompt_top(30, 1 + len(tui.renderer._build_starter_lines(90)), len(prompt_lines), 0)
+    popup = tui.renderer._slash_popup(30, 90)
+    rows = [int(match) for match, _col in re.findall(r"\x1b\[(\d+);(\d+)H", popup)]
+
+    assert rows
+    assert max(rows) < prompt_top
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_page_keys_scroll_browser_popup_selection(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui.browser_visible = True
+    tui.browser_items = [("dir", f"dir-{index}", str(tmp_path / f"dir-{index}")) for index in range(24)]
+    tui.browser_sel = 0
+
+    tui._handle_key("PGDN")
+    assert tui.browser_sel > 0
+
+    tui._handle_key("PGUP")
+    assert tui.browser_sel == 0
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_mouse_wheel_scrolls_transcript(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._handle_key("WHEEL_UP")
+    assert tui.scroll_offset == 3
+
+    tui._handle_key("WHEEL_DOWN")
+    assert tui.scroll_offset == 0
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_mouse_wheel_scrolls_browser_popup_selection(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui.browser_visible = True
+    tui.browser_items = [("dir", f"dir-{index}", str(tmp_path / f"dir-{index}")) for index in range(24)]
+    tui.browser_sel = 5
+
+    tui._handle_key("WHEEL_UP")
+    assert tui.browser_sel == 4
+
+    tui._handle_key("WHEEL_DOWN")
+    assert tui.browser_sel == 5
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_mouse_wheel_scrolls_model_picker_selection(tmp_path, monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "y")
+    monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["gemini"])
+    monkeypatch.setattr("src.tui.app.get_provider", lambda: "gemini")
+    monkeypatch.setattr(
+        "src.tui.app.get_models",
+        lambda provider=None: [f"gemini-model-{index}" for index in range(12)],
+    )
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._open_picker()
+    tui.picker_sel = next(index for index, item in enumerate(tui.picker_items) if item.get("value") == "gemini")
+    tui._confirm_picker()
+    first_model_index = next(index for index, item in enumerate(tui.picker_items) if item.get("kind") == "model")
+    tui.picker_sel = first_model_index + 3
+
+    tui._handle_key("WHEEL_UP")
+    assert tui.picker_sel == first_model_index + 2
+
+    tui._handle_key("WHEEL_DOWN")
+    assert tui.picker_sel == first_model_index + 3
     tui._task_executor.shutdown(wait=False)
 
 
@@ -984,6 +1179,52 @@ def test_model_picker_uses_icons_without_preview_documentation(tmp_path, monkeyp
     assert image_item["icon"] == "󰉏"
     assert tui.picker_preview_lines == []
     assert "Tags:" not in popup
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_build_plan_command_opens_workbench_plan_pane(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    monkeypatch.setattr("src.tui.command_groups.prepare_workbench_plan", lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr("src.tui.command_groups.render_workbench_plan", lambda _plan: "Forge\nbuild plan")
+
+    registry.commands["/build"]["func"](tui, "--plan add search")
+
+    assert tui.pane_active is True
+    assert tui.pane.title == "build plan"
+    assert "Forge" in "\n".join(tui.pane.content())
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_learn_command_opens_workbench_report_pane(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    monkeypatch.setattr("src.tui.command_groups.render_workbench_report", lambda *_args, **_kwargs: "Forge\nrepo map")
+
+    registry.commands["/learn"]["func"](tui, "architecture")
+
+    assert tui.pane_active is True
+    assert tui.pane.title == "workbench learn"
+    assert "repo map" in "\n".join(tui.pane.content())
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_review_without_target_queues_workbench_review_job(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    captured: dict[str, object] = {}
+
+    def _launch(mode: str, objective: str, *, dry_run: bool = False) -> str:
+        captured["mode"] = mode
+        captured["objective"] = objective
+        captured["dry_run"] = dry_run
+        return "wb-1"
+
+    tui.launch_workbench = _launch  # type: ignore[method-assign]
+
+    registry.commands["/review"]["func"](tui, "")
+
+    assert captured["mode"] == "review"
+    assert captured["dry_run"] is True
+    assert "workspace changes" in str(captured["objective"]).lower()
+    assert any("Queued review job" in msg.text for msg in tui.store.snapshot() if msg.role == "system")
     tui._task_executor.shutdown(wait=False)
 
 

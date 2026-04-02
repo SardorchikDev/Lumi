@@ -215,6 +215,11 @@ from src.utils.rebirth import load_rebirth_profile, rebirth_status_summary, rend
 from src.utils.repo_profile import inspect_workspace
 from src.utils.system_reports import build_doctor_report, build_status_report
 from src.utils.web import fetch_url
+from src.utils.workbench import (
+    WORKBENCH_TITLE,
+    execute_workbench,
+    render_workbench_result,
+)
 
 try:
     from src.utils.tools import clipboard_get, clipboard_set, get_weather, load_project, read_pdf
@@ -447,6 +452,10 @@ def _hide_cur(): return f"{ESC}[?25l"
 def _show_cur(): return f"{ESC}[?25h"
 def _alt_on(): return f"{ESC}[?1049h"
 def _alt_off(): return f"{ESC}[?1049l"
+def _alt_scroll_on(): return f"{ESC}[?1007h"
+def _alt_scroll_off(): return f"{ESC}[?1007l"
+def _paste_on(): return f"{ESC}[?2004h"
+def _paste_off(): return f"{ESC}[?2004l"
 def _move(r, c): return f"{CSI}{r};{c}H"
 def _erase_line(): return f"{CSI}2K"
 def _clr_down(): return f"{CSI}J"
@@ -477,7 +486,7 @@ SPINNER_FRAMES = list("⠋⠙⠚⠞⠦⠴⠲⠳⠓⠋")
 PULSE_DOTS = ["   ", "·  ", " · ", "  ·", "···"]
 
 def _rule(width, label=""):
-    line_w = max(8, width - 4)
+    line_w = max(8, width)
     if not label:
         return _fg(BORDER) + "─" * line_w + R
     plain = f" {label} "
@@ -492,13 +501,16 @@ def _popup_frame(top, left, width, title=""):
         plain = f"{label} " + "─" * max(0, inner_w - len(label) - 1)
     else:
         plain = "─" * inner_w
-    return _move(top, left) + _fg(MUTED) + " " + plain[:inner_w].ljust(inner_w) + " " + R
+    return _move(top, 1) + _bg(BG) + _erase_line() + _move(top, left) + _fg(MUTED) + " " + plain[:inner_w].ljust(inner_w) + " " + R
 
 def _popup_line(row, left, width, content="", tone=FG_DIM, selected=False):
     inner_w = max(0, width - 2)
     plain = content[:inner_w]
     return (
-        _move(row, left)
+        _move(row, 1)
+        + _bg(BG)
+        + _erase_line()
+        + _move(row, left)
         + (_bold() if selected else "")
         + _fg(tone)
         + " "
@@ -509,7 +521,7 @@ def _popup_line(row, left, width, content="", tone=FG_DIM, selected=False):
     )
 
 def _rule(width, label=""):
-    line_w = max(0, width - 4)
+    line_w = max(0, width)
     if not label:
         return _fg(BORDER) + "─" * line_w + R
     plain = f" {label} "
@@ -763,7 +775,10 @@ class Renderer:
         prompt_lines, prompt_cursor_row, prompt_cursor_col = self._prompt_bar(rows, cols, chat_w)
         starter_rows = len(starter_lines)
         prompt_height = len(prompt_lines)
-        prompt_top = self._prompt_top(rows, 1 + starter_rows, prompt_height, 0)
+        transcript_top = 1 + starter_rows
+        chat_lines = self._build_chat_lines(chat_w)
+        total = len(chat_lines)
+        prompt_top = self._prompt_top(rows, transcript_top, prompt_height, total)
         self.tui._last_prompt_top = prompt_top
         self.tui._last_prompt_height = prompt_height
 
@@ -787,10 +802,8 @@ class Renderer:
             else:
                 w(_bg(BG) + _erase_line() + line + _bg(BG))
 
-        transcript_top = prompt_top + prompt_height
-        chat_lines = self._build_chat_lines(chat_w)
-        total = len(chat_lines)
-        chat_rows = max(0, rows - transcript_top + 1)
+        transcript_bottom = max(transcript_top - 1, prompt_top - 1)
+        chat_rows = max(0, transcript_bottom - transcript_top + 1)
 
         offset = max(0, min(self.tui.scroll_offset, max(0, total - chat_rows)))
         end = total - offset
@@ -841,7 +854,7 @@ class Renderer:
         return self._transcript_view.build(width)
 
     def _prompt_top(self, rows, transcript_top, prompt_height, chat_line_count):
-        return max(1, transcript_top)
+        return max(1, rows - prompt_height + 1)
 
     def _prompt_cursor_row(self, rows, prompt_height, prompt_top, prompt_cursor_row):
         return prompt_top + max(0, prompt_cursor_row - 1)
@@ -934,8 +947,8 @@ class Renderer:
     def _prompt_bar(self, rows, cols, chat_w):
         tui = self.tui
         text = tui.buf
-        rail_w = max(20, chat_w - 4)
-        text_w = max(10, rail_w - 4)
+        rail_w = max(20, chat_w)
+        text_w = max(10, rail_w - 2)
 
         def chunk_plain(value: str) -> list[str]:
             logical = value.split("\n") or [""]
@@ -978,14 +991,14 @@ class Renderer:
             content_rows.append((SPINNER_FRAMES[frame] + " ", MUTED, "thinking"))
         elif pending_label:
             pending_text = pending_label + (f" · {pending_hint}" if pending_hint else "")
-            content_rows.append(("? ", CYAN, pending_text[:rail_w]))
+            content_rows.append(("? ", CYAN, pending_text[:text_w]))
         else:
             content_rows.append(("❯ ", FG_HI, ""))
 
         footer_left = "? for shortcuts"
         effort = normalize_reasoning_effort(getattr(tui, "reasoning_effort", "medium"))
         footer_right_plain = f"◐ {effort} · /effort"
-        gap = max(2, rail_w - len(footer_left) - len(footer_right_plain))
+        gap = max(2, chat_w - len(footer_left) - len(footer_right_plain))
         footer_line = (
             _fg(MUTED)
             + footer_left
@@ -1007,7 +1020,7 @@ class Renderer:
                 + marker
                 + R
                 + _fg(tone)
-                + segment[: max(0, rail_w - len(marker))]
+                + segment[:text_w]
                 + R
             )
         lines.append(_rule(chat_w))
@@ -1075,6 +1088,8 @@ class LumiTUI:
         self.reasoning_effort = "medium"
         self._last_prompt_top = 1
         self._last_prompt_height = 1
+        self.workbench_jobs: list[dict[str, object]] = []
+        self._workbench_job_seq = 0
 
         # Agent planning state (for /agent plans)
         self.agent_active_objective = None
@@ -1139,6 +1154,117 @@ class LumiTUI:
 
     def clear_review_card(self) -> None:
         self.review_card = ReviewCard()
+
+    def _workbench_model(self) -> str:
+        if self.current_model != "council":
+            return self.current_model
+        provider = get_provider()
+        models = get_models(provider)
+        return pick_startup_model(provider, models) if models else self.current_model
+
+    def _workbench_pane_lines(self) -> list[str]:
+        lines: list[str] = []
+        jobs = list(self.workbench_jobs[:6])
+        if not jobs:
+            return ["No workbench jobs yet.", "", "Run /build, /review, /ship, /learn, or /fixci."]
+        for job in jobs:
+            status = str(job.get("status", "queued"))
+            mode = str(job.get("mode", "job"))
+            objective = str(job.get("objective", ""))[:88]
+            stage = str(job.get("stage", "") or "").strip()
+            risk = str(job.get("risk", "") or "").strip()
+            lines.append(f"[{status}] {mode} · {objective}")
+            if stage:
+                lines.append(f"  stage: {stage}")
+            if risk:
+                lines.append(f"  risk: {risk}")
+            summary = str(job.get("summary", "") or "").strip()
+            if summary:
+                lines.append(f"  summary: {summary[:140]}")
+            lines.append("")
+        return lines[:-1] if lines and not lines[-1].strip() else lines
+
+    def _refresh_workbench_pane(self) -> None:
+        self.set_pane(
+            title="workbench jobs",
+            subtitle=WORKBENCH_TITLE,
+            lines=self._workbench_pane_lines(),
+            footer="Esc close  ·  /pane close  ·  /jobs",
+            close_on_escape=True,
+        )
+        self.redraw()
+
+    def launch_workbench(self, mode: str, objective: str, *, dry_run: bool = False) -> str:
+        self._workbench_job_seq += 1
+        job_id = f"wb-{self._workbench_job_seq}"
+        job = {
+            "id": job_id,
+            "mode": mode,
+            "objective": objective,
+            "dry_run": dry_run,
+            "status": "queued",
+            "stage": "queued",
+            "risk": "",
+            "summary": "",
+        }
+        self.workbench_jobs.insert(0, job)
+        self.agent_active_objective = f"{mode}: {objective}"
+        self.agent_tasks = [{"text": "profiling workspace", "status": "queued"}]
+        self._refresh_workbench_pane()
+
+        def _update_job(*, status: str | None = None, stage: str | None = None, summary: str | None = None, risk: str | None = None) -> None:
+            with self._state_lock:
+                for item in self.workbench_jobs:
+                    if item.get("id") != job_id:
+                        continue
+                    if status is not None:
+                        item["status"] = status
+                    if stage is not None:
+                        item["stage"] = stage
+                        self.agent_tasks = [{"text": stage, "status": status or str(item.get("status", "running"))}]
+                    if summary is not None:
+                        item["summary"] = summary
+                    if risk is not None:
+                        item["risk"] = risk
+                    break
+            self._refresh_workbench_pane()
+
+        def _progress(stage: str) -> None:
+            _update_job(status="running", stage=stage)
+
+        def _go() -> None:
+            try:
+                _update_job(status="running", stage="profiling workspace")
+                result = execute_workbench(
+                    mode,
+                    objective,
+                    client=self.client,
+                    model=self._workbench_model(),
+                    memory=self.memory,
+                    system_prompt=self.system_prompt,
+                    dry_run=dry_run,
+                    progress_cb=_progress,
+                )
+            except Exception as exc:
+                _update_job(status="failed", stage="failed", summary=str(exc))
+                self._err(f"{mode} failed: {exc}")
+                self._notify(f"{mode} failed")
+            else:
+                _update_job(
+                    status="done",
+                    stage="artifacts ready",
+                    summary=result.summary,
+                    risk=result.risk_level,
+                )
+                self._sys(render_workbench_result(result))
+                self._notify(f"{mode} ready")
+            finally:
+                self.agent_active_objective = None
+                self.agent_tasks = []
+                self.redraw()
+
+        threading.Thread(target=_go, daemon=True).start()
+        return job_id
 
     def _should_prompt_workspace_trust(self) -> bool:
         cwd = Path.cwd().resolve()
@@ -1405,7 +1531,7 @@ class LumiTUI:
         git_branch = workspace_profile.git_branch or ""
 
         # ── 1. Tear down Lumi's terminal state ────────────────────────────────
-        sys.stdout.write("\033[?1049l\033[?25h\033[0m")
+        sys.stdout.write(_paste_off() + _alt_scroll_off() + _show_cur() + _alt_off() + _reset())
         sys.stdout.flush()
         if self.original_termios:
             try:
@@ -1470,7 +1596,7 @@ class LumiTUI:
             pass
 
         # Re-enter alternate screen, hide cursor, full repaint
-        sys.stdout.write("\033[?1049h\033[?25l\033[2J")
+        sys.stdout.write(_alt_on() + _alt_scroll_on() + _paste_on() + _hide_cur() + "\033[2J")
         sys.stdout.flush()
         self.redraw()
 
@@ -1597,7 +1723,7 @@ class LumiTUI:
             try: termios.tcsetattr(fd, termios.TCSADRAIN, old)
             except Exception:
                 log.debug("Cleanup termios failed")
-            sys.stdout.write(_show_cur() + _alt_off()); sys.stdout.flush()
+            sys.stdout.write(_paste_off() + _alt_scroll_off() + _show_cur() + _alt_off()); sys.stdout.flush()
 
         try: signal.signal(signal.SIGWINCH, lambda *_: self.redraw())
         except Exception:
@@ -1605,7 +1731,7 @@ class LumiTUI:
         signal.signal(signal.SIGTERM, lambda *_: (_cleanup(), sys.exit(0)))
 
         try:
-            sys.stdout.write(_alt_on()); sys.stdout.flush(); tty.setraw(fd)
+            sys.stdout.write(_alt_on() + _alt_scroll_on() + _paste_on()); sys.stdout.flush(); tty.setraw(fd)
             with self._state_lock: self._running = True
             threading.Thread(target=self._guardian_loop, daemon=True).start()
             self.redraw()
@@ -2662,7 +2788,7 @@ def cmd_doctor(tui: LumiTUI, arg: str):
     tui._sys(report)
 
 
-@registry.register("/rebirth", "Lumi - rebirth capability report and profile toggles")
+@registry.register("/rebirth", "Rebirth profile capability report and toggles")
 def cmd_rebirth(tui: LumiTUI, arg: str):
     sub = arg.strip().lower()
 
@@ -2958,7 +3084,7 @@ def cmd_apply(tui: LumiTUI, arg: str):
     code = blocks[0].strip() # Take the first code block
 
     # Temporarily exit TUI to use blocking shell input
-    sys.stdout.write("\033[?1049l\033[?25h")
+    sys.stdout.write(_paste_off() + _alt_scroll_off() + _show_cur() + _alt_off())
     sys.stdout.flush()
     if hasattr(tui, 'original_termios') and tui.original_termios:
         termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, tui.original_termios)
@@ -2986,7 +3112,7 @@ def cmd_apply(tui: LumiTUI, arg: str):
 
     # Restore TUI
     tty.setraw(sys.stdin.fileno())
-    sys.stdout.write("\033[?1049h\033[?25l\033[J")
+    sys.stdout.write(_alt_on() + _alt_scroll_on() + _paste_on() + _hide_cur() + "\033[J")
     sys.stdout.flush()
     tui.redraw()
 

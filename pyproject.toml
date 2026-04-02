@@ -1,7 +1,7 @@
 [project]
 name = "lumi-ai"
-version = "0.4.0"
-description = "Lumi - rebirth: terminal AI coding and repo operations"
+version = "0.5.0"
+description = "Lumi Forge: terminal AI coding workbench for repo intelligence and agent workflows"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"

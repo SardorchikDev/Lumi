@@ -36,6 +36,7 @@ def test_build_status_report_includes_workspace_and_memory(tmp_path, monkeypatch
     assert "Checks:" in report
     assert "Runtime:" in report
     assert "Rebirth:" in report
+    assert "Workbench:" in report
 
 
 def test_build_doctor_report_surfaces_missing_setup(tmp_path, monkeypatch):
@@ -59,6 +60,7 @@ def test_build_doctor_report_surfaces_missing_setup(tmp_path, monkeypatch):
     assert "No .env file found" in report
     assert "Runtime:" in report
     assert "Rebirth:" in report
+    assert "Workbench:" in report
 
 
 def test_build_onboarding_report_includes_workspace_summary(tmp_path, monkeypatch):

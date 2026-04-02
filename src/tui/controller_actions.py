@@ -155,8 +155,8 @@ def _identity_reply(tui: Any, *, get_provider_fn) -> str:
         or "Sardor Sodiqov (SardorchikDev)"
     )
     return (
-        f"I’m Lumi. Lumi - rebirth is your in-app coding assistant, built by {creator}. "
-        f"I can work across files, memory, search, and repo-aware tasks. "
+        f"I’m Lumi. Forge is the current Lumi workbench release, built by {creator}. "
+        f"I can work across files, memory, search, repo-aware tasks, and structured coding workflows. "
         f"Right now I’m running on {provider_label} with {model}."
     )
 
@@ -179,7 +179,7 @@ def _capabilities_reply(tui: Any, *, get_provider_fn) -> str:
         abilities.append("use trusted plugins")
     abilities_text = ", ".join(abilities[:-1]) + f", and {abilities[-1]}" if len(abilities) > 1 else abilities[0]
     return (
-        f"I’m Lumi - rebirth. I can {abilities_text}. "
+        f"I’m Lumi. In Forge, I can {abilities_text}. "
         f"My current runtime is {provider_label} with {model}."
     )
 
@@ -729,6 +729,51 @@ def _picker_move_selection(tui: Any, delta: int) -> None:
     _update_picker_preview(tui)
 
 
+def _scroll_active_surface(
+    tui: Any,
+    *,
+    up: bool,
+    overlay_amount: int = 1,
+    transcript_amount: int = 3,
+) -> None:
+    overlay_step = max(1, overlay_amount)
+    overlay_delta = -overlay_step if up else overlay_step
+    if getattr(tui, "browser_visible", False):
+        tui.browser_sel = max(0, min(len(tui.browser_items) - 1, tui.browser_sel + overlay_delta))
+        return
+    if tui.slash_visible:
+        tui.slash_sel = max(0, min(len(tui.slash_hits) - 1, tui.slash_sel + overlay_delta))
+        return
+    if tui.path_visible:
+        tui.path_sel = max(0, min(len(tui.path_hits) - 1, tui.path_sel + overlay_delta))
+        return
+    if tui.picker_visible:
+        _picker_move_selection(tui, overlay_delta)
+        return
+
+    transcript_step = max(1, transcript_amount)
+    if up:
+        tui.scroll_offset += transcript_step
+    else:
+        tui.scroll_offset = max(0, tui.scroll_offset - transcript_step)
+
+
+def _use_arrow_scroll(tui: Any) -> bool:
+    return not any(
+        (
+            getattr(tui, "browser_visible", False),
+            tui.slash_visible,
+            tui.path_visible,
+            tui.picker_visible,
+            getattr(tui, "shortcuts_visible", False),
+            getattr(tui, "workspace_trust_visible", False),
+            getattr(tui, "pane_active", False),
+            getattr(getattr(tui, "review_card", None), "active", False),
+            bool(tui.buf),
+        )
+    )
+
+
 def _model_traits(provider: str, model: str) -> list[str]:
     lowered = model.lower()
     traits: list[str] = []
@@ -1232,6 +1277,18 @@ def handle_key(
 ) -> None:
     if not key:
         return
+    if isinstance(key, tuple) and len(key) == 2 and key[0] == "PASTE":
+        pasted = str(key[1] or "")
+        if tui.picker_visible:
+            tui.picker_query += pasted
+            tui._refresh_picker()
+            return
+        if getattr(tui, "workspace_trust_visible", False):
+            return
+        tui.buf = tui.buf[: tui.cur_pos] + pasted + tui.buf[tui.cur_pos :]
+        tui.cur_pos += len(pasted)
+        update_slash(tui, registry=registry, suggest_paths_fn=suggest_paths_fn)
+        return
     if getattr(tui, "workspace_trust_visible", False):
         if key == "ESC":
             tui.workspace_trust_visible = False
@@ -1282,7 +1339,15 @@ def handle_key(
             tui._running = False
         return
     if key == "CTRL_G":
-        tui.show_starter_panel = not tui.show_starter_panel
+        has_messages = bool(tui.store.snapshot())
+        starter_pinned = bool(getattr(tui, "starter_panel_pinned", False))
+        starter_visible = bool(getattr(tui, "show_starter_panel", True)) and (not has_messages or starter_pinned)
+        if starter_visible:
+            tui.show_starter_panel = False
+            tui.starter_panel_pinned = False
+        else:
+            tui.show_starter_panel = True
+            tui.starter_panel_pinned = True
         tui.redraw()
         return
     if key == "CTRL_N":
@@ -1315,13 +1380,22 @@ def handle_key(
         tui.slash_visible = False
         return
     if key in ("SHIFT_UP", "CTRL_UP"):
-        tui.scroll_offset += 3
+        _scroll_active_surface(tui, up=True, overlay_amount=3, transcript_amount=3)
         return
     if key in ("SHIFT_DOWN", "CTRL_DOWN"):
-        tui.scroll_offset = max(0, tui.scroll_offset - 3)
+        _scroll_active_surface(tui, up=False, overlay_amount=3, transcript_amount=3)
+        return
+    if key == "WHEEL_UP":
+        _scroll_active_surface(tui, up=True, overlay_amount=1, transcript_amount=3)
+        return
+    if key == "WHEEL_DOWN":
+        _scroll_active_surface(tui, up=False, overlay_amount=1, transcript_amount=3)
         return
 
     if key == "UP":
+        if _use_arrow_scroll(tui):
+            _scroll_active_surface(tui, up=True, overlay_amount=3, transcript_amount=3)
+            return
         if getattr(tui, "browser_visible", False):
             tui.browser_sel = max(0, tui.browser_sel - 1)
             tui.redraw()
@@ -1336,6 +1410,9 @@ def handle_key(
             tui._hist_nav(-1)
         return
     if key == "DOWN":
+        if _use_arrow_scroll(tui):
+            _scroll_active_surface(tui, up=False, overlay_amount=3, transcript_amount=3)
+            return
         if getattr(tui, "browser_visible", False):
             tui.browser_sel = min(len(tui.browser_items) - 1, tui.browser_sel + 1)
             tui.redraw()
@@ -1362,11 +1439,23 @@ def handle_key(
 
     if key == "PGUP":
         rows, _ = term_size_fn()
-        tui.scroll_offset += max(1, rows - 6)
+        step = max(4, rows // 2)
+        _scroll_active_surface(
+            tui,
+            up=True,
+            overlay_amount=step,
+            transcript_amount=max(1, rows - 6),
+        )
         return
     if key == "PGDN":
         rows, _ = term_size_fn()
-        tui.scroll_offset = max(0, tui.scroll_offset - max(1, rows - 6))
+        step = max(4, rows // 2)
+        _scroll_active_surface(
+            tui,
+            up=False,
+            overlay_amount=step,
+            transcript_amount=max(1, rows - 6),
+        )
         return
     if key == "TAB":
         if tui.slash_visible and tui.slash_hits:

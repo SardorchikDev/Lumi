@@ -1,53 +1,88 @@
-<h1 align="center">Lumi - rebirth</h1>
+<h1 align="center">Lumi v0.5.0: Forge</h1>
 
 <p align="center">
-  Keyboard-first AI terminal for coding, repo work, grounded agent tasks, and multimodal context.
+  <img src="docs/assets/lumi-robot.svg" alt="Lumi robot" width="220">
 </p>
 
 <p align="center">
-  <strong>Minimal surface. Heavyweight workflow.</strong>
+  Terminal AI coding workbench for repo intelligence, background execution, project memory, and prompt-first terminal workflows.
+</p>
+
+<p align="center">
+  <strong>Release name:</strong> <code>Forge</code>
 </p>
 
 <p align="center">
   <a href="#install">Install</a> ·
   <a href="#quick-start">Quick Start</a> ·
-  <a href="#what-lumi-does">What Lumi Does</a> ·
-  <a href="#tui">TUI</a> ·
+  <a href="#whats-new-in-050">What's New</a> ·
+  <a href="#forge-workflow">Forge Workflow</a> ·
   <a href="#commands">Commands</a> ·
   <a href="#development">Development</a>
 </p>
 
 <p align="center">
   <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/SardorchikDev/Lumi/ci.yml?branch=main&style=flat-square&label=ci">
+  <img alt="Version" src="https://img.shields.io/badge/version-0.5.0-0f1720?style=flat-square">
   <img alt="License" src="https://img.shields.io/github/license/SardorchikDev/Lumi?style=flat-square">
-  <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-0f1720?style=flat-square">
-  <img alt="Interface" src="https://img.shields.io/badge/interface-TUI%20%2B%20CLI-10322c?style=flat-square">
+  <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-10322c?style=flat-square">
 </p>
 
-> Repo-aware terminal AI that stays sharp, grounded, and fast enough to live in your shell full time.
+> Lumi is for real repo work: inspect, plan, edit, test, review, and ship from the terminal without collapsing into a generic chat loop.
 
 <table>
   <tr>
     <td width="50%" valign="top">
-      <strong>Prompt-first TUI</strong><br>
-      Claude-style top rail, command palette, model picker, shortcuts overlay, review cards, and inline approval flows.
+      <strong>Forge Workbench</strong><br>
+      <code>/build</code>, <code>/learn</code>, <code>/review</code>, <code>/fixci</code>, and <code>/ship</code> turn Lumi into a structured coding workflow instead of a one-shot assistant.
     </td>
     <td width="50%" valign="top">
-      <strong>Grounded Agent Mode</strong><br>
-      Structured action plans, rollback-aware file edits, verification passes, and benchmarked filesystem tasks.
+      <strong>Repo Intelligence</strong><br>
+      Symbol indexing, dependency hints, hotspots, impact files, suggested tests, verification commands, and cached architecture digests.
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <strong>Model Control</strong><br>
-      Boots into Gemini 2.5 Flash when Gemini is configured, supports `/effort`, and only shows configured providers in `/model`.
+      <strong>Project Memory</strong><br>
+      Lumi reads <code>LUMI.md</code>, remembers workspace decisions, stores recent Workbench runs, and keeps artifact history.
     </td>
     <td width="50%" valign="top">
-      <strong>Real Context</strong><br>
-      Web, files, images, PDFs, data, voice, notes, todos, and long-term memory all feed back into the same workflow.
+      <strong>Prompt-First TUI</strong><br>
+      Welcome card, prompt rail, compact transcript, command menus, model picker, review cards, shortcuts overlay, and background job pane.
     </td>
   </tr>
 </table>
+
+## Why Lumi
+
+- built around coding workflows, not generic chat
+- can inspect a repo before changing it
+- keeps lightweight workspace memory across sessions
+- has both a full TUI and classic CLI mode
+- includes release gates for benchmark and capability audits
+
+## What's New In 0.5.0
+
+### Added
+
+- Forge Workbench with `/build`, `/learn`, `/review workspace`, `/fixci`, `/ship`, and `/jobs`
+- background Workbench execution with live job summaries in the TUI
+- repo intelligence cache with symbols, imports, hotspots, impact files, suggested tests, and context digests
+- project memory for conventions, decisions, recent runs, and artifact history
+- generated commit titles, PR descriptions, release notes, changelog entries, test summaries, and architecture summaries
+
+### Improved
+
+- Forge branding across the TUI and docs
+- Gemini-first startup with `gemini-2.5-flash` as the preferred default when configured
+- `/model` only showing configured providers
+- `/effort` support with real runtime profiles
+- status and doctor output with Workbench awareness
+
+### Operational
+
+- benchmark gate and rebirth audit remain part of the release path
+- CI is aligned with current GitHub Actions runtime expectations
 
 ## Install
 
@@ -66,7 +101,7 @@ curl -fsSL https://raw.githubusercontent.com/SardorchikDev/Lumi/main/install.sh 
 The installer:
 
 - clones Lumi into `~/Lumi`
-- creates `venv`
+- creates a local `venv`
 - installs dependencies
 - creates a `lumi` launcher in `~/.local/bin`
 - creates `~/Lumi/.env` if it does not exist
@@ -100,35 +135,19 @@ Good first commands:
 /onboard
 /doctor
 /model
-/rebirth
-/status
+/learn architecture
+/build --plan add tests for parser errors
+/jobs
 ```
 
 Good first prompts:
 
 ```text
-/agent add tests for this module
-/review src/main.py
-/git summary
-/search latest FastAPI release notes
+/build implement rate limiting for the auth endpoints
+/review workspace
+/fixci repair the failing github actions workflow
+/ship prepare release notes for the current branch
 ```
-
-Useful launch flags:
-
-```bash
-lumi --no-tui
-lumi --yolo
-```
-
-## What Lumi Does
-
-- full-screen TUI plus classic CLI mode
-- grounded agent mode with repo-aware planning, edits, verification, and rollback
-- natural-language file and folder operations plus explicit `/fs` commands
-- model switching, reasoning effort control, and strict provider-aware `/model` menus
-- session memory, long-term memory, notes, todos, and task memory
-- web, file, PDF, image, voice, and structured-data context helpers
-- plugin loading with approval, trust checks, and permission reporting
 
 ## Default Behavior
 
@@ -156,16 +175,110 @@ LUMI_STATE_DIR=~/.codex/memories/lumi/state
 LUMI_CACHE_DIR=~/.codex/memories/lumi/cache
 ```
 
+## Forge Workflow
+
+Forge adds a real coding loop.
+
+1. `/learn` maps the repo, conventions, hotspots, impact files, and suggested tests.
+2. `/build` turns a request into a risk-aware implementation run.
+3. `/review workspace` gives you repo-level review behavior instead of only single-file review.
+4. `/fixci` targets lint, typecheck, test, or workflow failures.
+5. `/ship` verifies the repo and prepares release artifacts.
+6. `/jobs` shows active and completed Workbench jobs in the TUI.
+
+### `/build`
+
+Use when you want Lumi to inspect, plan, edit, test, and prepare artifacts for a coding task.
+
+```text
+/build implement structured logging for api requests
+/build --plan refactor auth middleware
+```
+
+### `/learn`
+
+Use when you want Lumi to understand the repo before making changes.
+
+```text
+/learn architecture
+/learn payment flow
+```
+
+### `/review`
+
+Existing file review stays in place. Empty-target or `workspace` review routes through Forge.
+
+```text
+/review workspace
+/review src/api/auth.py
+```
+
+### `/fixci`
+
+Use when the repo is failing lint, typecheck, tests, or CI.
+
+```text
+/fixci repair the failing pytest suite
+/fixci fix the github actions benchmark gate
+```
+
+### `/ship`
+
+Use when you want Lumi to verify the repo and prepare release artifacts.
+
+```text
+/ship prepare a release for the current branch
+/ship --plan
+```
+
+### `/jobs`
+
+Shows background Workbench activity in the TUI.
+
+```text
+/jobs
+```
+
+## Repo Intelligence
+
+Every Workbench run starts with a repo scan and cached intelligence snapshot.
+
+Current capabilities:
+
+- language and framework detection
+- entrypoint and config file discovery
+- symbol index for common coding languages
+- dependency hints from imports
+- impact file suggestions
+- test target suggestions
+- verification command discovery
+- workspace warnings and context digests
+
+## Project Memory
+
+Lumi keeps lightweight workspace memory under the Workbench state directory.
+
+It stores:
+
+- conventions from `LUMI.md`
+- decisions made during runs
+- recent Workbench executions
+- generated artifact history
+
+This keeps Lumi consistent across sessions instead of re-learning the repo from zero every time.
+
 ## TUI
 
-Lumi's default interface is built around a prompt-first workflow:
+Lumi's default interface is prompt-first:
 
-- top welcome card and prompt rail
-- dense transcript with compact `you` and `lumi` labels
-- slash-command palette under the prompt
-- model picker with provider filtering and Nerd Font icons
-- boxed notifications and inline review blocks
-- workspace trust prompt and closeable side panes
+- welcome card on startup
+- prompt rail and footer shortcuts
+- dense transcript above the prompt
+- command menus and model picker
+- shortcuts overlay on `?`
+- review cards and approval flows
+- background Workbench jobs pane
+- terminal-safe paste and selection behavior
 
 Useful keys:
 
@@ -173,72 +286,10 @@ Useful keys:
 - `/` opens the command menu
 - `Ctrl+N` opens the model picker
 - `Ctrl+G` toggles the starter card
-- `Tab` accepts slash-command or path suggestions
+- `Tab` accepts command or path suggestions
+- `PgUp` / `PgDn` scroll menus and transcript
 - `Shift+Up` / `Shift+Down` scroll the transcript
 - `Esc` closes transient UI and cancels pending file plans
-
-## Common Workflows
-
-### Agent Work
-
-```text
-/agent add login validation and tests
-/review src/auth.py
-/fix type errors in src/api
-```
-
-### File Operations
-
-Lumi understands direct natural-language file tasks:
-
-```text
-create a folder named api and add main.py inside it
-delete the folder docs
-rename app.py to main.py
-move config.yaml into app/config
-```
-
-Or use explicit filesystem commands:
-
-- `/fs ls [path]`
-- `/fs cat <file>`
-- `/fs mkdir <dir>`
-- `/fs mv <src> <dst>`
-- `/fs rm <path>`
-- `/fs write <file> [text]`
-- `/fs append <file> [text]`
-- `/undo`
-
-### Git Work
-
-Built-in git helpers include:
-
-- `/git status`
-- `/git diff`
-- `/git log`
-- `/git remote`
-- `/git fetch`
-- `/git sync`
-- `/git branches`
-- `/git summary`
-- `/git review`
-- `/git prepare`
-- `/git commit`
-- `/git commit-confirm`
-
-### Context Helpers
-
-Use Lumi to pull context directly into the conversation:
-
-- `/file <path>`
-- `/project <dir>`
-- `/browse [dir]`
-- `/search <query>`
-- `/web <url> [question]`
-- `/pdf <path>`
-- `/data <path>`
-- `/image <path> [question]`
-- `/voice [seconds]`
 
 ## Commands
 
@@ -248,41 +299,41 @@ Use Lumi to pull context directly into the conversation:
 |---|---|
 | `/model` | Switch provider and model |
 | `/effort [low\|medium\|high\|ehigh]` | Set reasoning effort |
-| `/clear` | Clear the current conversation |
 | `/status` | Show session and workspace status |
 | `/doctor` | Check provider and workspace health |
-| `/rebirth` | Show capability matrix and apply rebirth defaults |
-| `/benchmark` | Show benchmark scenarios |
+| `/onboard` | Show first-run and workspace guidance |
+| `/rebirth [status\|on\|off]` | Show the rebirth capability profile and toggles |
+| `/benchmark [list]` | Show built-in benchmark scenarios |
+| `/clear` | Clear the current conversation |
 | `/exit` | Exit Lumi |
 
-### Chat and Writing
+### Forge Workbench
 
 | Command | Description |
 |---|---|
-| `/council <prompt>` | Ask council mode |
-| `/retry` | Retry the last prompt |
-| `/more` | Expand the last answer |
-| `/rewrite` | Rewrite the last answer |
-| `/tl;dr` | Summarize the last answer |
-| `/short` | Make the next answer concise |
-| `/detailed` | Make the next answer detailed |
-| `/bullets` | Make the next answer bullet-based |
+| `/build <task>` | Inspect, plan, edit, test, review, and prepare artifacts |
+| `/learn [topic]` | Build repo intelligence and explain architecture |
+| `/review [file\|workspace]` | Review code or run workspace review through Workbench |
+| `/fixci [goal]` | Repair CI, lint, type, and test failures |
+| `/ship [goal]` | Verify the repo and generate release artifacts |
+| `/jobs` | Show background Workbench jobs |
 
-### Code and Context
+### Files, Git, and Context
 
 | Command | Description |
 |---|---|
-| `/agent <task>` | Run grounded agent mode |
-| `/review [file]` | Review code |
-| `/fix <problem>` | Diagnose and fix an issue |
-| `/debug <problem>` | Debug a failure |
 | `/file <path>` | Load a file into context |
 | `/project <dir>` | Load a project into context |
+| `/browse [dir]` | Open the file browser |
+| `/git status` | Show git status |
+| `/git summary` | Summarize repo state |
+| `/git review` | Review git changes |
 | `/search <query>` | Search the web |
-| `/image <path> [question]` | Ask Lumi about an image |
+| `/web <url> [question]` | Ask questions about a webpage |
+| `/image <path> [question]` | Inspect an image |
 | `/voice [seconds]` | Record and transcribe voice into the prompt |
 
-### Productivity
+### Memory, Plugins, and Productivity
 
 | Command | Description |
 |---|---|
@@ -295,73 +346,28 @@ Use Lumi to pull context directly into the conversation:
 
 ## Rebirth Profile
 
+`Forge` is the release name. `Rebirth` is still a runtime profile.
+
 Use `/rebirth` to view the capability matrix and readiness score for core coding-agent workflows.
 
-Use `/rebirth on` to apply the rebirth defaults:
+Use `/rebirth on` to apply the profile defaults:
 
 - detailed response mode
 - compact mode off
 - guardian watcher on
 
-## Plugins
-
-Plugins live in `~/Lumi/plugins/` and are approval-based:
-
-- Lumi scans plugin files before import
-- plugins must declare `PLUGIN_META`
-- changing a plugin file invalidates its approval
-- runtime dispatches are logged under `~/.codex/memories/lumi/state/plugins/`
-
-Useful commands:
-
-```text
-/plugins inspect
-/plugins pending
-/plugins approve <name>
-/plugins revoke <name>
-/plugins audit
-/permissions all
-```
-
-Minimal plugin example:
-
-```python
-PLUGIN_META = {
-    "name": "Greeter",
-    "version": "0.1.0",
-    "description": "Simple greeting helper",
-    "permissions": ["read_workspace"],
-}
-
-DESCRIPTION = {"/greet": "Say hello"}
-
-
-def greet(args, client, model, memory, system_prompt, name):
-    return f"hello {args or 'there'}"
-
-
-COMMANDS = {"/greet": greet}
-```
-
 ## Benchmarks and CI
 
-Lumi includes a benchmark harness for grounded agent work:
+Lumi includes two release gates:
 
-- temporary workspaces per scenario
-- scenario setup files and expected outcomes
-- verification-command support
-- changed-file tracking and recovery metrics
-- CI regression gate via `scripts/benchmark_gate.py`
+- `scripts/benchmark_gate.py`
+- `scripts/rebirth_audit.py`
 
-Use:
-
-```text
-/benchmark
-```
+The CI workflow prints gate diagnostics directly into logs when a failure happens.
 
 ## Project Context
 
-If a repo contains `LUMI.md`, Lumi loads it automatically as project context.
+If a repo contains `LUMI.md`, Lumi loads it automatically as project context and Workbench memory seed data.
 
 Example:
 
@@ -375,6 +381,7 @@ Python 3.11, FastAPI, PostgreSQL
 - Type hints everywhere
 - Use pytest
 - Keep functions small
+- Ship concise release notes
 ```
 
 ## Development
@@ -391,12 +398,16 @@ pre-commit install
 Checks:
 
 ```bash
-pytest tests -q
+pytest -q
 ruff check .
-ruff format .
 python scripts/benchmark_gate.py --config configs/benchmark_gate.json
 python scripts/rebirth_audit.py --strict
 ```
+
+See also:
+
+- [LUMI_FORGE_SPEC.md](LUMI_FORGE_SPEC.md)
+- [LUMI_REBIRTH_SPEC.md](LUMI_REBIRTH_SPEC.md)
 
 ## License
 

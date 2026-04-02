@@ -116,6 +116,12 @@ from src.utils.tools import (
 )
 from src.utils.voice import record_audio, speak, transcribe_groq
 from src.utils.web import fetch_url
+from src.utils.workbench import (
+    execute_workbench,
+    prepare_workbench_plan,
+    render_workbench_plan,
+    render_workbench_result,
+)
 
 ensure_dirs()
 
@@ -230,7 +236,7 @@ def print_help() -> None:
         print(f"  {CY}  {name:<28}{R}{DG}{desc}{R}")
 
     print(f"\n{line}")
-    print(f"  {PU}{B}  ✦  LUMI - REBIRTH COMMANDS{R}")
+    print(f"  {PU}{B}  ✦  LUMI v0.5.0: FORGE COMMANDS{R}")
     print(line)
 
     section("CHAT")
@@ -240,7 +246,7 @@ def print_help() -> None:
     cmd("/status",                   "session + workspace status summary")
     cmd("/doctor",                   "check Lumi setup and workspace health")
     cmd("/onboard",                  "show first-run and workspace guidance")
-    cmd("/rebirth [status|on|off]", "Lumi - rebirth capability report and profile toggle")
+    cmd("/rebirth [status|on|off]", "rebirth profile capability report and toggle")
     cmd("/benchmark [list]",         "show built-in benchmark scenarios")
     cmd("/redo [hint]",              "regenerate last answer, optionally with a hint")
     cmd("/help",                     "show this")
@@ -252,6 +258,10 @@ def print_help() -> None:
     cmd("/multi",                    "toggle multi-line input")
 
     section("CODE")
+    cmd("/build <task>",             "workbench: inspect, edit, test, review, ship artifacts")
+    cmd("/learn [topic]",            "workbench: repo intelligence, architecture, and impact map")
+    cmd("/fixci [goal]",             "workbench: repair CI, lint, type, or test failures")
+    cmd("/ship [goal]",              "workbench: verify and generate release artifacts")
     cmd("/edit <path>",              "edit a file — AI rewrites, shows diff, confirms")
     cmd("/file <path>",              "load file as context")
     cmd("/project <dir>",            "load entire codebase as context")
@@ -1394,6 +1404,58 @@ def cmd_agent(
     return run_agent(task, client, real_model, memory, system_prompt, yolo)
 
 
+def _parse_workbench_flags(arg: str, *, default_objective: str) -> tuple[str, bool, bool]:
+    parts = [part for part in arg.split() if part.strip()]
+    dry_run = False
+    plan_only = False
+    filtered: list[str] = []
+    for part in parts:
+        if part in {"--dry-run", "--plan"}:
+            dry_run = True
+            plan_only = True
+            continue
+        filtered.append(part)
+    objective = " ".join(filtered).strip() or default_objective
+    return objective, dry_run, plan_only
+
+
+def cmd_workbench(
+    mode: str,
+    arg: str,
+    client,
+    model: str,
+    memory: ShortTermMemory,
+    system_prompt: str,
+) -> str:
+    default_objectives = {
+        "build": "Implement the requested feature in this workspace.",
+        "review": "Review the current workspace changes and find bugs, risks, and missing tests.",
+        "learn": "Map the architecture, dependencies, and repo conventions.",
+        "fixci": "Investigate and repair failing CI, lint, type, or test issues.",
+        "ship": "Prepare this workspace for release with verification and artifacts.",
+    }
+    objective, dry_run, plan_only = _parse_workbench_flags(
+        arg.strip(),
+        default_objective=default_objectives.get(mode, mode),
+    )
+    plan = prepare_workbench_plan(mode, objective, dry_run=dry_run)
+    print("\n  " + render_workbench_plan(plan).replace("\n", "\n  ") + "\n")
+    if plan_only:
+        return ""
+    real_model = get_models(get_provider())[0] if model == "council" else model
+    result = execute_workbench(
+        mode,
+        objective,
+        client=client,
+        model=real_model,
+        memory=memory,
+        system_prompt=system_prompt,
+        dry_run=dry_run,
+    )
+    print("  " + render_workbench_result(result).replace("\n", "\n  ") + "\n")
+    return result.summary
+
+
 def cmd_mcp(
     arg_str: str, client, model: str, memory: ShortTermMemory,
     system_prompt: str, name: str,
@@ -2086,6 +2148,15 @@ def main() -> None:  # noqa: C901
             print_help()
             continue
 
+        if cmd in {"/build", "/learn", "/fixci", "/ship"}:
+            parts = user_input.split(maxsplit=1)
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            summary = cmd_workbench(cmd[1:], arg, client, current_model, memory, system_prompt)
+            if summary:
+                last_reply = summary
+                turns += 1
+            continue
+
         if cmd == "/clear":
             memory.clear()
             last_msg = last_reply = prev_reply = None
@@ -2274,6 +2345,13 @@ def main() -> None:  # noqa: C901
         if cmd == "/review":
             parts  = user_input.split(maxsplit=1)
             target = parts[1].strip() if len(parts) > 1 else ""
+            if (not target and not last_reply) or target.lower() in {"workspace", "repo", "workbench"}:
+                summary = cmd_workbench("review", target, client, current_model, memory, system_prompt)
+                if summary:
+                    last_reply = summary
+                    turns += 1
+                    print()
+                continue
             r = cmd_review(target, client, current_model,
                            memory, system_prompt, name, last_reply or "")
             if r:

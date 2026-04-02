@@ -290,12 +290,11 @@ class StarterView:
         return lines[:4]
 
     def _welcome_card(self, width: int, provider: str, model: str, cwd_short: str) -> list[str]:
-        total_w = min(max(84, width - 4), 150)
+        total_w = max(48, width - 2)
         left_col = min(52, max(38, total_w // 3 + 8))
         right_col = max(36, total_w - left_col - 5)
         top_fill = left_col + right_col + 5
-        left_pad = "  "
-        title = f" Lumi - rebirth v{APP_VERSION} "
+        title = f" Lumi v{APP_VERSION}: Forge "
         title = title[: max(0, top_fill - 2)]
         left_rule = max(0, (top_fill - len(title)) // 2)
         right_rule = max(0, top_fill - len(title) - left_rule)
@@ -317,8 +316,7 @@ class StarterView:
             left_prefix = self.style.bold() if left_bold else ""
             right_prefix = self.style.bold() if right_bold else ""
             return (
-                left_pad
-                + self.style.fg_fn(self.style.border)
+                self.style.fg_fn(self.style.border)
                 + "│ "
                 + self.style.reset
                 + left_prefix
@@ -373,8 +371,7 @@ class StarterView:
         right_lines = tips + [""] * max(0, body_rows - len(tips))
 
         lines = [
-            left_pad
-            + self.style.fg_fn(self.style.border)
+            self.style.fg_fn(self.style.border)
             + "╭"
             + "─" * left_rule
             + self.style.reset
@@ -411,8 +408,7 @@ class StarterView:
                 )
             )
         lines.append(
-            left_pad
-            + self.style.fg_fn(self.style.border)
+            self.style.fg_fn(self.style.border)
             + "╰"
             + "─" * top_fill
             + "╯"
@@ -429,7 +425,7 @@ class StarterView:
             return left + prefix + self.style.fg_fn(tone) + text[:content_w] + self.style.reset
 
         return [
-            row("Lumi - rebirth", self.style.fg_hi, bold=True)
+            row("Lumi Forge", self.style.fg_hi, bold=True)
             + self.style.fg_fn(self.style.muted)
             + f"  v{APP_VERSION}"
             + self.style.reset,
@@ -457,6 +453,8 @@ class StarterView:
         cwd = Path.cwd().resolve()
         cwd_short = self._display_path(cwd)
         review_lines = self._build_review_lines(width)
+        has_messages = bool(self.tui.store.snapshot())
+        starter_pinned = bool(getattr(self.tui, "starter_panel_pinned", False))
         if review_lines:
             return IntroRender(
                 header_lines=review_lines,
@@ -464,6 +462,12 @@ class StarterView:
                 trailing_lines=[],
             )
         if not getattr(self.tui, "show_starter_panel", True):
+            return IntroRender(
+                header_lines=[],
+                prompt=PromptRender(lines=[], cursor_row=0, cursor_col=0),
+                trailing_lines=[],
+            )
+        if has_messages and not starter_pinned:
             return IntroRender(
                 header_lines=[],
                 prompt=PromptRender(lines=[], cursor_row=0, cursor_col=0),
@@ -554,8 +558,8 @@ class TranscriptView:
                 continue
 
             if msg.role in ("assistant", "streaming"):
-                label = (msg.label or "lumi").replace("◆", "").strip() or "lumi"
                 is_stream = msg.role == "streaming"
+                label = (msg.label or "lumi").replace("◆", "").strip() or "lumi"
                 if is_stream:
                     blink_on = int(time.time() * 4) % 2 == 0
                     cursor = " " + self.style.fg_fn(self.style.cyan) + ("▋" if blink_on else " ") + self.style.reset
@@ -763,35 +767,56 @@ class OverlayView:
         if renderer is not None and (prompt_top <= 1 or prompt_height <= 1):
             starter_rows = len(renderer._build_starter_lines(chat_w))
             prompt_lines, _cursor_row, _cursor_col = renderer._prompt_bar(rows, chat_w, chat_w)
-            prompt_top = 1 + starter_rows
+            prompt_top = renderer._prompt_top(rows, 1 + starter_rows, len(prompt_lines), 0)
             prompt_height = len(prompt_lines)
         prompt_top = max(1, prompt_top or 1)
         prompt_height = max(1, prompt_height or 1)
         usable_width = max(24, chat_w - 4)
-        top = min(max(2, prompt_top + prompt_height), max(1, rows - total_lines + 1))
+        below_top = prompt_top + prompt_height
+        below_space = max(0, rows - below_top + 1)
+        above_top = max(2, prompt_top - total_lines)
+        if below_space >= total_lines:
+            top = below_top
+        else:
+            top = min(max(2, above_top), max(1, rows - total_lines + 1))
         return top, 2, usable_width
+
+    @staticmethod
+    def _windowed_items(total: int, sel: int, body_rows: int) -> tuple[int, int, bool, bool]:
+        if total <= 0:
+            return 0, 0, False, False
+        count = max(1, min(total, body_rows))
+        start = max(0, min(sel - count // 2, total - count))
+        has_above = start > 0
+        has_below = start + count < total
+        return start, count, has_above, has_below
 
     def browser_popup(self, rows: int, chat_w: int) -> str:
         items = self.tui.browser_items
         sel = self.tui.browser_sel
         prompt_height = max(1, int(getattr(self.tui, "_last_prompt_height", 1) or 1))
-        available_rows = max(4, rows - prompt_height - 1)
-        pop_w = min(56, max(28, chat_w - 4))
-        visible_items = max(1, min(len(items), max(1, available_rows - 3))) if items else 1
-        pop_h = min(max(4, visible_items + 3), available_rows)
+        available_rows = max(6, rows - prompt_height - 1)
+        pop_w = min(52, max(30, chat_w - 8))
+        visible_items = min(len(items), max(6, min(10, available_rows - 3))) if items else 1
+        pop_h = min(max(5, visible_items + 3), available_rows)
         top, left, _usable_width = self._popup_anchor(rows, chat_w, pop_h)
 
         if items:
             total = len(items)
             body_rows = max(1, pop_h - 3)
-            start = max(0, min(sel - body_rows // 2, total - body_rows))
-            disp_items = items[start : start + body_rows]
+            start, count, has_above, has_below = self._windowed_items(total, sel, body_rows)
+            disp_items = items[start : start + count]
             local_sel = sel - start
         else:
             disp_items = []
             local_sel = -1
+            has_above = False
+            has_below = False
 
-        out = [self.popup_frame(top, left, pop_w, "browser")]
+        title = "browser"
+        if has_above or has_below:
+            title += (" ↑" if has_above else "") + (" ↓" if has_below else "")
+        out = [self.popup_frame(top, left, pop_w, title)]
         cwd = self.tui.browser_cwd
         if len(cwd) > pop_w - 6:
             cwd = "..." + cwd[-(pop_w - 9) :]
@@ -811,19 +836,25 @@ class OverlayView:
             out.append(self.popup_line(row, left, pop_w, "", self.style.fg_dim, False))
             row += 1
 
-        out.append(self.popup_line(row, left, pop_w, "Esc close · Enter open · ← back", self.style.muted, False))
+        out.append(self.popup_line(row, left, pop_w, "Esc close · Enter open · ← back · PgUp/PgDn", self.style.muted, False))
         return "".join(out)
 
     def slash_popup(self, rows: int, chat_w: int) -> str:
         hits = self.tui.slash_hits
         sel = self.tui.slash_sel
         prompt_height = max(1, int(getattr(self.tui, "_last_prompt_height", 1) or 1))
-        pop_w = min(88, max(42, chat_w - 4))
-        n = min(len(hits), max(1, rows - prompt_height - 2), 8)
-        total_lines = n
+        pop_w = min(76, max(38, chat_w - 6))
+        visible_limit = min(len(hits), max(4, min(8, rows - prompt_height - 3)))
+        visible_count = max(1, min(len(hits), visible_limit))
+        total_lines = visible_count + 2
         top, left, _usable_width = self._popup_anchor(rows, chat_w, total_lines)
-        out: list[str] = []
-        for idx, (cmd, desc, _category, _example) in enumerate(hits[:n]):
+        start, count, has_above, has_below = self._windowed_items(len(hits), sel, visible_limit)
+        title = "commands"
+        if has_above or has_below:
+            title += (" ↑" if has_above else "") + (" ↓" if has_below else "")
+        out: list[str] = [self.popup_frame(top, left, pop_w, title)]
+        row = top + 1
+        for idx, (cmd, desc, _category, _example) in enumerate(hits[start : start + count], start=start):
             is_sel = idx == sel
             cmd_cell = f"{cmd[:13]:<13}"
             desc_width = max(0, pop_w - 24)
@@ -832,7 +863,7 @@ class OverlayView:
             content = f"{marker} {icon} {cmd_cell}  {desc[:desc_width]}"
             out.append(
                 self.popup_line(
-                    top + idx,
+                    row,
                     left,
                     pop_w,
                     content,
@@ -840,6 +871,8 @@ class OverlayView:
                     is_sel,
                 )
             )
+            row += 1
+        out.append(self.popup_line(row, left, pop_w, "Esc close · Tab/Enter select · PgUp/PgDn", self.style.muted, False))
         return "".join(out)
 
     def shortcuts_popup(self, rows: int, chat_w: int) -> str:
@@ -860,17 +893,19 @@ class OverlayView:
     def picker_popup(self, rows: int, chat_w: int) -> str:
         items = self.tui.picker_items
         sel = self.tui.picker_sel
-        pop_w = min(72, max(28, chat_w - 4))
+        pop_w = min(52, max(30, chat_w - 8))
         query = getattr(self.tui, "picker_query", "")
         stage = getattr(self.tui, "picker_stage", "providers")
         prompt_height = max(1, int(getattr(self.tui, "_last_prompt_height", 1) or 1))
         query_block = 1 if query else 0
         reserved = 1 + query_block
-        visible_limit = min(len(items), max(4, rows - prompt_height - reserved))
-        total_lines = reserved + visible_limit
+        visible_limit = min(len(items), max(6, min(10, rows - prompt_height - reserved - 1)))
+        total_lines = reserved + visible_limit + 1
         top, left, _usable_width = self._popup_anchor(rows, chat_w, total_lines)
-        title = "providers" if stage == "providers" else f"models · {getattr(self.tui, 'picker_provider_key', '')}"
-        out = [self.popup_frame(top, left, pop_w, title)]
+        has_above = False
+        has_below = False
+        title_base = "providers" if stage == "providers" else f"models · {getattr(self.tui, 'picker_provider_key', '')}"
+        out = [self.popup_frame(top, left, pop_w, title_base)]
         row = top + 1
         if query:
             out.append(self.popup_line(row, left, pop_w, f"󰱼 {query}", self.style.muted, False))
@@ -878,6 +913,8 @@ class OverlayView:
         start = 0
         if items:
             start = max(0, min(sel - visible_limit // 2, max(0, len(items) - visible_limit)))
+            has_above = start > 0
+            has_below = start + visible_limit < len(items)
         for idx, item in enumerate(items[start : start + visible_limit], start=start):
             kind = item.get("kind")
             label = item.get("label", "")
@@ -896,21 +933,36 @@ class OverlayView:
                 content = f"{marker} {state_icon} {icon} {label[:label_width]}"
                 out.append(self.popup_line(row, left, pop_w, content, self.style.fg_hi if is_sel else self.style.fg_dim, is_sel))
             row += 1
+        hint = "Esc close · Enter select · PgUp/PgDn page"
+        out.append(self.popup_line(row, left, pop_w, hint[: pop_w - 2], self.style.muted, False))
+        if has_above or has_below:
+            arrows = ("↑" if has_above else " ") + (" ↓" if has_below else "")
+            title = f"{title_base} {arrows}"
+        else:
+            title = title_base
+        out[0] = self.popup_frame(top, left, pop_w, title)
         return "".join(out)
 
     def path_popup(self, rows: int, chat_w: int) -> str:
         hits = self.tui.path_hits
         sel = self.tui.path_sel
         prompt_height = max(1, int(getattr(self.tui, "_last_prompt_height", 1) or 1))
-        pop_w = min(60, max(26, chat_w - 4))
-        n = min(len(hits), max(1, rows - prompt_height - 2), 8)
-        total_lines = n + 1
+        pop_w = min(52, max(28, chat_w - 8))
+        visible_limit = min(len(hits), max(4, min(8, rows - prompt_height - 3)))
+        total_lines = visible_limit + 2
         top, left, _usable_width = self._popup_anchor(rows, chat_w, total_lines)
-        out = [self.popup_frame(top, left, pop_w, "paths")]
-        for idx, path in enumerate(hits[:8]):
+        start, count, has_above, has_below = self._windowed_items(len(hits), sel, visible_limit)
+        title = "paths"
+        if has_above or has_below:
+            title += (" ↑" if has_above else "") + (" ↓" if has_below else "")
+        out = [self.popup_frame(top, left, pop_w, title)]
+        row = top + 1
+        for idx, path in enumerate(hits[start : start + count], start=start):
             is_sel = idx == sel
             content = f"{'› ' if is_sel else '  '}{path[: pop_w - 8]}"
-            out.append(self.popup_line(top + 1 + idx, left, pop_w, content, self.style.fg_hi if is_sel else self.style.fg_dim, is_sel))
+            out.append(self.popup_line(row, left, pop_w, content, self.style.fg_hi if is_sel else self.style.fg_dim, is_sel))
+            row += 1
+        out.append(self.popup_line(row, left, pop_w, "Esc close · Tab accept · PgUp/PgDn", self.style.muted, False))
         return "".join(out)
 
     def workspace_trust_popup(self, rows: int, cols: int) -> str:

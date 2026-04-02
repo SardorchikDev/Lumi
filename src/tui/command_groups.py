@@ -12,15 +12,16 @@ from src.tui.review_cards import file_review_card
 from src.tui.state import Msg
 from src.utils.git_tools import GIT_USAGE, run_git_subcommand
 from src.utils.system_reports import build_onboarding_report
+from src.utils.workbench import WORKBENCH_TITLE, prepare_workbench_plan, render_workbench_plan, render_workbench_report
 
 HELP_CATEGORIES = {
     "💬 Chat": ["/clear", "/retry", "/redo", "/undo", "/more", "/rewrite", "/tl;dr", "/summarize", "/translate", "/short", "/detailed", "/bullets", "/multi"],
-    "🔧 Code": ["/fix", "/debug", "/explain", "/review", "/improve", "/optimize", "/security", "/refactor", "/test", "/docs", "/types", "/comment", "/run", "/edit"],
+    "🔧 Code": ["/build", "/review", "/learn", "/fixci", "/ship", "/fix", "/debug", "/explain", "/improve", "/optimize", "/security", "/refactor", "/test", "/docs", "/types", "/comment", "/run", "/edit"],
     "📁 Files": ["/file", "/browse", "/find", "/grep", "/tree", "/project", "/fs"],
     "🔀 Git": ["/git", "/pr", "/changelog", "/standup", "/readme"],
     "🌐 Web": ["/search", "/web", "/image", "/imagine", "/data"],
     "🧠 Memory": ["/remember", "/memory", "/forget", "/save", "/load", "/sessions", "/export", "/tokens", "/context"],
-    "🛠️ Tools": ["/shell", "/scaffold", "/lint", "/fmt", "/todo", "/note", "/draft", "/weather", "/timer", "/copy", "/paste", "/diff", "/pdf"],
+    "🛠️ Tools": ["/shell", "/scaffold", "/lint", "/fmt", "/todo", "/note", "/draft", "/weather", "/timer", "/copy", "/paste", "/diff", "/pdf", "/jobs"],
     "⚙️ System": ["/status", "/doctor", "/onboard", "/rebirth", "/benchmark", "/permissions", "/model", "/council", "/mode", "/offline", "/godmode", "/pane", "/apply", "/index", "/rag", "/voice", "/persona", "/sys", "/plugins", "/compact", "/help", "/exit"],
 }
 
@@ -101,6 +102,21 @@ def _readme_structure(path: Path) -> str:
             except Exception:
                 continue
     return "\n".join(lines)
+
+
+def _parse_workbench_arg(arg: str, *, default_objective: str) -> tuple[str, bool, bool]:
+    parts = [part for part in arg.split() if part.strip()]
+    dry_run = False
+    plan_only = False
+    filtered: list[str] = []
+    for part in parts:
+        if part in {"--dry-run", "--plan"}:
+            dry_run = True
+            plan_only = True
+            continue
+        filtered.append(part)
+    objective = " ".join(filtered).strip() or default_objective
+    return objective, dry_run, plan_only
 
 
 def register_command_groups(
@@ -211,6 +227,96 @@ def register_command_groups(
         lines.append(f"\n  {len(registry.commands)} commands available. Tab to autocomplete.")
         lines.append("\n  Shortcuts: Ctrl+N=model picker | Ctrl+L=clear | Ctrl+R=retry | Tab=complete")
         tui._sys("\n".join(lines))
+
+    @registry.register("/build", "Workbench: inspect, edit, test, review, and prepare artifacts")
+    def cmd_build(tui, arg: str):
+        objective, dry_run, plan_only = _parse_workbench_arg(
+            arg.strip(),
+            default_objective="Implement the requested feature in this workspace.",
+        )
+        if plan_only:
+            plan = prepare_workbench_plan("build", objective, dry_run=dry_run)
+            tui.set_pane(
+                title="build plan",
+                subtitle=WORKBENCH_TITLE,
+                lines=render_workbench_plan(plan).splitlines(),
+                footer="Esc close  ·  /build <objective>",
+                close_on_escape=True,
+            )
+            tui.redraw()
+            return
+        tui.launch_workbench("build", objective, dry_run=dry_run)
+        tui._sys(f"Queued build job: {objective}")
+
+    @registry.register("/learn", "Workbench: index the repo and explain architecture, impact, and conventions")
+    def cmd_learn(tui, arg: str):
+        objective, dry_run, plan_only = _parse_workbench_arg(
+            arg.strip(),
+            default_objective="Map the architecture, dependencies, and repo conventions.",
+        )
+        if plan_only:
+            plan = prepare_workbench_plan("learn", objective, dry_run=dry_run)
+            tui.set_pane(
+                title="learn plan",
+                subtitle=WORKBENCH_TITLE,
+                lines=render_workbench_plan(plan).splitlines(),
+                footer="Esc close  ·  /learn [topic]",
+                close_on_escape=True,
+            )
+            tui.redraw()
+            return
+        tui.set_pane(
+            title="workbench learn",
+            subtitle=WORKBENCH_TITLE,
+            lines=render_workbench_report(Path.cwd(), task=objective).splitlines(),
+            footer="Esc close  ·  /learn --plan",
+            close_on_escape=True,
+        )
+        tui.redraw()
+
+    @registry.register("/ship", "Workbench: verify the repo and generate release artifacts")
+    def cmd_ship(tui, arg: str):
+        objective, dry_run, plan_only = _parse_workbench_arg(
+            arg.strip(),
+            default_objective="Prepare this workspace for release with artifacts and verification.",
+        )
+        if plan_only:
+            plan = prepare_workbench_plan("ship", objective, dry_run=dry_run)
+            tui.set_pane(
+                title="ship plan",
+                subtitle=WORKBENCH_TITLE,
+                lines=render_workbench_plan(plan).splitlines(),
+                footer="Esc close  ·  /ship",
+                close_on_escape=True,
+            )
+            tui.redraw()
+            return
+        tui.launch_workbench("ship", objective, dry_run=dry_run)
+        tui._sys("Queued ship job")
+
+    @registry.register("/fixci", "Workbench: repair CI, lint, type, and test failures")
+    def cmd_fixci(tui, arg: str):
+        objective, dry_run, plan_only = _parse_workbench_arg(
+            arg.strip(),
+            default_objective="Investigate and repair failing CI, lint, type, or test issues.",
+        )
+        if plan_only:
+            plan = prepare_workbench_plan("fixci", objective, dry_run=dry_run)
+            tui.set_pane(
+                title="fixci plan",
+                subtitle=WORKBENCH_TITLE,
+                lines=render_workbench_plan(plan).splitlines(),
+                footer="Esc close  ·  /fixci [objective]",
+                close_on_escape=True,
+            )
+            tui.redraw()
+            return
+        tui.launch_workbench("fixci", objective, dry_run=dry_run)
+        tui._sys(f"Queued fixci job: {objective}")
+
+    @registry.register("/jobs", "Show background Workbench jobs")
+    def cmd_jobs(tui, arg: str):
+        tui._refresh_workbench_pane()
 
     @registry.register("/fix", "Diagnose error and fix it")
     def cmd_fix(tui, arg: str):
@@ -345,6 +451,13 @@ def register_command_groups(
 
     @registry.register("/review", "Full code review with specifics")
     def cmd_review(tui, arg: str):
+        review_target = arg.strip().lower()
+        if (not arg.strip() and not tui.last_reply) or review_target in {"workspace", "repo", "workbench"}:
+            objective = arg.strip() or "Review the current workspace changes, call out bugs, risks, and missing tests."
+            tui.launch_workbench("review", objective, dry_run=True)
+            tui._sys(f"Queued review job: {objective}")
+            return
+
         def _go():
             path_arg = arg.strip()
             target_path = Path(path_arg).expanduser() if path_arg else None
