@@ -34,6 +34,7 @@ from src.chat.model_fetchers import fetch_groq_models as _fetch_groq_models
 from src.chat.model_fetchers import fetch_openrouter_models as _fetch_openrouter_models
 from src.chat.model_fetchers import fetch_pollinations_models as _fetch_pollinations_models
 from src.chat.model_fetchers import fetch_vercel_models as _fetch_vercel_models
+from src.chat.model_filters import filter_models_by_allowlist
 from src.chat.model_registry import ModelRegistry, ProviderCatalog
 from src.chat.optimizer import route_model
 from src.chat.provider_catalogs import (
@@ -77,6 +78,10 @@ _models_cache: dict = {}       # provider → list of models
 _models_cache_fetched_at: dict[str, float] = {}
 MODEL_CACHE_TTL_SECONDS = 900
 _MODEL_REGISTRY = ModelRegistry(cache_dir=MODEL_CACHE_DIR, ttl_seconds=MODEL_CACHE_TTL_SECONDS)
+STARTUP_MODEL_PREFERENCES: dict[str, tuple[str, ...]] = {
+    "gemini": ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"),
+    "vertex": ("gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-preview-05-06"),
+}
 
 
 def _should_ignore_cached_catalog(provider: str, models: list[str] | None) -> bool:
@@ -259,6 +264,38 @@ def get_models(provider: str = None) -> list:
     return models
 
 
+def _match_model_name(preferred: str, models: list[str]) -> str | None:
+    lowered = preferred.strip().lower()
+    if not lowered:
+        return None
+    for model in models:
+        if model.lower() == lowered:
+            return model
+    suffix_matches = [model for model in models if model.split("/")[-1].lower() == lowered]
+    if len(suffix_matches) == 1:
+        return suffix_matches[0]
+    contains_matches = [model for model in models if lowered in model.lower()]
+    if contains_matches:
+        return contains_matches[0]
+    return None
+
+
+def pick_startup_model(provider: str | None = None, models: list[str] | None = None) -> str:
+    active_provider = provider or get_provider()
+    available = list(models if models is not None else get_models(active_provider))
+    if not available:
+        return "unknown"
+
+    filtered, _allowlist = filter_models_by_allowlist(active_provider, available)
+    candidates = filtered or available
+    preferences = STARTUP_MODEL_PREFERENCES.get(active_provider, ())
+    for preferred in preferences:
+        matched = _match_model_name(preferred, candidates)
+        if matched:
+            return matched
+    return candidates[0]
+
+
 # ── Friendly errors ───────────────────────────────────────────────────────────
 
 def _friendly_error(msg: str, provider: str):
@@ -331,7 +368,7 @@ def chat_stream(
 ) -> str:
     provider = get_provider()
     if model is None:
-        model = get_models()[0]
+        model = pick_startup_model(provider)
     try:
         available_models = get_models(provider)
     except Exception:

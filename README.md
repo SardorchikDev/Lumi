@@ -1,4 +1,4 @@
-# lumi
+# Lumi - rebirth
 
 Minimal terminal AI for coding, repo work, file management, and grounded agent tasks.
 
@@ -50,6 +50,7 @@ Good first commands inside Lumi:
 
 ```text
 /onboard
+/rebirth
 /doctor
 /model
 /status
@@ -81,6 +82,15 @@ lumi --yolo
 - session memory, saved chats, notes, todos, and long-term memory
 - web, file, PDF, image, voice, and structured data helpers
 - plugin loading with approval, audit, and permission reporting
+
+## Lumi - rebirth Profile
+
+Use `/rebirth` to view a capability matrix and readiness score for core coding-agent workflows.
+Use `/rebirth on` to apply the rebirth defaults:
+
+- detailed response mode
+- compact mode off
+- guardian watcher on
 
 ## TUI
 
@@ -180,6 +190,7 @@ Use Lumi to pull focused context into the conversation:
 | `/status` | Show Lumi session and workspace status |
 | `/doctor` | Check provider and workspace health |
 | `/onboard` | Show first-run guidance |
+| `/rebirth` | Show capability matrix and apply rebirth defaults |
 | `/benchmark` | Show benchmark scenarios |
 | `/exit` | Exit Lumi |
 
@@ -265,11 +276,22 @@ LUMI_STATE_DIR=~/.codex/memories/lumi/state
 LUMI_CACHE_DIR=~/.codex/memories/lumi/cache
 ```
 
+Optional model picker allowlists (`/model` will only show these when set):
+
+```env
+LUMI_GEMINI_MODELS=gemini-2.5-flash,gemini-2.5-pro
+LUMI_HUGGINGFACE_MODELS=meta-llama/Llama-3.3-70B-Instruct
+# optional global fallback
+LUMI_ALLOWED_MODELS=gemini-2.5-flash
+```
+
 After changing `.env`, run:
 
 ```text
 /doctor
 ```
+
+`/model` only shows providers that are configured in your current `.env`.
 
 ## Project Context
 
@@ -303,6 +325,7 @@ Plugin loading is approval-based:
 - plugins must declare `PLUGIN_META`
 - plugins are not imported until approved
 - changing a plugin file invalidates its approval
+- runtime dispatches are logged under `~/.codex/memories/lumi/state/plugins/`
 
 Useful commands:
 
@@ -368,6 +391,7 @@ Checks:
 pytest tests -q
 ruff check .
 ruff format .
+python scripts/benchmark_gate.py --config configs/benchmark_gate.json
 ```
 
 ## License

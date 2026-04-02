@@ -1,6 +1,8 @@
 __init__
 agents
 chat
+cli
+config
 memory
 personality
 prompts

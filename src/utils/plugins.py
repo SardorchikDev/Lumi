@@ -26,11 +26,13 @@ import pathlib
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from src.config import PLUGINS_DIR, STATE_ROOT
 
 PLUGIN_DIR = PLUGINS_DIR
 PLUGIN_TRUST_FILE = STATE_ROOT / "plugins" / "trust.json"
+PLUGIN_AUDIT_LOG = STATE_ROOT / "plugins" / "runtime_audit.log"
 ALLOWED_PERMISSIONS = frozenset(
     {"read_workspace", "write_workspace", "network", "clipboard", "shell"}
 )
@@ -81,6 +83,15 @@ def _normalize_permissions(raw_permissions) -> tuple[str, ...]:
             )
         permissions.append(normalized)
     return tuple(sorted(set(permissions)))
+
+
+def _permission_risk_level(permissions: tuple[str, ...]) -> str:
+    declared = set(permissions)
+    if "shell" in declared and "network" in declared:
+        return "high"
+    if any(name in declared for name in ("shell", "network", "write_workspace")):
+        return "medium"
+    return "low"
 
 
 def _read_trust_store() -> dict[str, dict[str, str]]:
@@ -254,7 +265,55 @@ def _meta_to_dict(meta: PluginMeta) -> dict[str, object]:
         "status": meta.status,
         "warnings": list(meta.warnings),
         "issues": list(meta.issues),
+        "risk_level": _permission_risk_level(meta.permissions),
     }
+
+
+def _append_runtime_audit_event(
+    *,
+    meta: PluginMeta,
+    command: str,
+    status: str,
+    detail: str = "",
+) -> None:
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "plugin": meta.name,
+        "command": command,
+        "status": status,
+        "permissions": list(meta.permissions),
+        "risk_level": _permission_risk_level(meta.permissions),
+        "detail": (detail or "")[:280],
+    }
+    try:
+        PLUGIN_AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with PLUGIN_AUDIT_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _recent_runtime_audit_events(limit: int = 5) -> list[dict[str, object]]:
+    if limit <= 0 or not PLUGIN_AUDIT_LOG.exists():
+        return []
+    try:
+        lines = PLUGIN_AUDIT_LOG.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    events: list[dict[str, object]] = []
+    for raw in reversed(lines):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            events.append(parsed)
+        if len(events) >= limit:
+            break
+    return list(reversed(events))
 
 
 def scan_plugins() -> list[dict[str, object]]:
@@ -418,7 +477,8 @@ def render_plugin_audit_report() -> str:
         return "\n".join(lines)
     for item in items:
         trust = "trusted" if item["trusted"] else "approval required"
-        lines.append(f"  {item['name']}  [{item['status']}; {trust}]")
+        risk = item.get("risk_level", "unknown")
+        lines.append(f"  {item['name']}  [{item['status']}; {trust}; risk={risk}]")
         if item["issues"]:
             for issue in item["issues"]:
                 lines.append(f"    issue: {issue}")
@@ -427,6 +487,15 @@ def render_plugin_audit_report() -> str:
                 lines.append(f"    warning: {warning}")
         if not item["issues"] and not item["warnings"]:
             lines.append("    audit: manifest and declared permissions look consistent")
+    runtime_events = _recent_runtime_audit_events(limit=5)
+    if runtime_events:
+        lines.append("  recent runtime events")
+        for event in runtime_events:
+            lines.append(
+                "    "
+                + f"{event.get('ts', '')}  {event.get('plugin', '?')} {event.get('command', '?')} "
+                + f"-> {event.get('status', '?')} [{event.get('risk_level', '?')}]"
+            )
     return "\n".join(lines)
 
 
@@ -468,7 +537,8 @@ def render_plugin_inventory_report(view: str = "summary") -> str:
             perms = ", ".join(item["permissions"]) if item["permissions"] else "none declared"
             commands = ", ".join(item["commands"]) if item["commands"] else "none"
             trust = "trusted" if item["trusted"] else "approval required"
-            lines.append(f"  {item['name']} v{item['version']}  [{item['status']}; {trust}]")
+            risk = item.get("risk_level", "unknown")
+            lines.append(f"  {item['name']} v{item['version']}  [{item['status']}; {trust}; risk={risk}]")
             lines.append(f"    {item['description']}")
             lines.append(f"    commands: {commands}")
             lines.append(f"    permissions: {perms}")
@@ -523,7 +593,8 @@ def render_permission_report(scope: str = "summary") -> str:
         else:
             for item in details:
                 perms = ", ".join(item["permissions"]) if item["permissions"] else "none declared"
-                lines.append(f"    {item['name']}: {perms}")
+                risk = item.get("risk_level", "unknown")
+                lines.append(f"    {item['name']}: {perms}  [risk={risk}]")
 
     if normalized == "summary":
         declared = sorted(
@@ -549,8 +620,10 @@ def dispatch(cmd: str, args: str, **kwargs) -> tuple[bool, str | None]:
     payload = _sanitize_dispatch_context(meta, kwargs)
     try:
         result = _run_plugin_subprocess(meta, cmd, args, payload)
+        _append_runtime_audit_event(meta=meta, command=cmd, status="ok")
         return True, result
     except Exception as exc:
+        _append_runtime_audit_event(meta=meta, command=cmd, status="error", detail=str(exc))
         return True, f"Plugin error: {exc}"
 
 
@@ -560,6 +633,7 @@ def _sanitize_dispatch_context(meta: PluginMeta, kwargs: dict) -> dict[str, obje
         "name": kwargs.get("name", ""),
         "model": kwargs.get("model", ""),
         "provider": kwargs.get("provider", ""),
+        "allowed_permissions": sorted(permissions),
     }
     workspace = kwargs.get("workspace") or kwargs.get("base_dir") or pathlib.Path.cwd()
     workspace_path = pathlib.Path(workspace).expanduser().resolve()

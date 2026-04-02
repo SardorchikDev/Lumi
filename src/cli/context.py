@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pathlib
 
-from src.chat.hf_client import get_client, get_models, get_provider, set_provider
+from src.chat.hf_client import get_client, get_models, get_provider, pick_startup_model, set_provider
 from src.memory.longterm import get_persona_override
 from src.memory.short_term import ShortTermMemory
 from src.prompts.builder import load_persona
@@ -21,7 +21,8 @@ class SessionContext:
         # Core state
         self.memory: ShortTermMemory = ShortTermMemory(max_turns=20)
         self.client = get_client()
-        self.current_model: str = get_models(get_provider())[0]
+        provider = get_provider()
+        self.current_model: str = pick_startup_model(provider, get_models(provider))
         self.name: str = "Lumi"
         self.system_prompt: str = ""
         self.turns: int = 0
@@ -79,7 +80,7 @@ class SessionContext:
         """Switch provider and reset client."""
         set_provider(provider)
         self.client = get_client()
-        self.current_model = get_models(provider)[0]
+        self.current_model = pick_startup_model(provider, get_models(provider))
 
     def get_available_providers(self):
         """Get list of available providers."""

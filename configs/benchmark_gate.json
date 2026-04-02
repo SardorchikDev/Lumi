@@ -1,0 +1,17 @@
+{
+  "scenarios": [
+    "scaffold-python",
+    "scaffold-docs",
+    "rename-file",
+    "delete-folder",
+    "patch-bug"
+  ],
+  "minimum": {
+    "pass_rate": 1.0,
+    "average_score": 0.85,
+    "verification_pass_rate": 1.0
+  },
+  "minimum_scenario_score": {
+    "patch-bug": 0.8
+  }
+}

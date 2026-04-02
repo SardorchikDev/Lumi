@@ -10,6 +10,7 @@ from src.config import CACHE_ROOT, LUMI_HOME, PLUGINS_DIR, STATE_ROOT, UI_STATE_
 from src.memory.longterm import memory_stats
 from src.utils.git_tools import summarize_git_state
 from src.utils.plugins import audit_plugins, describe_plugins
+from src.utils.rebirth import rebirth_status_summary
 from src.utils.repo_profile import (
     build_onboarding_hints,
     inspect_workspace,
@@ -77,6 +78,7 @@ def build_status_report(
         f"{longterm['facts']} fact(s), {longterm['episodes']} episode(s), "
         f"{longterm['persona_override_keys']} persona override key(s)"
     )
+    lines.append(f"  Rebirth:   {rebirth_status_summary()}")
     lines.append(f"  Runtime:   state {STATE_ROOT} · cache {CACHE_ROOT}")
     if vision_ready or voice_ready:
         lines.append(
@@ -157,6 +159,7 @@ def build_doctor_report(
     lines.append(f"  Runtime:   state {STATE_ROOT} · cache {CACHE_ROOT}")
     lines.append(f"  UI state:  {UI_STATE_DIR}")
     lines.append(f"  Plugins:   {PLUGINS_DIR}")
+    lines.append(f"  Rebirth:   {rebirth_status_summary()}")
     suspicious_plugins = sum(1 for item in plugin_audit if item["warnings"])
     if suspicious_plugins:
         lines.append(f"  Plugin audit: {suspicious_plugins} plugin(s) need attention")
@@ -249,7 +252,7 @@ def build_onboarding_report(
     lines.append("  Env file:  " + (str(_find_env_file(root)) if _find_env_file(root) else "missing"))
     lines.append("  Runtime:   state " + str(STATE_ROOT))
     lines.append("  Cache:     " + str(CACHE_ROOT))
-    lines.append("  Commands:  /status, /doctor, /model, /agent, /git review")
+    lines.append("  Commands:  /status, /doctor, /rebirth, /model, /agent, /git review")
     lines.append(
         "  Media:     vision "
         + (", ".join(vision_ready) if vision_ready else "none")

@@ -1,0 +1,15 @@
+{
+  "name": "Lumi - rebirth",
+  "version": 1,
+  "defaults": {
+    "response_mode": "detailed",
+    "compact": false,
+    "guardian_enabled": true
+  },
+  "quickstart": [
+    "/doctor",
+    "/benchmark",
+    "/rebirth",
+    "/mode vessel codex"
+  ]
+}

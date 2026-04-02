@@ -95,6 +95,29 @@ def test_get_models_ignores_legacy_tiny_gemini_memory_cache(monkeypatch):
     assert models == GEMINI_ALL_MODELS[:8]
 
 
+def test_pick_startup_model_prefers_gemini_flash_over_catalog_order(monkeypatch):
+    for key in ("LUMI_GEMINI_MODELS", "GEMINI_MODELS", "GEMINI_MODEL", "LUMI_ALLOWED_MODELS", "LUMI_MODELS"):
+        monkeypatch.delenv(key, raising=False)
+
+    model = hf_client.pick_startup_model(
+        "gemini",
+        ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+    )
+
+    assert model == "gemini-2.5-flash"
+
+
+def test_pick_startup_model_honors_gemini_allowlist(monkeypatch):
+    monkeypatch.setenv("LUMI_GEMINI_MODELS", "gemini-2.5-pro")
+
+    model = hf_client.pick_startup_model(
+        "gemini",
+        ["gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite"],
+    )
+
+    assert model == "gemini-2.5-pro"
+
+
 def test_discover_models_ignores_legacy_tiny_gemini_disk_cache(monkeypatch):
     monkeypatch.setattr(
         hf_client,

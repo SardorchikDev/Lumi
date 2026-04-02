@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import tempfile
 from difflib import unified_diff
@@ -45,6 +46,25 @@ def build_file_write_preview(
     return preview
 
 
+def _validate_expected_state(step: dict, current: str) -> tuple[bool, str]:
+    expected_sha = str(step.get("expected_sha256", "") or "").strip().lower()
+    if expected_sha:
+        digest = hashlib.sha256(current.encode("utf-8")).hexdigest()
+        if digest != expected_sha:
+            return False, "Blocked: expected_sha256 does not match the current file"
+
+    expected_line_count = step.get("expected_line_count")
+    if expected_line_count is not None:
+        try:
+            expected = int(expected_line_count)
+        except (TypeError, ValueError):
+            return False, "Blocked: expected_line_count must be an integer"
+        actual = len(current.splitlines())
+        if actual != expected:
+            return False, "Blocked: expected_line_count does not match the current file"
+    return True, ""
+
+
 def compute_patch_file_update(step: dict, path: Path) -> tuple[bool, str]:
     old_text = str(step.get("old_text", ""))
     new_text = str(step.get("new_text", ""))
@@ -53,6 +73,9 @@ def compute_patch_file_update(step: dict, path: Path) -> tuple[bool, str]:
         current = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return False, str(exc)
+    ok, reason = _validate_expected_state(step, current)
+    if not ok:
+        return False, reason
     matches = current.count(old_text)
     if matches == 0:
         return False, "Blocked: patch_file old_text was not found"
@@ -75,6 +98,9 @@ def compute_patch_lines_update(step: dict, path: Path) -> tuple[bool, str]:
         current = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return False, str(exc)
+    ok, reason = _validate_expected_state(step, current)
+    if not ok:
+        return False, reason
 
     lines = current.splitlines(keepends=True)
     if end_line > len(lines):
@@ -108,6 +134,9 @@ def compute_patch_context_update(step: dict, path: Path) -> tuple[bool, str]:
         current = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return False, str(exc)
+    ok, reason = _validate_expected_state(step, current)
+    if not ok:
+        return False, reason
 
     matches: list[tuple[int, int]] = []
     expected = str(old_block) if old_block is not None else None
@@ -165,10 +194,38 @@ def compute_patch_apply_update(step: dict, path: Path) -> tuple[bool, str]:
     hunks = step.get("hunks", [])
     if not isinstance(hunks, list) or not hunks:
         return False, "Blocked: patch_apply requires a non-empty hunks list"
+    seen_exact_old_text: dict[str, int] = {}
+    line_ranges: list[tuple[int, int, int]] = []
+    for index, raw_hunk in enumerate(hunks, start=1):
+        if not isinstance(raw_hunk, dict):
+            return False, f"Blocked: patch_apply hunk {index} is not an object"
+        old_text = raw_hunk.get("old_text")
+        if old_text is not None and not bool(raw_hunk.get("replace_all", False)):
+            key = str(old_text)
+            prev = seen_exact_old_text.get(key)
+            if prev is not None:
+                return False, f"Blocked: patch_apply hunk {index} conflicts with hunk {prev} (duplicate old_text without replace_all)"
+            seen_exact_old_text[key] = index
+        has_line_bounds = raw_hunk.get("start_line") is not None or raw_hunk.get("end_line") is not None
+        if has_line_bounds:
+            try:
+                start = int(raw_hunk.get("start_line"))
+                end = int(raw_hunk.get("end_line"))
+            except (TypeError, ValueError):
+                return False, f"Blocked: patch_apply hunk {index} has invalid line bounds"
+            if start < 1 or end < start:
+                return False, f"Blocked: patch_apply hunk {index} has invalid line bounds"
+            for prev_start, prev_end, prev_index in line_ranges:
+                if not (end < prev_start or start > prev_end):
+                    return False, f"Blocked: patch_apply hunk {index} overlaps line range with hunk {prev_index}"
+            line_ranges.append((start, end, index))
     try:
         current = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return False, str(exc)
+    ok, reason = _validate_expected_state(step, current)
+    if not ok:
+        return False, reason
 
     updated = current
     for index, raw_hunk in enumerate(hunks, start=1):

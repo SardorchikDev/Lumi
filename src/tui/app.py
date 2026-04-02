@@ -1,8 +1,4 @@
-"""
-◆ Lumi TUI — True Ultimate Edition
-  Fully restored full command codebase without trimming, pristine thread-safety.
-  Minimalist rounded conversation boundaries, original retro logo, perfect cursor math.
-"""
+"""Lumi TUI runtime and renderer."""
 from __future__ import annotations
 
 import concurrent.futures
@@ -29,6 +25,7 @@ from pathlib import Path
 # ── Logging setup (file only — never pollutes the TUI) ───────────────────────
 _LOG_DIR = Path.home() / ".lumi"
 _LOG_DIR.mkdir(exist_ok=True)
+_WORKSPACE_TRUST_FILE = _LOG_DIR / "trusted_workspaces.json"
 logging.basicConfig(
     filename=str(_LOG_DIR / "lumi.log"),
     level=logging.DEBUG,
@@ -53,7 +50,14 @@ from src.chat.hf_client import (
     get_client,
     get_models,
     get_provider,
+    pick_startup_model,
     set_provider,
+)
+from src.chat.inference_controls import (
+    EFFORT_LEVELS,
+    apply_reasoning_effort,
+    normalize_reasoning_effort,
+    tune_inference_request,
 )
 from src.chat.optimizer import (
     get_global_context_cache,
@@ -157,6 +161,7 @@ from src.tui.media import (
     resolve_media_target,
     transcribe_audio_file,
 )
+from src.tui.mode_registry import MODE_CLI_REGISTRY
 from src.tui.mode_sessions import (
     build_mode_context_text,
     build_mode_review_card,
@@ -206,6 +211,7 @@ from src.utils.plugins import (
     revoke_plugin,
 )
 from src.utils.plugins import dispatch as plugin_dispatch
+from src.utils.rebirth import load_rebirth_profile, rebirth_status_summary, render_rebirth_report
 from src.utils.repo_profile import inspect_workspace
 from src.utils.system_reports import build_doctor_report, build_status_report
 from src.utils.web import fetch_url
@@ -218,131 +224,6 @@ except Exception:
 _context_cache = get_global_context_cache()
 _session_telemetry = get_global_telemetry()
 
-MODE_CLI_REGISTRY: dict[str, dict[str, object]] = {
-    "claude": {
-        "binary": "claude",
-        "name": "Claude Code",
-        "maker": "Anthropic",
-        "desc": "Repo-aware coding agent with strong edit and review workflows.",
-        "installs": [
-            "npm install -g @anthropic-ai/claude-code",
-            "curl -fsSL https://claude.ai/install.sh | bash",
-        ],
-        "verify": "claude --version",
-        "auth": "Authenticate with `claude login` or set `ANTHROPIC_API_KEY`.",
-        "version_args": [["--version"]],
-    },
-    "codex": {
-        "binary": "codex",
-        "name": "Codex CLI",
-        "maker": "OpenAI",
-        "desc": "Local coding agent with GPT-5 family models and sandboxed execution.",
-        "installs": ["npm install -g @openai/codex"],
-        "verify": "codex --version",
-        "auth": "Set `OPENAI_API_KEY` and complete any first-run login if prompted.",
-        "version_args": [["--version"]],
-    },
-    "gemini": {
-        "binary": "gemini",
-        "name": "Gemini CLI",
-        "maker": "Google",
-        "desc": "Gemini CLI with repo awareness, MCP, and Google-hosted models.",
-        "installs": ["npm install -g @google/gemini-cli"],
-        "verify": "gemini --version",
-        "auth": "Run `gemini auth login` or set `GEMINI_API_KEY`.",
-        "version_args": [["--version"]],
-    },
-    "opencode": {
-        "binary": "opencode",
-        "name": "OpenCode",
-        "maker": "SST",
-        "desc": "Provider-rich coding CLI with LSP and multi-session support.",
-        "installs": [
-            "npm install -g opencode-ai",
-            "curl -fsSL https://opencode.ai/install | bash",
-        ],
-        "verify": "opencode --version",
-        "auth": "Configure a provider in OpenCode after install.",
-        "version_args": [["--version"]],
-    },
-    "aider": {
-        "binary": "aider",
-        "name": "Aider",
-        "maker": "Paul Gauthier",
-        "desc": "Git-first terminal pair programmer with strong diff workflows.",
-        "installs": [
-            "pip install aider-chat --break-system-packages",
-            "pipx install aider-chat",
-        ],
-        "verify": "aider --version",
-        "auth": "Provide the model API keys Aider expects for your chosen backend.",
-        "version_args": [["--version"]],
-    },
-    "goose": {
-        "binary": "goose",
-        "name": "Goose",
-        "maker": "Block",
-        "desc": "Autonomous agent CLI with tooling and MCP support.",
-        "installs": ["curl -fsSL https://github.com/block/goose/releases/latest/download/install.sh | bash"],
-        "verify": "goose --version",
-        "auth": "Finish Goose setup after install and configure your provider.",
-        "version_args": [["--version"]],
-    },
-    "qwen": {
-        "binary": "qwen",
-        "name": "Qwen Code",
-        "maker": "Alibaba",
-        "desc": "Qwen coding CLI with free-tier auth and large coder models.",
-        "installs": ['bash -c "$(curl -fsSL https://qwen-code-assets.oss-cn-hangzhou.aliyuncs.com/installation/install-qwen.sh)"'],
-        "verify": "qwen --version",
-        "auth": "Complete the Qwen login flow after install.",
-        "version_args": [["--version"]],
-    },
-    "plandex": {
-        "binary": "plandex",
-        "name": "Plandex",
-        "maker": "Plandex",
-        "desc": "Plan-first coding CLI for larger multi-file tasks.",
-        "installs": ["curl -sL https://plandex.ai/install.sh | bash"],
-        "verify": "plandex --version",
-        "auth": "Run the Plandex auth/setup flow after install.",
-        "version_args": [["--version"]],
-    },
-    "kilo": {
-        "binary": "kilo",
-        "name": "Kilo Code",
-        "maker": "Kilo-Org",
-        "desc": "Multi-mode coding CLI with broad model support.",
-        "installs": ["npm install -g @kilocode/cli"],
-        "verify": "kilo --version",
-        "auth": "Sign in or configure your model provider after install.",
-        "version_args": [["--version"]],
-    },
-    "amp": {
-        "binary": "amp",
-        "name": "Amp",
-        "maker": "Sourcegraph",
-        "desc": "Agentic CLI with shared threads and high-context workflows.",
-        "installs": [
-            "npm install -g @sourcegraph/amp",
-            "curl -fsSL https://ampcode.com/install.sh | bash",
-        ],
-        "verify": "amp --version",
-        "auth": "Complete the Amp login flow after install.",
-        "version_args": [["--version"]],
-    },
-    "continue": {
-        "binary": "cn",
-        "name": "Continue CLI",
-        "maker": "Continue.dev",
-        "desc": "Resume-friendly CLI with headless and CI support.",
-        "installs": ["npm install -g @continuedev/cli"],
-        "verify": "cn --version",
-        "auth": "Configure Continue after install with your preferred provider.",
-        "version_args": [["--version"]],
-    },
-}
-
 
 def _mode_display_path(path: str | Path, *, max_len: int = 52) -> str:
     text = str(Path(path).expanduser())
@@ -354,6 +235,29 @@ def _mode_display_path(path: str | Path, *, max_len: int = 52) -> str:
     if len(text) <= max_len:
         return text
     return "..." + text[-(max_len - 3) :]
+
+
+def _workspace_path_key(path: Path) -> str:
+    return str(path.resolve())
+
+
+def _load_workspace_trust_paths() -> set[str]:
+    try:
+        data = json.loads(_WORKSPACE_TRUST_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return set()
+    if not isinstance(data, list):
+        return set()
+    return {
+        _workspace_path_key(Path(item))
+        for item in data
+        if isinstance(item, str) and item.strip()
+    }
+
+
+def _save_workspace_trust_paths(paths: set[str]) -> None:
+    payload = sorted(path for path in paths if path)
+    _WORKSPACE_TRUST_FILE.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
 def _mode_detect_binary_version(entry: dict[str, object], binary_path: str) -> str:
@@ -491,17 +395,20 @@ def _stream_direct_completion(
     client,
     messages: list[dict[str, object]],
     model: str,
-    label: str = "◆ lumi",
+    label: str = "lumi",
 ) -> str:
     idx = tui.store.add(Msg("streaming", "", label))
     chunks: list[str] = []
+    effort = normalize_reasoning_effort(getattr(tui, "reasoning_effort", "medium"))
+    tuned_messages = apply_reasoning_effort(messages, effort)
+    tuned_max_tokens, tuned_temperature = tune_inference_request(2048, 0.2, effort)
     try:
         full = stream_once(
             client,
             model,
-            messages,
-            max_tokens=2048,
-            temperature=0.2,
+            tuned_messages,
+            max_tokens=tuned_max_tokens,
+            temperature=tuned_temperature,
             on_delta=lambda delta: (
                 chunks.append(delta),
                 tui.store.append(idx, delta),
@@ -545,23 +452,23 @@ def _erase_line(): return f"{CSI}2K"
 def _clr_down(): return f"{CSI}J"
 
 BG = "transparent"
-BG_DARK = "#1d2230"
-BG_HL = "#242a38"
-BG_POP = "#181d28"
-BORDER = "#31384a"
-MUTED = "#6b7285"
-COMMENT = "#6b7285"
-FG_DIM = "#abb3c5"
-FG = "#cfd6e6"
-FG_HI = "#eef2ff"
-BLUE = "#8fb4ff"
-CYAN = "#86d3ff"
-GREEN = "#9ad27a"
-YELLOW = "#e3c277"
-ORANGE = "#f2a97f"
-RED = "#ef8b8b"
-PURPLE = "#a7b7ff"
-TEAL = "#78c8c8"
+BG_DARK = "#111418"
+BG_HL = "#20252d"
+BG_POP = "#171b21"
+BORDER = "#2b313c"
+MUTED = "#7a8392"
+COMMENT = "#7a8392"
+FG_DIM = "#b4bcc8"
+FG = "#d7dce4"
+FG_HI = "#f3f5f7"
+BLUE = "#a5b8d1"
+CYAN = "#aabed5"
+GREEN = "#a8c2a1"
+YELLOW = "#d6c6a1"
+ORANGE = "#d4b08d"
+RED = "#d1a2a2"
+PURPLE = "#b8bfd6"
+TEAL = "#9cbeb7"
 
 def B(h): return _fg(h) + _bold()
 R = _reset()
@@ -579,24 +486,26 @@ def _rule(width, label=""):
     return _fg(BORDER) + "─" * left + R + _fg(MUTED) + plain + R + _fg(BORDER) + "─" * right + R
 
 def _popup_frame(top, left, width, title=""):
-    header = _move(top, left) + _fg(BORDER) + " " + "─" * (width - 2) + " " + R
-    if title:
-        title_text = f" {title} "
-        title_len = min(len(title_text), max(0, width - 4))
-        title_text = title_text[:title_len]
-        start = left + max(2, (width - title_len) // 2)
-        header += _move(top, start) + _fg(MUTED) + title_text + R
-    return header
+    inner_w = max(0, width - 2)
+    label = title.strip()[: max(0, inner_w - 2)]
+    if label:
+        plain = f"{label} " + "─" * max(0, inner_w - len(label) - 1)
+    else:
+        plain = "─" * inner_w
+    return _move(top, left) + _fg(MUTED) + " " + plain[:inner_w].ljust(inner_w) + " " + R
 
 def _popup_line(row, left, width, content="", tone=FG_DIM, selected=False):
-    inner_w = max(0, width - 4)
+    inner_w = max(0, width - 2)
     plain = content[:inner_w]
-    bg = _bg(BG_HL if selected else BG_POP)
     return (
         _move(row, left)
-        + _fg(BORDER) + "  " + R
-        + bg + _fg(tone) + plain + " " * max(0, inner_w - len(plain)) + R
-        + _fg(BORDER) + "  " + R
+        + (_bold() if selected else "")
+        + _fg(tone)
+        + " "
+        + plain
+        + " " * max(0, inner_w - len(plain))
+        + " "
+        + R
     )
 
 def _rule(width, label=""):
@@ -853,18 +762,35 @@ class Renderer:
         starter_lines = self._build_starter_lines(chat_w)
         prompt_lines, prompt_cursor_row, prompt_cursor_col = self._prompt_bar(rows, cols, chat_w)
         starter_rows = len(starter_lines)
-        for i, line in enumerate(starter_lines, start=1):
+        prompt_height = len(prompt_lines)
+        prompt_top = self._prompt_top(rows, 1 + starter_rows, prompt_height, 0)
+        self.tui._last_prompt_top = prompt_top
+        self.tui._last_prompt_height = prompt_height
+
+        starter_top = 1
+        for i, line in enumerate(starter_lines, start=starter_top):
             if i > rows:
                 break
             w(_move(i, 1))
             w(_bg(BG) + _erase_line() + line + _bg(BG))
 
-        transcript_top = 1 + starter_rows
+        for idx, line in enumerate(prompt_lines, start=prompt_top):
+            if idx > rows:
+                break
+            w(_move(idx, 1))
+            if pane_active:
+                prompt_stripped = _strip_ansi(line)
+                pad = max(0, chat_w - len(prompt_stripped))
+                divider = _fg(BORDER) + "│" + R
+                blank_pane = " " * max(0, pane_w)
+                w(_bg(BG) + line + " " * pad + divider + blank_pane + _bg(BG))
+            else:
+                w(_bg(BG) + _erase_line() + line + _bg(BG))
+
+        transcript_top = prompt_top + prompt_height
         chat_lines = self._build_chat_lines(chat_w)
         total = len(chat_lines)
-        prompt_height = len(prompt_lines)
-        prompt_top = self._prompt_top(rows, transcript_top, prompt_height, total)
-        chat_rows = max(0, prompt_top - transcript_top)
+        chat_rows = max(0, rows - transcript_top + 1)
 
         offset = max(0, min(self.tui.scroll_offset, max(0, total - chat_rows)))
         end = total - offset
@@ -891,27 +817,12 @@ class Renderer:
             else:
                 w(_bg(BG) + _erase_line() + cl + _bg(BG))
 
-        for idx, line in enumerate(prompt_lines, start=prompt_top):
-            if idx > rows:
-                break
-            w(_move(idx, 1))
-            if pane_active:
-                prompt_stripped = _strip_ansi(line)
-                pad = max(0, chat_w - len(prompt_stripped))
-                divider = _fg(BORDER) + "│" + R
-                blank_pane = " " * max(0, pane_w)
-                w(_bg(BG) + line + " " * pad + divider + blank_pane + _bg(BG))
-            else:
-                w(_bg(BG) + _erase_line() + line + _bg(BG))
-
-        # Clear any rows below the transcript region and above the prompt
-        for clear_row in range(transcript_top + chat_rows, prompt_top):
-            w(_move(clear_row, 1) + _bg(BG) + _erase_line())
-
-        if getattr(self.tui, "browser_visible", False): w(self._browser_popup(rows, cols))
-        if self.tui.slash_visible and self.tui.slash_hits: w(self._slash_popup(rows, cols))
-        if self.tui.path_visible and self.tui.path_hits: w(self._path_popup(rows, cols))
-        if self.tui.picker_visible and self.tui.picker_items: w(self._picker_popup(rows, cols))
+        if getattr(self.tui, "browser_visible", False): w(self._browser_popup(rows, chat_w))
+        if self.tui.slash_visible and self.tui.slash_hits: w(self._slash_popup(rows, chat_w))
+        if self.tui.path_visible and self.tui.path_hits: w(self._path_popup(rows, chat_w))
+        if self.tui.picker_visible and self.tui.picker_items: w(self._picker_popup(rows, chat_w))
+        if getattr(self.tui, "shortcuts_visible", False): w(self._shortcuts_popup(rows, chat_w))
+        if getattr(self.tui, "workspace_trust_visible", False): w(self._workspace_trust_popup(rows, cols))
         if self.tui.notification: w(self._notification_bar(rows, cols))
 
         cur_col = prompt_cursor_col
@@ -930,14 +841,10 @@ class Renderer:
         return self._transcript_view.build(width)
 
     def _prompt_top(self, rows, transcript_top, prompt_height, chat_line_count):
-        max_prompt_top = max(transcript_top, rows - prompt_height + 1)
-        desired_top = transcript_top + max(0, chat_line_count)
-        return min(desired_top, max_prompt_top)
+        return max(1, transcript_top)
 
     def _prompt_cursor_row(self, rows, prompt_height, prompt_top, prompt_cursor_row):
-        default_prompt_top = rows - prompt_height + 1
-        relative = prompt_cursor_row - default_prompt_top
-        return prompt_top + relative
+        return prompt_top + max(0, prompt_cursor_row - 1)
 
     def _build_pane_lines(self, width, height):
         return self._pane_view.build(width, height)
@@ -1027,11 +934,8 @@ class Renderer:
     def _prompt_bar(self, rows, cols, chat_w):
         tui = self.tui
         text = tui.buf
-        left = " " * 2
-        status_left = left + "  "
-        body_w = max(24, chat_w - len(left) - 6)
-        text_w = max(10, body_w - 2)
-        status_plain, status_colored = self._stat_info(chat_w)
+        rail_w = max(20, chat_w - 4)
+        text_w = max(10, rail_w - 4)
 
         def chunk_plain(value: str) -> list[str]:
             logical = value.split("\n") or [""]
@@ -1056,66 +960,62 @@ class Renderer:
             cursor_lines = chunk_plain(cursor_before)
             cursor_line = max(0, len(cursor_lines) - 1)
             cursor_col = len(cursor_lines[-1]) if cursor_lines else 0
-            visible_limit = 2 if (tui.multiline or "\n" in text or len(text) > text_w) else 1
+            visible_limit = 3 if (tui.multiline or "\n" in text or len(text) > text_w) else 1
             start = max(0, cursor_line - visible_limit + 1)
             visible = all_lines[start : start + visible_limit] or [""]
             cursor_row_rel = cursor_line - start
 
         pending_label, pending_hint = tui.filesystem_prompt_hint()
+
         content_rows: list[tuple[str, str, str]] = []
         if text:
             for idx, segment in enumerate(visible):
-                marker = "› " if idx == 0 else "  "
+                marker = "❯ " if idx == 0 else "  "
                 tone = FG_HI if idx == 0 else FG
                 content_rows.append((marker, tone, segment))
         elif tui.busy:
             frame = int(time.time() * 10) % len(SPINNER_FRAMES)
             content_rows.append((SPINNER_FRAMES[frame] + " ", MUTED, "thinking"))
         elif pending_label:
-            content_rows.append(("› ", FG_HI, pending_label))
+            pending_text = pending_label + (f" · {pending_hint}" if pending_hint else "")
+            content_rows.append(("? ", CYAN, pending_text[:rail_w]))
         else:
-            content_rows.append(("› ", FG_HI, ""))
+            content_rows.append(("❯ ", FG_HI, ""))
 
-        inner_w = body_w + 2
-        lines = [
-            left + _fg(BORDER) + "╭" + "─" * inner_w + "╮" + R,
-        ]
+        footer_left = "? for shortcuts"
+        effort = normalize_reasoning_effort(getattr(tui, "reasoning_effort", "medium"))
+        footer_right_plain = f"◐ {effort} · /effort"
+        gap = max(2, rail_w - len(footer_left) - len(footer_right_plain))
+        footer_line = (
+            _fg(MUTED)
+            + footer_left
+            + R
+            + " " * gap
+            + _fg(COMMENT)
+            + f"◐ {effort}"
+            + R
+            + _fg(MUTED)
+            + " · /effort"
+            + R
+        )
+
+        lines = [_rule(chat_w)]
         for marker, tone, segment in content_rows:
-            plain = f"{marker}{segment}"[:body_w]
-            pad = max(0, body_w - len(plain))
             marker_color = CYAN if (tui.busy or pending_label) and marker.strip() else FG_HI
             lines.append(
-                left
-                + _fg(BORDER)
-                + "│"
-                + R
-                + " "
-                + _fg(marker_color)
+                _fg(marker_color)
                 + marker
                 + R
                 + _fg(tone)
-                + segment[: max(0, body_w - len(marker))]
-                + R
-                + " " * pad
-                + " "
-                + _fg(BORDER)
-                + "│"
+                + segment[: max(0, rail_w - len(marker))]
                 + R
             )
-        lines.append(left + _fg(BORDER) + "╰" + "─" * inner_w + "╯" + R)
+        lines.append(_rule(chat_w))
+        lines.append(footer_line)
 
-        show_status_line = True
-        if pending_hint:
-            status_colored = _fg(COMMENT) + pending_hint + R
-            status_plain = pending_hint
-        if show_status_line:
-            lines.append("")
-            lines.append(status_left + _fg(MUTED) + status_plain + R if status_colored is None else status_left + status_colored)
-
-        prompt_top = rows - len(lines) + 1
-        cursor_row = prompt_top + 1 + (cursor_row_rel if text else 0)
+        cursor_row = 2 + (cursor_row_rel if text else 0)
         active_marker = content_rows[min(cursor_row_rel if text else 0, len(content_rows) - 1)][0]
-        cursor_col_abs = len(left) + len(active_marker) + 3 + cursor_col
+        cursor_col_abs = len(active_marker) + 1 + cursor_col
         return lines, cursor_row, cursor_col_abs
 
     # kept for any external callers; delegates to the two new methods
@@ -1126,20 +1026,26 @@ class Renderer:
             for idx, line in enumerate(prompt_lines)
         )
 
-    def _browser_popup(self, rows, cols):
-        return self._overlay_view.browser_popup(rows, cols)
+    def _browser_popup(self, rows, chat_w):
+        return self._overlay_view.browser_popup(rows, chat_w)
 
-    def _slash_popup(self, rows, cols):
-        return self._overlay_view.slash_popup(rows, cols)
+    def _slash_popup(self, rows, chat_w):
+        return self._overlay_view.slash_popup(rows, chat_w)
 
-    def _path_popup(self, rows, cols):
-        return self._overlay_view.path_popup(rows, cols)
+    def _path_popup(self, rows, chat_w):
+        return self._overlay_view.path_popup(rows, chat_w)
 
-    def _picker_popup(self, rows, cols):
-        return self._overlay_view.picker_popup(rows, cols)
+    def _picker_popup(self, rows, chat_w):
+        return self._overlay_view.picker_popup(rows, chat_w)
+
+    def _shortcuts_popup(self, rows, chat_w):
+        return self._overlay_view.shortcuts_popup(rows, chat_w)
 
     def _notification_bar(self, rows, cols):
         return self._overlay_view.notification_bar(rows, cols)
+
+    def _workspace_trust_popup(self, rows, cols):
+        return self._overlay_view.workspace_trust_popup(rows, cols)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1166,6 +1072,9 @@ class LumiTUI:
         self.turns = 0; self.last_msg = None; self.last_reply = None
         self.prev_reply = None; self.response_mode = None
         self.multiline = False; self._compact = False; self.busy = False
+        self.reasoning_effort = "medium"
+        self._last_prompt_top = 1
+        self._last_prompt_height = 1
 
         # Agent planning state (for /agent plans)
         self.agent_active_objective = None
@@ -1185,6 +1094,7 @@ class LumiTUI:
         )
         self.browser_cwd = os.getcwd()
         self.workspace_profile = inspect_workspace(Path.cwd())
+        self.workspace_trust_visible = self._should_prompt_workspace_trust()
 
     def set_pane(
         self,
@@ -1229,6 +1139,30 @@ class LumiTUI:
 
     def clear_review_card(self) -> None:
         self.review_card = ReviewCard()
+
+    def _should_prompt_workspace_trust(self) -> bool:
+        cwd = Path.cwd().resolve()
+        if cwd != Path.home().resolve():
+            return False
+        return _workspace_path_key(cwd) not in _load_workspace_trust_paths()
+
+    def show_workspace_trust_prompt(self) -> None:
+        self.workspace_trust_sel = 0
+        self.workspace_trust_visible = True
+
+    def accept_workspace_trust(self) -> None:
+        trusted = _load_workspace_trust_paths()
+        trusted.add(_workspace_path_key(Path.cwd()))
+        _save_workspace_trust_paths(trusted)
+        self.workspace_trust_sel = 0
+        self.workspace_trust_visible = False
+        self._notify("Workspace trusted")
+
+    def decline_workspace_trust(self) -> None:
+        self.workspace_trust_sel = 1
+        self.workspace_trust_visible = False
+        with self._state_lock:
+            self._running = False
 
     def _make_system_prompt(self, coding_mode=False, file_mode=False):
         return build_system_prompt({**self.persona, **self.persona_override}, build_memory_block(), coding_mode, file_mode)
@@ -1283,11 +1217,14 @@ class LumiTUI:
     def redraw(self): self.renderer.draw()
 
     # ── Inference / Generators  ─────────────────────────────────────────────
-    def _tui_stream(self, messages, model, label="◆ lumi"):
+    def _tui_stream(self, messages, model, label="lumi"):
         idx = self.store.add(Msg("streaming", "", label))
         if model == "council": return self._run_council_stream(idx, messages)
 
         chunks: list[str] = []
+        effort = normalize_reasoning_effort(getattr(self, "reasoning_effort", "medium"))
+        tuned_messages = apply_reasoning_effort(messages, effort)
+        tuned_max_tokens, tuned_temperature = tune_inference_request(2048, 0.45, effort)
         try:
             def _on_delta(delta: str) -> None:
                 chunks.append(delta)
@@ -1296,10 +1233,10 @@ class LumiTUI:
 
             full = chat_stream(
                 self.client,
-                messages,
+                tuned_messages,
                 model=model,
-                max_tokens=8192,
-                temperature=0.7,
+                max_tokens=tuned_max_tokens,
+                temperature=tuned_temperature,
                 on_delta=_on_delta,
                 on_status=lambda status: self._notify(status, duration=2.0),
             )
@@ -1352,19 +1289,22 @@ class LumiTUI:
             if remaining:
                 self._sys(f"Quota hit — switching to {remaining[0]}")
                 try:
-                    set_provider(remaining[0]); self.client = get_client(); self.current_model = get_models(remaining[0])[0]
+                    set_provider(remaining[0]); self.client = get_client(); self.current_model = pick_startup_model(remaining[0], get_models(remaining[0]))
                     self.store.set_text(idx, "")
                     chunks: list[str] = []
+                    effort = normalize_reasoning_effort(getattr(self, "reasoning_effort", "medium"))
+                    tuned_messages = apply_reasoning_effort(messages, effort)
+                    tuned_max_tokens, tuned_temperature = tune_inference_request(2048, 0.45, effort)
                     def _on_delta(delta: str) -> None:
                         chunks.append(delta)
                         self.store.append(idx, delta)
                         self.redraw()
                     full = chat_stream(
                         self.client,
-                        messages,
+                        tuned_messages,
                         model=self.current_model,
-                        max_tokens=8192,
-                        temperature=0.7,
+                        max_tokens=tuned_max_tokens,
+                        temperature=tuned_temperature,
                         on_delta=_on_delta,
                         on_status=lambda status: self._notify(status, duration=2.0),
                     )
@@ -1376,7 +1316,7 @@ class LumiTUI:
         else: self.store.set_text(idx, f"⚠  {ex}")
         self.store.finalize(idx); return f"⚠  {ex}"
 
-    def _silent_call(self, prompt, model, max_tokens=8192):
+    def _silent_call(self, prompt, model, max_tokens=1024):
         try:
             provider = get_provider()
             routed = route_model(model, get_models(provider), "summary", provider=provider)
@@ -1388,11 +1328,14 @@ class LumiTUI:
                 context_cache=_context_cache,
                 telemetry=_session_telemetry,
             )
+            effort = normalize_reasoning_effort(getattr(self, "reasoning_effort", "medium"))
+            tuned_messages = apply_reasoning_effort(messages, effort)
+            tuned_max_tokens, tuned_temperature = tune_inference_request(max_tokens, 0.3, effort)
             reply = self.client.chat.completions.create(
                 model=routed,
-                messages=messages,
-                max_tokens=max_tokens,
-                temperature=0.3,
+                messages=tuned_messages,
+                max_tokens=tuned_max_tokens,
+                temperature=tuned_temperature,
                 stream=False,
             )
             usage = getattr(reply, "usage", None)
@@ -1632,7 +1575,7 @@ class LumiTUI:
         self.name = self.persona_override.get("name") or self.persona.get("name", "Lumi")
 
         try:
-            p = get_provider(); self.current_model = get_models(p)[0]; self.client = get_client()
+            p = get_provider(); self.current_model = pick_startup_model(p, get_models(p)); self.client = get_client()
             self.little_notes.record_model(p, self.current_model)
         except Exception:
             log.exception("Failed to load provider/model")
@@ -2227,6 +2170,35 @@ def cmd_short(tui: LumiTUI, arg: str): tui.response_mode = "short"; tui._notify(
 def cmd_detailed(tui: LumiTUI, arg: str): tui.response_mode = "detailed"; tui._notify("Mode: detailed")
 @registry.register("/bullets", "Next reply: bullet points only")
 def cmd_bullets(tui: LumiTUI, arg: str): tui.response_mode = "bullets"; tui._notify("Mode: bullets")
+@registry.register("/effort", "Set reasoning effort: low | medium | high | ehigh")
+def cmd_effort(tui: LumiTUI, arg: str):
+    raw = arg.strip().lower()
+    if not raw:
+        current = normalize_reasoning_effort(getattr(tui, "reasoning_effort", "medium"))
+        try:
+            next_value = EFFORT_LEVELS[(EFFORT_LEVELS.index(current) + 1) % len(EFFORT_LEVELS)]
+        except ValueError:
+            next_value = "medium"
+        tui.reasoning_effort = next_value
+        tui._notify(f"Effort: {next_value}")
+        return
+    if raw in {"status", "show"}:
+        tui._sys(f"Reasoning effort: {normalize_reasoning_effort(getattr(tui, 'reasoning_effort', 'medium'))}")
+        return
+    normalized = normalize_reasoning_effort(raw)
+    if raw not in EFFORT_LEVELS and raw not in {
+        "extra high",
+        "extra-high",
+        "extra_high",
+        "xhigh",
+        "very high",
+        "very-high",
+        "very_high",
+    }:
+        tui._err("Usage: /effort [low|medium|high|ehigh|status]")
+        return
+    tui.reasoning_effort = normalized
+    tui._notify(f"Effort: {normalized}")
 
 # ── New utility commands ──────────────────────────────────────────────────────
 
@@ -2688,6 +2660,41 @@ def cmd_doctor(tui: LumiTUI, arg: str):
         configured_providers=configured,
     )
     tui._sys(report)
+
+
+@registry.register("/rebirth", "Lumi - rebirth capability report and profile toggles")
+def cmd_rebirth(tui: LumiTUI, arg: str):
+    sub = arg.strip().lower()
+
+    if sub in {"", "status", "report"}:
+        tui._sys(render_rebirth_report())
+        return
+
+    profile = load_rebirth_profile()
+    defaults = profile.get("defaults", {}) if isinstance(profile.get("defaults"), dict) else {}
+
+    if sub in {"on", "enable", "apply"}:
+        mode = str(defaults.get("response_mode", "detailed")).strip() or "detailed"
+        if mode in {"short", "detailed", "bullets"}:
+            tui.response_mode = mode
+        tui._compact = bool(defaults.get("compact", False))
+        tui.guardian_enabled = bool(defaults.get("guardian_enabled", True))
+        tui._sys(
+            f"Rebirth profile enabled ({rebirth_status_summary()}). "
+            f"response={tui.response_mode or 'default'}, compact={'on' if tui._compact else 'off'}, "
+            f"guardian={'on' if tui.guardian_enabled else 'off'}."
+        )
+        tui._notify("Rebirth profile enabled")
+        return
+
+    if sub in {"off", "disable"}:
+        tui.guardian_enabled = False
+        tui.response_mode = None
+        tui._sys("Rebirth profile disabled (guardian off, response mode reset).")
+        tui._notify("Rebirth profile disabled")
+        return
+
+    tui._err("Usage: /rebirth [status|on|off]")
 
 HELP_CATEGORIES = register_command_groups(
     registry,

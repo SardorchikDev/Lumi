@@ -36,8 +36,10 @@ from src.chat.hf_client import (
     get_client,
     get_models,
     get_provider,
+    pick_startup_model,
     set_provider,
 )
+from src.chat.model_filters import filter_models_by_allowlist, model_allowlist_env_keys
 from src.chat.optimizer import (
     get_global_context_cache,
     get_global_telemetry,
@@ -45,6 +47,7 @@ from src.chat.optimizer import (
 )
 from src.chat.runtime import build_runtime_messages
 from src.chat.runtime import route_helper_model as _shared_route_helper_model
+from src.cli.args import parse_cli_args, print_cli_help
 from src.config import PLUGINS_DIR, SESSIONS_DIR, ensure_dirs
 from src.memory.conversation_store import list_sessions, load_by_name, load_latest, save
 from src.memory.longterm import (
@@ -97,6 +100,7 @@ from src.utils.plugins import (
     render_plugin_audit_report,
 )
 from src.utils.plugins import dispatch as plugin_dispatch
+from src.utils.rebirth import load_rebirth_profile, rebirth_status_summary, render_rebirth_report
 from src.utils.system_reports import build_doctor_report, build_onboarding_report, build_status_report
 from src.utils.themes import get_theme, list_themes, load_theme_name, save_theme_name
 from src.utils.todo import todo_add, todo_clear_done, todo_done, todo_list, todo_remove
@@ -115,7 +119,7 @@ from src.utils.web import fetch_url
 
 ensure_dirs()
 
-LUMI_VERSION = "2.0.1"
+LUMI_VERSION = "2.1.0"
 
 # ── System prompt builder ─────────────────────────────────────────────────────
 
@@ -226,7 +230,7 @@ def print_help() -> None:
         print(f"  {CY}  {name:<28}{R}{DG}{desc}{R}")
 
     print(f"\n{line}")
-    print(f"  {PU}{B}  ✦  LUMI COMMANDS{R}")
+    print(f"  {PU}{B}  ✦  LUMI - REBIRTH COMMANDS{R}")
     print(line)
 
     section("CHAT")
@@ -236,6 +240,7 @@ def print_help() -> None:
     cmd("/status",                   "session + workspace status summary")
     cmd("/doctor",                   "check Lumi setup and workspace health")
     cmd("/onboard",                  "show first-run and workspace guidance")
+    cmd("/rebirth [status|on|off]", "Lumi - rebirth capability report and profile toggle")
     cmd("/benchmark [list]",         "show built-in benchmark scenarios")
     cmd("/redo [hint]",              "regenerate last answer, optionally with a hint")
     cmd("/help",                     "show this")
@@ -315,7 +320,7 @@ def print_help() -> None:
 
     section("SETTINGS")
     cmd("/model",                    "switch provider and model (interactive picker)")
-    cmd("/theme",                    "switch color theme (5 themes)")
+    cmd("/theme",                    "show the fixed ANSI palette")
     cmd("/cost",                     "show token usage this session")
     cmd("/compact",                  "toggle minimal output mode")
     cmd("/quit",                     "save and exit")
@@ -373,10 +378,6 @@ def pick_model(cur_model: str) -> tuple[str, str]:
         warn("No API keys found in .env")
         return cur_model, get_provider()
 
-    from src.agents.council import _get_available_agents as _cagents
-    if len(_cagents()) >= 2 and "council" not in available:
-        available = available + ["council"]
-
     cur_provider = get_provider()
 
     print(f"\n  {B}{WH}Choose provider{R}\n")
@@ -410,19 +411,20 @@ def pick_model(cur_model: str) -> tuple[str, str]:
         warn("Keeping current provider.")
         return cur_model, cur_provider
 
-    if chosen_provider == "council":
-        from src.agents.council import _get_available_agents as _cag
-        names = "  ·  ".join(a["name"] for a in _cag())
-        print(f"\n  {PU}⚡ Council mode{R}  {DG}{names}{R}\n")
-        return "council", "council"
-
     if chosen_provider != cur_provider:
         set_provider(chosen_provider)
 
     sp     = Spinner("loading models")
     sp.start()
-    models = get_models(chosen_provider)
+    all_models = get_models(chosen_provider)
+    models, allowlist = filter_models_by_allowlist(chosen_provider, all_models)
     sp.stop()
+    if allowlist:
+        info(f".env model allowlist active: showing {len(models)} of {len(all_models)} models.")
+    if not models:
+        key = model_allowlist_env_keys(chosen_provider)[0]
+        warn(f"No models matched {key} in .env")
+        return cur_model, cur_provider
 
     print(f"\n  {B}{WH}Available models{R}  {DG}({PROVIDER_LABELS[chosen_provider][0]}){R}\n")
     default_model = models[0] if models else cur_model
@@ -547,8 +549,8 @@ def stream_and_render(
             client,
             messages,
             model=model,
-            max_tokens=1024,
-            temperature=0.7,
+            max_tokens=896,
+            temperature=0.45,
             on_delta=_on_delta,
         )
         if first:
@@ -594,7 +596,7 @@ def stream_with_fallback(
         info(f"Quota hit on {current_provider} — switching to {next_p} automatically")
         set_provider(next_p)
         new_client = get_client()
-        new_model  = get_models(next_p)[0]
+        new_model  = pick_startup_model(next_p, get_models(next_p))
         reply = stream_and_render(new_client, messages, new_model, name)
         return reply, new_client, new_model, next_p
 
@@ -1139,36 +1141,11 @@ def cmd_forget() -> None:
 # ── /theme ────────────────────────────────────────────────────────────────────
 
 def cmd_theme(current: str) -> str:
-    themes = list_themes()
-    SW = {
-        "tokyo":      ("\033[38;5;141m", "\033[38;5;75m",  "\033[38;5;117m", "\033[38;5;114m"),
-        "dracula":    ("\033[38;5;141m", "\033[38;5;212m", "\033[38;5;84m",  "\033[38;5;228m"),
-        "nord":       ("\033[38;5;153m", "\033[38;5;110m", "\033[38;5;108m", "\033[38;5;159m"),
-        "gruvbox":    ("\033[38;5;214m", "\033[38;5;175m", "\033[38;5;142m", "\033[38;5;108m"),
-        "catppuccin": ("\033[38;5;189m", "\033[38;5;183m", "\033[38;5;149m", "\033[38;5;152m"),
-    }
-    div("THEME")
-    for i, t in enumerate(themes):
-        tname  = get_theme(t)["name"]
-        cols   = SW.get(t, (WH, CY, GN, BL))
-        bar    = "".join(f"{c}▐▌{R}" for c in cols)
-        marker = f"{GN}●{R}" if t == current else f"{DG}○{R}"
-        tag    = f"  {GN}← current{R}" if t == current else ""
-        print(f"  {marker}  {WH}{i + 1}{R}  {DG}│{R}  {WH}{tname:<18}{R}  {bar}{tag}")
-    print()
-    sys.stdout.write(f"  {PU}›{R}  ")
-    sys.stdout.flush()
-    try:
-        idx = int(input().strip()) - 1
-        if 0 <= idx < len(themes):
-            chosen = themes[idx]
-            save_theme_name(chosen)
-            reload_theme(chosen)
-            ok(f"Theme — {get_theme(chosen)['name']}")
-            return chosen
-    except (ValueError, KeyboardInterrupt):
-        pass
-    return current
+    chosen = list_themes()[0]
+    save_theme_name(chosen)
+    reload_theme(chosen)
+    info(f"ANSI palette is fixed: {get_theme(chosen)['name']}")
+    return chosen
 
 
 # ── Productivity commands ─────────────────────────────────────────────────────
@@ -1861,48 +1838,7 @@ def check_mood_pattern() -> str | None:
 # ── CLI argument parser ───────────────────────────────────────────────────────
 
 def _parse_args():
-    import argparse
-    ap = argparse.ArgumentParser(
-        prog="lumi",
-        description=f"Lumi AI {LUMI_VERSION} — terminal assistant",
-        formatter_class=argparse.RawTextHelpFormatter,
-        add_help=False,
-    )
-    ap.add_argument("query",            nargs="?",  default=None,
-                    help="Send a message and start interactive session")
-    ap.add_argument("-p", "--print",    dest="print_mode",     action="store_true",
-                    help="Non-interactive: send query, print response, exit")
-    ap.add_argument("-c", "--continue", dest="resume_latest",  action="store_true",
-                    help="Continue most recent conversation")
-    ap.add_argument("-r", "--resume",   metavar="SESSION",
-                    help="Resume session by name or id")
-    ap.add_argument("-v", "--version",  action="store_true",   help="Show version and exit")
-    ap.add_argument("-h", "--help",     action="store_true",   help="Show this help and exit")
-    ap.add_argument("--model",    "-m", metavar="MODEL",
-                    help="Set model  (e.g. gemini-2.5-flash, council)")
-    ap.add_argument("--provider",       metavar="PROVIDER",
-                    help="Force provider  (gemini|groq|openrouter|mistral|huggingface|ollama)")
-    ap.add_argument("--system-prompt",  metavar="TEXT",
-                    help="Replace system prompt with custom text")
-    ap.add_argument("--append-system-prompt",      metavar="TEXT",
-                    help="Append text to the default system prompt")
-    ap.add_argument("--system-prompt-file",        metavar="FILE",
-                    help="Replace system prompt with contents of a file")
-    ap.add_argument("--append-system-prompt-file", metavar="FILE",
-                    help="Append file contents to default system prompt")
-    ap.add_argument("--yolo",           action="store_true",
-                    help="Auto-approve all file writes — no confirmations")
-    ap.add_argument("--max-turns",      metavar="N", type=int, default=None,
-                    help="Exit after N conversation turns")
-    ap.add_argument("--output-format",  metavar="FMT",
-                    choices=["text", "json"], default="text",
-                    help="Output format for --print mode: text (default) or json")
-    ap.add_argument("--no-tui",         action="store_true",   help="Disable TUI, use classic CLI mode")
-    ap.add_argument("--verbose",        action="store_true",   help="Show full API errors")
-    ap.add_argument("--no-color",       action="store_true",   help="Disable ANSI colors")
-    ap.add_argument("--list-sessions",  action="store_true",   help="List sessions and exit")
-    ap.add_argument("--delete-session", metavar="ID",          help="Delete a session by id and exit")
-    return ap.parse_known_args()[0]
+    return parse_cli_args(LUMI_VERSION)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -1930,27 +1866,7 @@ def main() -> None:  # noqa: C901
             print(f"  {RE}✗  TUI error: {_te}{R}\n  {DG}falling back to CLI mode...{R}\n")
 
     if cli.help:
-        print(f"  Lumi AI {LUMI_VERSION}")
-        print("  Usage: lumi [query] [flags]\n")
-        print(f"  {B}Core flags:{R}")
-        print("   -p  --print                non-interactive mode")
-        print("   -c  --continue             resume last conversation")
-        print("   -r  --resume SESSION       resume by name/id")
-        print("   -m  --model MODEL          set model")
-        print("       --provider PROVIDER    set provider")
-        print("       --system-prompt TEXT   replace system prompt")
-        print("       --append-system-prompt TEXT  append to prompt")
-        print("       --yolo                 auto-approve file writes")
-        print("       --max-turns N          exit after N turns")
-        print("       --output-format FMT    text or json (--print only)")
-        print("       --verbose              show full API errors")
-        print("       --list-sessions        list sessions and exit")
-        print("       --no-tui               disable TUI, use classic CLI")
-        print("   -v  --version              show version\n")
-        print(f"  {B}Examples:{R}")
-        print("   lumi -p \"explain this\" < file.py")
-        print("   lumi -c --model council")
-        print("   lumi --yolo --append-system-prompt \"always use TypeScript\"")
+        print_cli_help(LUMI_VERSION, bold=B, reset=R)
         sys.exit(0)
 
     if cli.list_sessions:
@@ -2007,7 +1923,8 @@ def main() -> None:  # noqa: C901
                 matches = [m for m in available_models if cli.model.lower() in m.lower()]
                 current_model = matches[0] if matches else cli.model
     else:
-        current_model = get_models(get_provider())[0]
+        provider = get_provider()
+        current_model = pick_startup_model(provider, get_models(provider))
 
     # ── System prompt customisation ───────────────────────────────────────────
     if cli.system_prompt:
@@ -2047,6 +1964,17 @@ def main() -> None:  # noqa: C901
     AUTOSAVE_EVERY     = 5
     AUTOREMEMBER_EVERY = 8
     max_turns          = cli.max_turns
+
+    if cli.rebirth:
+        profile = load_rebirth_profile()
+        defaults = profile.get("defaults", {}) if isinstance(profile.get("defaults"), dict) else {}
+        desired_mode = str(defaults.get("response_mode", "detailed")).strip().lower()
+        if desired_mode in {"short", "detailed", "bullets"}:
+            response_mode = desired_mode
+        desired_compact = bool(defaults.get("compact", False))
+        if desired_compact != _compact_mode:
+            toggle_compact()
+        info(f"Rebirth defaults enabled ({rebirth_status_summary()})")
 
     # ── Resume ────────────────────────────────────────────────────────────────
     _load_session = None
@@ -2622,6 +2550,36 @@ def main() -> None:  # noqa: C901
                 ).replace("\n", "\n  ")
                 + "\n"
             )
+            continue
+
+        if cmd == "/rebirth":
+            sub = (user_input.split(maxsplit=1)[1:] or ["status"])[0].strip().lower() or "status"
+            if sub in {"status", "report"}:
+                print("\n  " + render_rebirth_report().replace("\n", "\n  ") + "\n")
+                continue
+            if sub in {"on", "enable", "apply"}:
+                profile = load_rebirth_profile()
+                defaults = profile.get("defaults", {}) if isinstance(profile.get("defaults"), dict) else {}
+                desired_mode = str(defaults.get("response_mode", "detailed")).strip().lower()
+                if desired_mode in {"short", "detailed", "bullets"}:
+                    response_mode = desired_mode
+                compact = bool(defaults.get("compact", False))
+                if compact != _compact_mode:
+                    toggle_compact()
+                print(
+                    "\n  "
+                    + f"Rebirth profile enabled ({rebirth_status_summary()})\n"
+                    + f"  response mode: {response_mode or 'default'}\n"
+                    + f"  compact mode:  {'on' if _compact_mode else 'off'}\n"
+                )
+                continue
+            if sub in {"off", "disable"}:
+                response_mode = None
+                if _compact_mode:
+                    toggle_compact()
+                print("\n  Rebirth profile disabled (response mode reset, compact off).\n")
+                continue
+            warn("Usage: /rebirth [status|on|off]")
             continue
 
         if cmd == "/benchmark":

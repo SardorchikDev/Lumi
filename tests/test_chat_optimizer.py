@@ -41,7 +41,7 @@ def test_optimize_messages_adds_summary_and_retrieval():
     assert telemetry.last_budget.retrieved_documents >= 1
 
 
-def test_optimize_messages_summarizes_when_budget_is_small():
+def test_optimize_messages_trims_history_when_budget_is_small():
     cache = ContextCache()
     telemetry = SessionTelemetry()
     messages = [{"role": "system", "content": "You are Lumi."}]
@@ -58,9 +58,9 @@ def test_optimize_messages_summarizes_when_budget_is_small():
         telemetry=telemetry,
     )
 
-    assert any(msg["role"] == "system" and "Conversation summary" in msg["content"] for msg in optimized)
     assert telemetry.last_budget is not None
     assert telemetry.last_budget.dropped_messages > 0
+    assert any(msg["role"] == "system" and "Reply shape" in msg["content"] for msg in optimized)
 
 
 def test_route_model_prefers_helper_model_for_summary():

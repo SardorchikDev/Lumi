@@ -15,8 +15,10 @@ def _configure_plugin_env(tmp_path, monkeypatch):
     plugin_dir = tmp_path / "plugins"
     plugin_dir.mkdir()
     trust_file = tmp_path / "plugin_trust.json"
+    audit_log = tmp_path / "plugin_runtime_audit.log"
     monkeypatch.setattr(plugins, "PLUGIN_DIR", plugin_dir)
     monkeypatch.setattr(plugins, "PLUGIN_TRUST_FILE", trust_file)
+    monkeypatch.setattr(plugins, "PLUGIN_AUDIT_LOG", audit_log)
     _reset_plugins()
     return plugin_dir
 
@@ -256,3 +258,34 @@ COMMANDS = {"/legacy": legacy}
     ok, message = plugins.approve_plugin("legacy")
     assert ok is False
     assert "cannot be approved" in message
+
+
+def test_dispatch_logs_runtime_audit_events(tmp_path, monkeypatch):
+    plugin_dir = _configure_plugin_env(tmp_path, monkeypatch)
+    (plugin_dir / "greet.py").write_text(
+        """
+PLUGIN_META = {
+    "name": "Greeter",
+    "version": "1.0.0",
+    "description": "Friendly greetings",
+    "permissions": ["read_workspace"],
+}
+DESCRIPTION = {"/greet": "Say hi"}
+
+def greet(args, **kwargs):
+    return f"hi {args}".strip()
+
+COMMANDS = {"/greet": greet}
+        """.strip(),
+        encoding="utf-8",
+    )
+    assert plugins.approve_plugin("Greeter")[0] is True
+    plugins.reload_plugins()
+
+    handled, message = plugins.dispatch("/greet", "there", workspace=tmp_path)
+    assert handled is True
+    assert message == "hi there"
+
+    report = plugins.render_plugin_audit_report()
+    assert "recent runtime events" in report
+    assert "Greeter /greet -> ok" in report

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
+from types import SimpleNamespace
+
 from src.tui.app import LumiTUI, _strip_ansi, registry
-from src.tui.controller_actions import _update_picker_preview
 from src.tui.notes import LittleNotesStore
 from src.tui.state import Msg
 
@@ -23,7 +25,9 @@ def _make_tui(tmp_path, monkeypatch) -> LumiTUI:
 
 
 def test_starter_panel_renders_single_top_box(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.tui.session.random.choice", lambda _seq: "Tip: Short tip.")
     tui = _make_tui(tmp_path, monkeypatch)
+    tui.show_starter_panel = True
     tui.little_notes.record_command("/agent")
     tui.little_notes.record_command("/help")
     tui.recent_commands = tui.little_notes.recent_commands[:3]
@@ -31,12 +35,16 @@ def test_starter_panel_renders_single_top_box(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
 
-    assert ">_ Lumi" in joined
-    assert "local session" not in joined
+    assert "Lumi - rebirth" in joined
+    assert "Welcome back!" in joined
+    assert "Tips for getting started" in joined
+    assert "Recent activity" in joined
     assert "HuggingFace" in joined
-    assert "Llama-3.3-70B-Instruct" in joined
-    assert "research preview" not in joined
+    assert "Llama-3.3" in joined
+    assert "▝▜█████▛▘" in joined
     assert "approval:" not in joined
+    assert any(line.strip().startswith("╭") for line in lines)
+    assert any(line.strip().startswith("╰") for line in lines)
     tui._task_executor.shutdown(wait=False)
 
 
@@ -46,17 +54,13 @@ def test_starter_panel_shows_session_tip(tmp_path, monkeypatch):
         lambda _seq: "Tip: Use /imagine <prompt> to generate images with Gemini and then ask Lumi to iterate on lighting, framing, and style.",
     )
     tui = _make_tui(tmp_path, monkeypatch)
+    tui.show_starter_panel = True
 
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
-    tip_lines = [line for line in lines if line.strip().startswith("tip")]
-    tip_index = next(i for i, line in enumerate(lines) if line.strip().startswith("tip"))
-    box_bottom_index = max(i for i, line in enumerate(lines) if line.strip().startswith("╰"))
+    joined = "\n".join(lines)
 
-    assert len(tip_lines) == 1
-    assert "/imagine <prompt>" in tip_lines[0]
-    assert tip_lines[0].rstrip().endswith("...")
-    assert tip_index == box_bottom_index + 1
-    assert lines[tip_index + 1].strip() == ""
+    assert "/imagine <prompt>" in joined
+    assert "Tips for getting started" in joined
     tui._task_executor.shutdown(wait=False)
 
 
@@ -71,11 +75,25 @@ def test_chat_layout_keeps_prompt_and_transcript_separate(tmp_path, monkeypatch)
     chat = [_strip_ansi(line) for line in tui.renderer._build_chat_lines(110)]
     prompt_top = tui.renderer._prompt_top(36, 1 + len(starter), len(prompt_lines), len(chat))
 
-    assert any(">_ Lumi" in line for line in starter)
-    assert any("›" in line for line in prompt)
+    assert any("Welcome back!" in line for line in starter)
+    assert any("❯" in line for line in prompt)
     assert any("you" in line for line in chat)
     assert any("hello back" in line for line in chat)
-    assert prompt_top == 1 + len(starter) + len(chat)
+    assert prompt_top == 1 + len(starter)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_transcript_renders_compact_role_headers(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.store.add(Msg("user", "hi", ts="14:05"))
+    tui.store.add(Msg("assistant", "hello back", label="◆ lumi", ts="14:05"))
+
+    chat = [_strip_ansi(line) for line in tui.renderer._build_chat_lines(110)]
+    joined = "\n".join(chat)
+
+    assert "◆ lumi" not in joined
+    assert "  you  14:05  hi" in joined
+    assert "  lumi  14:05  hello back" in joined
     tui._task_executor.shutdown(wait=False)
 
 
@@ -85,31 +103,49 @@ def test_starter_tip_aligns_with_transcript_headers(tmp_path, monkeypatch):
         lambda _seq: "Tip: Use /voice [seconds] to record and transcribe straight into the prompt.",
     )
     tui = _make_tui(tmp_path, monkeypatch)
+    tui.show_starter_panel = True
     tui.store.add(Msg("user", "hi"))
 
     starter = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     chat = [_strip_ansi(line) for line in tui.renderer._build_chat_lines(110)]
-    tip_line = next(line for line in starter if line.strip().startswith("tip"))
+    tip_line = next(line for line in starter if "Use /voice [seconds]" in line)
     user_line = next(line for line in chat if line.strip().startswith("you"))
 
-    assert len(tip_line) - len(tip_line.lstrip()) == len(user_line) - len(user_line.lstrip())
+    assert "Use /voice [seconds]" in tip_line
+    assert user_line.startswith("  you")
     tui._task_executor.shutdown(wait=False)
 
 
-def test_prompt_status_aligns_with_starter_tip(tmp_path, monkeypatch):
+def test_prompt_line_stays_flush_when_starter_tip_is_visible(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "src.tui.session.random.choice",
         lambda _seq: "Tip: Use /doctor to check provider setup and runtime health.",
     )
     tui = _make_tui(tmp_path, monkeypatch)
+    tui.show_starter_panel = True
 
     starter = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(36, 110, 110)
     prompt = [_strip_ansi(line) for line in prompt_lines]
-    tip_line = next(line for line in starter if line.strip().startswith("tip"))
-    status_line = next(line for line in prompt if "100% left" in line)
+    prompt_line = next(line for line in prompt if line.strip().startswith("❯"))
 
-    assert len(tip_line) - len(tip_line.lstrip()) == len(status_line) - len(status_line.lstrip())
+    assert any("Tips for getting started" in line for line in starter)
+    assert prompt[0].strip().startswith("─")
+    assert prompt[-1].strip().endswith("/effort")
+    assert prompt_line.startswith("❯")
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_notification_bar_renders_boxed_status_toast(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.notification = "Model → gemini-2.5-flash"
+
+    rendered = _strip_ansi(tui.renderer._notification_bar(30, 100))
+
+    assert "╭" in rendered
+    assert "╰" in rendered
+    assert "status" in rendered
+    assert "Model → gemini-2.5-flash" in rendered
     tui._task_executor.shutdown(wait=False)
 
 
@@ -200,6 +236,32 @@ def test_mode_conversations_opens_pane_for_saved_records(tmp_path, monkeypatch):
     tui._task_executor.shutdown(wait=False)
 
 
+def test_rebirth_status_command_renders_capability_matrix(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    registry.commands["/rebirth"]["func"](tui, "status")
+
+    assert any(
+        msg.role == "system" and "capability matrix" in msg.text.lower()
+        for msg in tui.store.snapshot()
+    )
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_rebirth_on_applies_profile_defaults(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui._compact = True
+    tui.response_mode = "short"
+    tui.guardian_enabled = False
+
+    registry.commands["/rebirth"]["func"](tui, "on")
+
+    assert tui.response_mode == "detailed"
+    assert tui._compact is False
+    assert tui.guardian_enabled is True
+    tui._task_executor.shutdown(wait=False)
+
+
 def test_identity_questions_answer_as_lumi(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.redraw = lambda: None
@@ -228,6 +290,56 @@ def test_creator_questions_answer_with_sardor_identity(tmp_path, monkeypatch):
     tui._task_executor.shutdown(wait=False)
 
 
+def test_capability_questions_answer_with_lumi_self_profile(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._run_message("what can you do")
+
+    messages = tui.store.snapshot()
+    assert any(
+        msg.role == "assistant"
+        and "I’m Lumi - rebirth." in msg.text
+        and "edit" in msg.text
+        and "search the web" in msg.text
+        for msg in messages
+    )
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_runtime_questions_answer_with_provider_and_model(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._run_message("what model are you using right now")
+
+    messages = tui.store.snapshot()
+    assert any(
+        msg.role == "assistant"
+        and "HuggingFace" in msg.text
+        and "Llama-3.3-70B-Instruct" in msg.text
+        and "effort=" in msg.text
+        for msg in messages
+    )
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_workspace_questions_answer_with_current_folder(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._run_message("what project are you in")
+
+    messages = tui.store.snapshot()
+    assert any(
+        msg.role == "assistant"
+        and str(tmp_path.name) in msg.text
+        and "working in" in msg.text
+        for msg in messages
+    )
+    tui._task_executor.shutdown(wait=False)
+
+
 def test_memory_commands_remember_and_forget_fact(tmp_path, monkeypatch):
     from src.memory.longterm import get_facts
 
@@ -246,7 +358,7 @@ def test_memory_commands_remember_and_forget_fact(tmp_path, monkeypatch):
     tui._task_executor.shutdown(wait=False)
 
 
-def test_empty_state_keeps_prompt_directly_under_starter_card(tmp_path, monkeypatch):
+def test_empty_state_keeps_prompt_under_starter_card(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
 
     starter = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
@@ -255,39 +367,45 @@ def test_empty_state_keeps_prompt_directly_under_starter_card(tmp_path, monkeypa
     prompt_top = tui.renderer._prompt_top(36, 1 + len(starter), len(prompt_lines), 0)
     resolved_cursor_row = tui.renderer._prompt_cursor_row(36, len(prompt_lines), prompt_top, cursor_row)
 
+    assert any("Welcome back!" in line for line in starter)
     assert prompt_top == 1 + len(starter)
     assert resolved_cursor_row == prompt_top + 1
-    assert prompt_lines[0].strip().startswith("╭")
-    assert prompt_lines[2].strip().startswith("╰")
+    assert len(prompt_lines) == 4
+    assert prompt_lines[0].strip().startswith("─")
+    assert prompt_lines[1].strip().startswith("❯")
+    assert prompt_lines[2].strip().startswith("─")
+    assert prompt_lines[3].strip().endswith("/effort")
     tui._task_executor.shutdown(wait=False)
 
 
-def test_ctrl_g_toggles_to_prompt_only_layout(tmp_path, monkeypatch):
+def test_ctrl_g_toggles_starter_panel(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
 
     tui._handle_key("CTRL_G")
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(90)]
     prompt_lines, cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
     prompt = [_strip_ansi(line) for line in prompt_lines]
-    prompt_top = tui.renderer._prompt_top(30, 1 + len(lines), len(prompt_lines), 0)
+    prompt_top = tui.renderer._prompt_top(30, 1, len(prompt_lines), 0)
     resolved_cursor_row = tui.renderer._prompt_cursor_row(30, len(prompt_lines), prompt_top, cursor_row)
 
     assert not lines
     assert prompt_top == 1
     assert resolved_cursor_row == 2
-    assert any("›" in line for line in prompt)
+    assert any("❯" in line for line in prompt)
     tui._task_executor.shutdown(wait=False)
 
 
-def test_prompt_bar_renders_bordered_input(tmp_path, monkeypatch):
+def test_prompt_bar_renders_claude_style_rail(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
 
     prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
     prompt = [_strip_ansi(line) for line in prompt_lines]
 
-    assert prompt[0].strip().startswith("╭")
-    assert any("│" in line and "›" in line for line in prompt)
-    assert any(line.strip().startswith("╰") for line in prompt)
+    assert len(prompt) == 4
+    assert prompt[0].strip().startswith("─")
+    assert prompt[1].strip().startswith("❯")
+    assert prompt[2].strip().startswith("─")
+    assert prompt[3].strip().endswith("/effort")
     tui._task_executor.shutdown(wait=False)
 
 
@@ -298,16 +416,18 @@ def test_recent_commands_clear_between_tui_sessions(tmp_path, monkeypatch):
     )
     first = _make_tui(tmp_path, monkeypatch)
     first.redraw = lambda: None
+    first.show_starter_panel = True
     first._execute_command("/clear", "")
 
     second = _make_tui(tmp_path, monkeypatch)
     second.little_notes = LittleNotesStore(tmp_path / "little_notes.json")
     second.recent_commands = second.little_notes.recent_commands[:3]
+    second.show_starter_panel = True
 
     lines = [_strip_ansi(line) for line in second.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
     assert "/clear" not in joined
-    assert ">_ Lumi" in joined
+    assert "Lumi - rebirth" in joined
 
     first._task_executor.shutdown(wait=False)
     second._task_executor.shutdown(wait=False)
@@ -315,6 +435,7 @@ def test_recent_commands_clear_between_tui_sessions(tmp_path, monkeypatch):
 
 def test_starter_panel_shows_session_summary(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
+    tui.show_starter_panel = True
     tui.little_notes.record_action("Created 2 file(s) and 1 folder(s).")
     tui.recent_actions = tui.little_notes.recent_actions[:4]
 
@@ -322,7 +443,7 @@ def test_starter_panel_shows_session_summary(tmp_path, monkeypatch):
     joined = "\n".join(lines)
 
     assert "HuggingFace" in joined
-    assert "approval:" not in joined
+    assert "Created 2 file(s) and 1 folder(s)." in joined
     tui._task_executor.shutdown(wait=False)
 
 
@@ -336,6 +457,7 @@ def test_pending_plan_changes_prompt_hint(tmp_path, monkeypatch):
 
     assert "confirm removal" in joined
     assert "y apply" in joined
+    assert any(line.strip().startswith("─") for line in lines)
     tui._task_executor.shutdown(wait=False)
 
 
@@ -379,6 +501,7 @@ def test_escape_cancels_pending_file_plan(tmp_path, monkeypatch):
 def test_escape_closes_transient_ui_and_clears_prompt(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.redraw = lambda: None
+    tui.shortcuts_visible = True
     tui.browser_visible = True
     tui.slash_visible = True
     tui.path_visible = True
@@ -389,6 +512,7 @@ def test_escape_closes_transient_ui_and_clears_prompt(tmp_path, monkeypatch):
 
     tui._handle_key("ESC")
 
+    assert tui.shortcuts_visible is False
     assert tui.browser_visible is False
     assert tui.slash_visible is False
     assert tui.path_visible is False
@@ -396,6 +520,41 @@ def test_escape_closes_transient_ui_and_clears_prompt(tmp_path, monkeypatch):
     assert tui.picker_visible is False
     assert tui.buf == ""
     assert tui.cur_pos == 0
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_question_mark_toggles_shortcuts_popup_when_prompt_is_empty(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._handle_key("?")
+
+    assert tui.shortcuts_visible is True
+    popup = tui.renderer._shortcuts_popup(30, 90)
+    first_cursor = re.match(r"\x1b\[(\d+);(\d+)H", popup)
+
+    assert first_cursor is not None
+    assert first_cursor.group(2) == "2"
+    assert "Ctrl+N" in _strip_ansi(popup)
+    assert "open the model picker" in _strip_ansi(popup)
+
+    tui._handle_key("?")
+
+    assert tui.shortcuts_visible is False
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_question_mark_is_inserted_into_prompt_when_typing(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui.buf = "who"
+    tui.cur_pos = len(tui.buf)
+
+    tui._handle_key("?")
+
+    assert tui.shortcuts_visible is False
+    assert tui.buf == "who?"
+    assert tui.cur_pos == len("who?")
     tui._task_executor.shutdown(wait=False)
 
 
@@ -515,8 +674,125 @@ def test_multiline_enter_inserts_newline_and_prompt_shows_badges(tmp_path, monke
     joined = "\n".join(lines)
 
     assert tui.buf == "hello\nworld"
-    assert "› hello" in joined
+    assert "❯ hello" in joined
     assert "world" in joined
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_workspace_trust_popup_renders_access_prompt(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.workspace_trust_visible = True
+
+    popup = _strip_ansi(tui.renderer._workspace_trust_popup(36, 110))
+
+    assert "Accessing workspace:" in popup
+    assert str(tmp_path) in popup
+    assert "Yes, I trust this folder" in popup
+    assert "No, exit" in popup
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_workspace_trust_prompt_accepts_current_folder(tmp_path, monkeypatch):
+    trust_file = tmp_path / "trusted_workspaces.json"
+    monkeypatch.setattr("src.tui.app._WORKSPACE_TRUST_FILE", trust_file)
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.workspace_trust_visible = True
+    tui.redraw = lambda: None
+
+    tui._handle_key("ENTER")
+
+    assert tui.workspace_trust_visible is False
+    assert str(tmp_path.resolve()) in trust_file.read_text(encoding="utf-8")
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_effort_command_accepts_ehigh_and_updates_request_profile(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui.client = object()
+    captured: dict[str, object] = {}
+
+    def fake_chat_stream(client, messages, model, max_tokens, temperature, on_delta=None, on_status=None):
+        captured["client"] = client
+        captured["messages"] = messages
+        captured["model"] = model
+        captured["max_tokens"] = max_tokens
+        captured["temperature"] = temperature
+        if on_delta is not None:
+            on_delta("ok")
+        return "ok"
+
+    monkeypatch.setattr("src.tui.app.chat_stream", fake_chat_stream)
+
+    registry.commands["/effort"]["func"](tui, "ehigh")
+    reply = tui._tui_stream(
+        [{"role": "system", "content": "You are Lumi."}, {"role": "user", "content": "solve this carefully"}],
+        "demo-model",
+    )
+
+    assert reply == "ok"
+    assert tui.reasoning_effort == "ehigh"
+    assert captured["client"] is tui.client
+    assert captured["max_tokens"] == 3072
+    assert captured["temperature"] == 0.2
+    assert "Reasoning effort: extra high." in str(captured["messages"][0]["content"])
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_tui_defaults_to_medium_effort_with_tighter_chat_budget(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui.client = object()
+    captured: dict[str, object] = {}
+
+    def fake_chat_stream(client, messages, model, max_tokens, temperature, on_delta=None, on_status=None):
+        captured["messages"] = messages
+        captured["max_tokens"] = max_tokens
+        captured["temperature"] = temperature
+        if on_delta is not None:
+            on_delta("ok")
+        return "ok"
+
+    monkeypatch.setattr("src.tui.app.chat_stream", fake_chat_stream)
+
+    reply = tui._tui_stream(
+        [{"role": "system", "content": "You are Lumi."}, {"role": "user", "content": "answer this"}],
+        "demo-model",
+    )
+
+    assert reply == "ok"
+    assert tui.reasoning_effort == "medium"
+    assert captured["max_tokens"] == 2048
+    assert captured["temperature"] == 0.45
+    assert str(captured["messages"][0]["content"]) == "You are Lumi."
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_silent_call_honors_low_effort(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui.reasoning_effort = "low"
+    captured: dict[str, object] = {}
+
+    class DummyCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="done"))],
+                usage=SimpleNamespace(completion_tokens=12),
+            )
+
+    tui.client = SimpleNamespace(chat=SimpleNamespace(completions=DummyCompletions()))
+    monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
+    monkeypatch.setattr("src.tui.app.get_models", lambda provider=None: ["demo-model"])
+    monkeypatch.setattr("src.tui.app.route_model", lambda model, available, mode, provider=None: model)
+
+    reply = tui._silent_call("Summarize this.", "demo-model", max_tokens=1000)
+
+    assert reply == "done"
+    assert captured["max_tokens"] == 700
+    assert captured["temperature"] == 0.3
+    assert "Reasoning effort: low." in str(captured["messages"][0]["content"])
     tui._task_executor.shutdown(wait=False)
 
 
@@ -559,7 +835,76 @@ def test_model_picker_opens_in_provider_stage(tmp_path, monkeypatch):
     assert tui.picker_visible is True
     assert tui.picker_stage == "providers"
     assert any(item.get("kind") == "provider" for item in tui.picker_items)
-    assert any("Provider:" in line for line in tui.picker_preview_lines)
+    assert tui.picker_preview_lines == []
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_picker_popup_anchors_below_top_prompt_on_left(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "x")
+    monkeypatch.setenv("GEMINI_API_KEY", "y")
+    monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["huggingface", "gemini"])
+    monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
+    monkeypatch.setattr("src.tui.app.get_models", lambda provider=None: ["meta-llama/Llama-3.3-70B-Instruct"])
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    tui._open_picker()
+    starter = tui.renderer._build_starter_lines(90)
+    prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
+    popup = tui.renderer._picker_popup(30, 90)
+    first_cursor = re.match(r"\x1b\[(\d+);(\d+)H", popup)
+
+    assert first_cursor is not None
+    assert first_cursor.group(2) == "2"
+    assert int(first_cursor.group(1)) == 1 + len(starter) + len(prompt_lines)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_browser_popup_anchors_below_top_prompt_on_left(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.browser_visible = True
+    tui.browser_cwd = str(tmp_path)
+    tui.browser_items = [("file", "app.py", str(tmp_path / "app.py"))]
+
+    starter = tui.renderer._build_starter_lines(90)
+    prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
+    popup = tui.renderer._browser_popup(30, 90)
+    first_cursor = re.match(r"\x1b\[(\d+);(\d+)H", popup)
+
+    assert first_cursor is not None
+    assert first_cursor.group(2) == "2"
+    assert int(first_cursor.group(1)) == 1 + len(starter) + len(prompt_lines)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_slash_popup_renders_codex_style_command_and_description(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.buf = "/"
+    tui.cur_pos = 1
+    tui._update_slash()
+
+    popup = _strip_ansi(tui.renderer._slash_popup(30, 90))
+
+    assert "[settings]" not in popup
+    assert "/agent" in popup
+    assert "Plan a multi-step agent workflow" in popup
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_model_picker_lists_only_configured_providers(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "x")
+    monkeypatch.setenv("GEMINI_API_KEY", "y")
+    monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["huggingface", "gemini"])
+    monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
+    monkeypatch.setattr("src.tui.app.get_models", lambda provider=None: ["meta-llama/Llama-3.3-70B-Instruct"])
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    tui._open_picker()
+
+    provider_values = [item.get("value") for item in tui.picker_items if item.get("kind") == "provider"]
+    assert provider_values == ["gemini", "huggingface"] or provider_values == ["huggingface", "gemini"]
+    assert "council" not in provider_values
+    assert all(item.get("kind") != "provider" or item.get("disabled") is False for item in tui.picker_items)
+    assert all(item.get("label") != "Requires setup" for item in tui.picker_items)
     tui._task_executor.shutdown(wait=False)
 
 
@@ -615,7 +960,7 @@ def test_model_picker_can_toggle_favorite_model(tmp_path, monkeypatch):
     tui._task_executor.shutdown(wait=False)
 
 
-def test_model_picker_surfaces_model_tags_in_meta_and_preview(tmp_path, monkeypatch):
+def test_model_picker_uses_icons_without_preview_documentation(tmp_path, monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "x")
     monkeypatch.setenv("GEMINI_API_KEY", "y")
     monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["huggingface", "gemini"])
@@ -632,12 +977,13 @@ def test_model_picker_surfaces_model_tags_in_meta_and_preview(tmp_path, monkeypa
     tui.picker_sel = next(index for index, item in enumerate(tui.picker_items) if item.get("value") == "gemini")
     tui._confirm_picker()
     tui.picker_sel = next(index for index, item in enumerate(tui.picker_items) if item.get("value") == "gemini-2.5-flash-image")
-    _update_picker_preview(tui)
 
     image_item = next(item for item in tui.picker_items if item.get("value") == "gemini-2.5-flash-image")
-    assert "image" in image_item["meta"]
-    assert "fast" in image_item["meta"]
-    assert any(line.startswith("Tags: ") and "image" in line and "fast" in line for line in tui.picker_preview_lines)
+    popup = _strip_ansi(tui.renderer._picker_popup(30, 90))
+
+    assert image_item["icon"] == "󰉏"
+    assert tui.picker_preview_lines == []
+    assert "Tags:" not in popup
     tui._task_executor.shutdown(wait=False)
 
 
@@ -687,6 +1033,34 @@ def test_model_picker_shows_full_gemini_list_without_group_truncation(tmp_path, 
 
     model_values = [item.get("value") for item in tui.picker_items if item.get("kind") == "model"]
     assert model_values == gemini_models
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_model_picker_respects_env_allowlist(tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "x")
+    monkeypatch.setenv("GEMINI_API_KEY", "y")
+    monkeypatch.setenv("LUMI_GEMINI_MODELS", "gemini-2.5-pro")
+    monkeypatch.delenv("LUMI_ALLOWED_MODELS", raising=False)
+    monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["huggingface", "gemini"])
+    monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
+    monkeypatch.setattr(
+        "src.tui.app.get_models",
+        lambda provider=None: ["gemini-2.5-flash", "gemini-2.5-pro"] if provider == "gemini" else ["meta-llama/Llama-3.3-70B-Instruct"],
+    )
+
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    tui._open_picker()
+    tui.picker_sel = next(index for index, item in enumerate(tui.picker_items) if item.get("value") == "gemini")
+    tui._confirm_picker()
+
+    model_values = [item.get("value") for item in tui.picker_items if item.get("kind") == "model"]
+    assert model_values == ["gemini-2.5-pro"]
+    assert any(
+        item.get("kind") == "hint" and ".env model allowlist active" in item.get("label", "")
+        for item in tui.picker_items
+    )
     tui._task_executor.shutdown(wait=False)
 
 

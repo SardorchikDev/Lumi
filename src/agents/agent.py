@@ -21,6 +21,12 @@ from typing import Any
 import yaml
 
 from src.agents import edit_engine as agent_edit_engine
+from src.agents.action_schema import (
+    SAFE_ACTIONS as SAFE_ACTION_NAMES,
+)
+from src.agents.action_schema import (
+    validate_step_schema,
+)
 from src.agents.task_memory import (
     clear_active_run,
     record_run,
@@ -72,28 +78,7 @@ MAX_SAFE_FILE_CHANGES = 8
 MAX_SAFE_COMMANDS = 5
 MAX_RECOVERY_STEPS = 3
 
-SAFE_ACTIONS = {
-    "list_dir",
-    "read_file",
-    "inspect_repo",
-    "run_tests",
-    "run_ruff",
-    "run_mypy",
-    "run_verify",
-    "git_status",
-    "git_diff",
-    "inspect_changed_files",
-    "mkdir",
-    "rename_path",
-    "write_json",
-    "write_yaml",
-    "search_code",
-    "search_symbols",
-    "patch_file",
-    "patch_lines",
-    "patch_context",
-    "patch_apply",
-}
+SAFE_ACTIONS = set(SAFE_ACTION_NAMES)
 READ_ACTIONS = {"list_dir", "read_file", "search_code", "search_symbols", "git_status", "git_diff", "inspect_repo", "inspect_changed_files"}
 VERIFY_ACTIONS = {"run_tests", "run_ruff", "run_mypy", "run_verify"}
 FILE_MUTATION_ACTIONS = {"write_json", "write_yaml", "patch_file", "patch_lines", "patch_context", "patch_apply"}
@@ -182,6 +167,8 @@ Return ONLY a JSON array of steps. Each step:
   "before_context": "stable text immediately before the block to replace",
   "after_context": "stable text immediately after the block to replace",
   "hunks": [{"old_text": "foo", "new_text": "bar"}],
+  "expected_sha256": "optional file hash guard before applying patch",
+  "expected_line_count": 120,
   "prompt": "prompt for ai_task",
   "question": "question for ask_user",
   "risky": true | false
@@ -197,6 +184,7 @@ Rules:
 - Prefer patch_context when you can anchor an edit with surrounding context.
 - Prefer patch_file or patch_lines for editing existing files when the match is exact.
 - Prefer patch_apply for multiple related edits in the same file.
+- Use expected_sha256 or expected_line_count on patch steps when stale context is likely.
 - Prefer write_json for JSON config changes.
 - Prefer write_yaml for YAML config changes.
 - Prefer search_symbols for finding definitions and tests.
@@ -581,6 +569,49 @@ def _append_verification_step(steps: list[dict], base_dir: Path, task: str = "")
     return steps + verify_steps if verify_steps else steps
 
 
+def _task_requires_repo_inspection(task: str) -> bool:
+    lowered = task.lower()
+    keywords = (
+        "refactor",
+        "debug",
+        "fix",
+        "bug",
+        "migrate",
+        "optimize",
+        "implement",
+        "upgrade",
+        "integrate",
+        "architecture",
+        "design",
+    )
+    if any(keyword in lowered for keyword in keywords):
+        return True
+    return len(task.split()) >= 18
+
+
+def _prepend_repo_inspection_step(steps: list[dict], task: str) -> list[dict]:
+    if not steps or not _task_requires_repo_inspection(task):
+        return steps
+    if any(
+        step.get("type") == "action" and step.get("action") == "inspect_repo"
+        for step in steps[:2]
+    ):
+        return steps
+
+    prepend_step = {
+        "id": 1,
+        "description": "Inspect repo profile, changed files, and verification commands",
+        "type": "action",
+        "action": "inspect_repo",
+        "target": ".",
+        "risky": False,
+    }
+    combined = [prepend_step, *steps]
+    for index, step in enumerate(combined, start=1):
+        step["id"] = index
+    return combined
+
+
 def _enforce_execution_policy(steps: list[dict], policy: ExecutionPolicy, base_dir: Path) -> tuple[bool, str]:
     if len(steps) > policy.max_steps:
         return False, f"Plan exceeds step budget ({len(steps)} > {policy.max_steps})"
@@ -640,70 +671,11 @@ def normalize_plan(steps: list[dict]) -> list[dict]:
                 inferred = _infer_action_from_step(step)
                 if inferred:
                     step["action"] = inferred
-            action = str(step.get("action", "")).strip()
-            if action not in SAFE_ACTIONS:
-                raise ValueError(f"Step {index} has unsupported action '{action}'")
-            if action == "mkdir":
-                step["target"] = str(step.get("target") or step.get("path") or "").strip()
-                if not step["target"]:
-                    raise ValueError(f"Step {index} mkdir is missing a target")
-            if action == "rename_path":
-                step["target"] = str(step.get("target") or step.get("path") or "").strip()
-                step["destination"] = str(step.get("destination", "")).strip()
-                if not step["target"] or not step["destination"]:
-                    raise ValueError(f"Step {index} rename_path requires target and destination")
-            if action == "write_json":
-                if not str(step.get("path", "")).strip():
-                    raise ValueError(f"Step {index} write_json is missing a file path")
-                if "json_content" not in step:
-                    raise ValueError(f"Step {index} write_json is missing json_content")
-            if action == "write_yaml":
-                if not str(step.get("path", "")).strip():
-                    raise ValueError(f"Step {index} write_yaml is missing a file path")
-                if "yaml_content" not in step:
-                    raise ValueError(f"Step {index} write_yaml is missing yaml_content")
-            if action == "search_code" and not str(step.get("query", "")).strip():
-                raise ValueError(f"Step {index} search_code is missing a query")
-            if action == "search_symbols" and not str(step.get("symbol", "")).strip():
-                raise ValueError(f"Step {index} search_symbols is missing a symbol")
-            if action == "run_verify" and str(step.get("verify_kind", "")).strip() not in {"tests", "lint", "types", "all"}:
-                raise ValueError(f"Step {index} run_verify requires verify_kind")
-            if action == "patch_file":
-                if not str(step.get("path", "")).strip():
-                    raise ValueError(f"Step {index} patch_file is missing a file path")
-                if "old_text" not in step:
-                    raise ValueError(f"Step {index} patch_file is missing old_text")
-                if "new_text" not in step:
-                    raise ValueError(f"Step {index} patch_file is missing new_text")
-            if action == "patch_lines":
-                if not str(step.get("path", "")).strip():
-                    raise ValueError(f"Step {index} patch_lines is missing a file path")
-                if step.get("start_line") is None or step.get("end_line") is None:
-                    raise ValueError(f"Step {index} patch_lines is missing line bounds")
-                if "replacement" not in step:
-                    raise ValueError(f"Step {index} patch_lines is missing replacement")
-            if action == "patch_context":
-                if not str(step.get("path", "")).strip():
-                    raise ValueError(f"Step {index} patch_context is missing a file path")
-                if not str(step.get("before_context", "")).strip() and not str(step.get("after_context", "")).strip():
-                    raise ValueError(f"Step {index} patch_context needs before_context or after_context")
-                if "replacement" not in step:
-                    raise ValueError(f"Step {index} patch_context is missing replacement")
-            if action == "patch_apply":
-                if not str(step.get("path", "")).strip():
-                    raise ValueError(f"Step {index} patch_apply is missing a file path")
-                hunks = step.get("hunks")
-                if not isinstance(hunks, list) or not hunks:
-                    raise ValueError(f"Step {index} patch_apply requires hunks")
 
         elif stype == "file_write":
-            if not str(step.get("path", "")).strip():
-                raise ValueError(f"Step {index} is missing a file path")
-            step["path"] = str(step["path"]).strip()
-            step["content"] = str(step.get("content", ""))
+            pass
 
         elif stype == "ai_task":
-            ai_task_count += 1
             prompt = str(step.get("prompt", "")).strip()
             if not prompt:
                 inferred = _infer_action_from_step(step)
@@ -714,14 +686,16 @@ def normalize_plan(steps: list[dict]) -> list[dict]:
                     raise ValueError(f"Step {index} ai_task is missing a prompt")
 
         elif stype == "ask_user":
-            if not str(step.get("question", "")).strip():
-                raise ValueError(f"Step {index} ask_user is missing a question")
+            pass
 
         else:
             raise ValueError(f"Step {index} has unsupported type '{stype}'")
 
         step["type"] = stype
-        normalized.append(step)
+        validated = validate_step_schema(step, index=index)
+        if validated.get("type") == "ai_task":
+            ai_task_count += 1
+        normalized.append(validated)
 
     if normalized and ai_task_count == len(normalized) and len(normalized) > 1:
         raise ValueError("Plan is too vague: all steps were ai_task")
@@ -765,6 +739,7 @@ def make_plan(
         raw = re.sub(r"^```[a-z]*\n?", "", raw)
         raw = re.sub(r"\n?```$", "", raw).strip()
         normalized = normalize_plan(json.loads(raw))
+        normalized = _prepend_repo_inspection_step(normalized, task)
         normalized = _append_verification_step(normalized, base_dir, task)
         ok, reason = _enforce_execution_policy(normalized, policy, base_dir)
         if not ok:
@@ -1639,6 +1614,7 @@ def run_agent(
     stopped = False
     recovery_used = False
     failed_checks: list[str] = []
+    failure_kinds: list[str] = []
     completed_plan_steps = 0
     failed_plan_steps = 0
 
@@ -1684,6 +1660,8 @@ def run_agent(
                 for line in md_render(output[:800]).split("\n"):
                     print(f"  {GR}{line}{R}")
         else:
+            failure_kind = _classify_failure_output(output)
+            failure_kinds.append(failure_kind)
             update_active_run(
                 status="recovering" if not recovery_used else "failed",
                 summary=f"Failed step: {step['description']}",
@@ -1697,6 +1675,7 @@ def run_agent(
                 branch=workspace_profile.git_branch,
             )
             print(f"  {RE}✗{R}  {output}")
+            print(f"  {DG}failure class:{R} {failure_kind}")
             if step.get("type") == "action" and step.get("action") in VERIFY_ACTIONS | {"run_verify"}:
                 failed_checks.append(step.get("verify_kind") or step.get("action", "verify"))
             if (
@@ -1785,6 +1764,8 @@ def run_agent(
         summary += rollback_note
     if recovery_used:
         summary += " Recovery used."
+    if failure_kinds:
+        summary += " Failure classes: " + ", ".join(sorted(set(failure_kinds)))
 
     print(f"\n  {GN if not failed else YE}{'✓' if not failed else '▲'}{R}  {summary}\n")
     touched_files = [str(record.path.relative_to(base_dir)) if record.path.is_relative_to(base_dir) else str(record.path) for record in journal.records if record.kind == "file"]

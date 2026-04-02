@@ -38,6 +38,9 @@ def initialize_ui_state(
     tui.pane = PaneState()
     tui.review_card = ReviewCard()
     tui.show_starter_panel = True
+    tui.shortcuts_visible = False
+    tui.workspace_trust_visible = False
+    tui.workspace_trust_sel = 0
 
     tui.little_notes = notes_store
     tui.recent_commands = tui.little_notes.recent_commands

@@ -94,13 +94,13 @@ def infer_request_mode(text: str) -> str:
 
 
 MODE_RESPONSE_BUDGETS = {
-    "chat": 900,
-    "summary": 220,
-    "search": 900,
-    "code": 1400,
-    "files": 1200,
-    "review": 1600,
-    "debug": 1400,
+    "chat": 480,
+    "summary": 160,
+    "search": 640,
+    "code": 900,
+    "files": 900,
+    "review": 1100,
+    "debug": 1000,
 }
 
 

@@ -38,6 +38,12 @@ pre-commit install
 
    # Tests
    pytest tests/ -v
+
+   # Benchmark gate (offline contract checks)
+   python scripts/benchmark_gate.py --config configs/benchmark_gate.json
+
+   # Rebirth capability audit
+   python scripts/rebirth_audit.py --strict
    ```
 
 4. **Commit and push**:

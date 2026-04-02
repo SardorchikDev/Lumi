@@ -177,8 +177,8 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {
 }
 
 DEFAULT_PROVIDER_ORDER = [
-    "huggingface",
     "gemini",
+    "huggingface",
     "groq",
     "openrouter",
     "mistral",

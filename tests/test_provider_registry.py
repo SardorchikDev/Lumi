@@ -33,6 +33,13 @@ def test_pick_default_provider_prefers_documented_order(monkeypatch):
     assert pick_default_provider() == "gemini"
 
 
+def test_pick_default_provider_prefers_gemini_over_huggingface(monkeypatch):
+    monkeypatch.setenv("HF_TOKEN", "x")
+    monkeypatch.setenv("GEMINI_API_KEY", "y")
+
+    assert pick_default_provider() == "gemini"
+
+
 def test_get_configured_providers_includes_ollama_flag(monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "x")
     providers = get_configured_providers(has_ollama=True)

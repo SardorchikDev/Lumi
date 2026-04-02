@@ -1,5 +1,6 @@
 """Unit tests for src.agents.agent."""
 
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -216,6 +217,11 @@ class TestPlanNormalization:
         with pytest.raises(ValueError, match="needs before_context or after_context"):
             normalize_plan([{"type": "action", "action": "patch_context", "path": "app.py", "replacement": "x"}])
 
+    def test_schema_normalizes_non_string_fields(self):
+        steps = normalize_plan([{"type": "file_write", "path": 123, "content": 9}])
+        assert steps[0]["path"] == "123"
+        assert steps[0]["content"] == "9"
+
     def test_make_plan_includes_context_and_normalizes(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "README.md").write_text("# Demo\n", encoding="utf-8")
@@ -231,6 +237,23 @@ class TestPlanNormalization:
         user_message = client.calls[0]["messages"][1]["content"]
         assert "Workspace context:" in user_message
         assert "README.md" in user_message
+
+    def test_make_plan_prepends_repo_inspection_for_complex_tasks(self, tmp_path):
+        client = FakeClient(
+            """
+            [
+              {"type": "file_write", "path": "notes.txt", "content": "done\\n", "description": "Write notes"}
+            ]
+            """
+        )
+        steps = make_plan(
+            "refactor parser architecture and fix integration bugs across modules",
+            client,
+            "fake-model",
+            base_dir=tmp_path,
+        )
+        assert steps[0]["type"] == "action"
+        assert steps[0]["action"] == "inspect_repo"
 
 
 class TestValidation:
@@ -299,6 +322,23 @@ class TestValidation:
         )
         assert ok is False
         assert "matched multiple regions" in reason
+
+    def test_validate_action_blocks_overlapping_patch_apply_hunks(self, tmp_path):
+        path = tmp_path / "app.py"
+        path.write_text("a\nb\nc\nd\n", encoding="utf-8")
+        ok, reason = validate_action_step(
+            {
+                "action": "patch_apply",
+                "path": "app.py",
+                "hunks": [
+                    {"start_line": 2, "end_line": 3, "replacement": "beta\ngamma\n"},
+                    {"start_line": 3, "end_line": 4, "replacement": "x\ny\n"},
+                ],
+            },
+            tmp_path,
+        )
+        assert ok is False
+        assert "overlaps line range" in reason
 
     def test_validate_action_allows_run_verify(self, tmp_path):
         (tmp_path / "tests").mkdir()
@@ -371,6 +411,26 @@ class TestFileChangeComputation:
         assert reason == "patch_context"
         assert changed_path == path
         assert content == "header\nstart\nnew\nend\nfooter\n"
+
+    def test_compute_patch_lines_change_respects_expected_sha(self, tmp_path):
+        path = tmp_path / "app.py"
+        path.write_text("a\nb\nc\n", encoding="utf-8")
+        wrong_sha = hashlib.sha256(b"not-current").hexdigest()
+        ok, reason, _changed_path, _content = compute_step_file_change(
+            {
+                "type": "action",
+                "action": "patch_lines",
+                "path": "app.py",
+                "start_line": 2,
+                "end_line": 2,
+                "old_block": "b\n",
+                "replacement": "beta\n",
+                "expected_sha256": wrong_sha,
+            },
+            tmp_path,
+        )
+        assert ok is False
+        assert "expected_sha256" in reason
 
     def test_compute_patch_apply_change(self, tmp_path):
         path = tmp_path / "app.py"

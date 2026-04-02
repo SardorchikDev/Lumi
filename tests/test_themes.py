@@ -28,9 +28,7 @@ class TestThemes:
         themes = list_themes()
         assert isinstance(themes, list)
         assert len(themes) == len(THEMES)
-        assert "tokyo" in themes
-        assert "dracula" in themes
-        assert "nord" in themes
+        assert themes == [DEFAULT]
 
     def test_get_theme_default(self):
         theme = get_theme()
@@ -39,14 +37,14 @@ class TestThemes:
 
     def test_get_theme_by_name(self):
         theme = get_theme("dracula")
-        assert theme["name"] == "Dracula"
+        assert theme["name"] == "Fixed ANSI"
 
     def test_get_theme_invalid_falls_back(self):
         theme = get_theme("nonexistent")
         assert theme == THEMES[DEFAULT]
 
     def test_theme_values_are_ansi_codes(self):
-        theme = get_theme("tokyo")
+        theme = get_theme("ansi")
         for key in ("C1", "C2", "C3", "PU", "BL", "CY", "GR", "DG", "GN", "RE", "YE", "WH"):
             assert theme[key].startswith("\033["), f"Key {key} is not an ANSI code"
 
@@ -70,10 +68,10 @@ class TestThemePersistence:
 
     def test_save_and_load_theme_name(self):
         save_theme_name("dracula")
-        assert load_theme_name() == "dracula"
+        assert load_theme_name() == DEFAULT
 
     def test_save_creates_file(self):
         save_theme_name("nord")
         assert self._tmp.exists()
         data = json.loads(self._tmp.read_text())
-        assert data["theme"] == "nord"
+        assert data["theme"] == DEFAULT

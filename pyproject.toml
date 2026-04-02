@@ -1,7 +1,7 @@
 [project]
 name = "lumi-ai"
-version = "0.3.3"
-description = "The Ultimate Terminal AI Development Environment"
+version = "0.4.0"
+description = "Lumi - rebirth: terminal AI coding and repo operations"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
@@ -27,6 +27,7 @@ dependencies = [
     "huggingface_hub>=0.20.0",
     "python-dotenv>=1.0.0",
     "openai>=1.10.0",
+    "pydantic>=2.7.0",
     "numpy>=1.24.0",
     "google-auth>=2.0.0",
     "pdfplumber>=0.10.0",

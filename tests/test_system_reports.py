@@ -35,6 +35,7 @@ def test_build_status_report_includes_workspace_and_memory(tmp_path, monkeypatch
     assert "Agent:     running" in report
     assert "Checks:" in report
     assert "Runtime:" in report
+    assert "Rebirth:" in report
 
 
 def test_build_doctor_report_surfaces_missing_setup(tmp_path, monkeypatch):
@@ -57,6 +58,7 @@ def test_build_doctor_report_surfaces_missing_setup(tmp_path, monkeypatch):
     assert "No LUMI.md project context file found." in report
     assert "No .env file found" in report
     assert "Runtime:" in report
+    assert "Rebirth:" in report
 
 
 def test_build_onboarding_report_includes_workspace_summary(tmp_path, monkeypatch):

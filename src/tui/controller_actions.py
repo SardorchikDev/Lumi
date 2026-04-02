@@ -7,6 +7,10 @@ import re
 from pathlib import Path
 from typing import Any
 
+from src.chat.model_filters import (
+    filter_models_by_allowlist,
+    model_allowlist_env_keys,
+)
 from src.chat.providers import (
     get_provider_spec,
     provider_capability_model_hints,
@@ -36,6 +40,54 @@ def _is_identity_prompt(text: str) -> bool:
         "are you lumi",
         "aren t you lumi",
         "arent you lumi",
+    )
+    return any(phrase in lowered for phrase in phrases)
+
+
+def _is_capabilities_prompt(text: str) -> bool:
+    lowered = _normalized_prompt(text)
+    phrases = (
+        "what can you do",
+        "what do you do",
+        "what are your capabilities",
+        "what are your features",
+        "what are you capable of",
+        "how can you help",
+        "what do you help with",
+        "what can lumi do",
+        "what is lumi able to do",
+    )
+    return any(phrase in lowered for phrase in phrases)
+
+
+def _is_runtime_prompt(text: str) -> bool:
+    lowered = _normalized_prompt(text)
+    phrases = (
+        "what model are you using",
+        "what provider are you using",
+        "what are you running on",
+        "what powers you",
+        "which model are you on",
+        "which provider are you on",
+        "what engine are you using",
+        "what llm are you using",
+        "what model powers you",
+    )
+    return any(phrase in lowered for phrase in phrases)
+
+
+def _is_workspace_prompt(text: str) -> bool:
+    lowered = _normalized_prompt(text)
+    phrases = (
+        "what project are you in",
+        "what repo are you in",
+        "what repository are you in",
+        "what folder are you in",
+        "what workspace are you in",
+        "where are you working",
+        "are you repo aware",
+        "do you know this repo",
+        "do you know this project",
     )
     return any(phrase in lowered for phrase in phrases)
 
@@ -70,6 +122,110 @@ def _creator_reply(tui: Any) -> str:
     return f"I'm Lumi, created by {creator}."
 
 
+def _display_path(path: Path, *, max_len: int = 56) -> str:
+    text = str(path.resolve())
+    home = str(Path.home())
+    if text == home:
+        text = "~"
+    elif text.startswith(home + "/"):
+        text = "~/" + text[len(home) + 1 :]
+    if len(text) <= max_len:
+        return text
+    return "..." + text[-(max_len - 3) :]
+
+
+def _runtime_identity_bits(tui: Any, *, get_provider_fn) -> tuple[str, str, str]:
+    if getattr(tui, "current_model", "") == "council":
+        return "Council", "council", "council mode"
+    try:
+        provider_key = get_provider_fn()
+    except Exception:
+        provider_key = ""
+    spec = get_provider_spec(provider_key) if provider_key else None
+    provider_label = spec.label if spec else (provider_key or "unknown provider")
+    model = getattr(tui, "current_model", "unknown model") or "unknown model"
+    return provider_label, model, provider_key
+
+
+def _identity_reply(tui: Any, *, get_provider_fn) -> str:
+    provider_label, model, _provider_key = _runtime_identity_bits(tui, get_provider_fn=get_provider_fn)
+    creator = (
+        getattr(tui, "persona_override", {}).get("creator")
+        or getattr(tui, "persona", {}).get("creator")
+        or "Sardor Sodiqov (SardorchikDev)"
+    )
+    return (
+        f"I’m Lumi. Lumi - rebirth is your in-app coding assistant, built by {creator}. "
+        f"I can work across files, memory, search, and repo-aware tasks. "
+        f"Right now I’m running on {provider_label} with {model}."
+    )
+
+
+def _capabilities_reply(tui: Any, *, get_provider_fn) -> str:
+    provider_label, model, provider_key = _runtime_identity_bits(tui, get_provider_fn=get_provider_fn)
+    abilities = [
+        "switch providers and models",
+        "inspect, create, edit, move, and review files",
+        "work repo-aware inside the current workspace",
+        "search the web when needed",
+        "remember user facts and recent conversation context",
+        "hand off to external coding CLIs with /mode vessel",
+    ]
+    if provider_supports(provider_key, "vision"):
+        abilities.append("inspect images")
+    if provider_supports(provider_key, "audio_transcription"):
+        abilities.append("transcribe audio and voice notes")
+    if getattr(tui, "_loaded_plugins", []):
+        abilities.append("use trusted plugins")
+    abilities_text = ", ".join(abilities[:-1]) + f", and {abilities[-1]}" if len(abilities) > 1 else abilities[0]
+    return (
+        f"I’m Lumi - rebirth. I can {abilities_text}. "
+        f"My current runtime is {provider_label} with {model}."
+    )
+
+
+def _runtime_reply(tui: Any, *, get_provider_fn) -> str:
+    provider_label, model, _provider_key = _runtime_identity_bits(tui, get_provider_fn=get_provider_fn)
+    effort = getattr(tui, "reasoning_effort", "medium") or "medium"
+    compact = "on" if getattr(tui, "_compact", False) else "off"
+    guardian = "on" if getattr(tui, "guardian_enabled", False) else "off"
+    return (
+        f"I’m Lumi, currently running on {provider_label} with {model}. "
+        f"Runtime state: effort={effort}, compact={compact}, guardian={guardian}."
+    )
+
+
+def _workspace_reply(tui: Any) -> str:
+    workspace = Path.cwd().resolve()
+    profile = getattr(tui, "workspace_profile", None)
+    details: list[str] = []
+    git_branch = getattr(profile, "git_branch", None)
+    frameworks = tuple(getattr(profile, "frameworks", ()) or ())
+    if git_branch:
+        details.append(f"branch {git_branch}")
+    if frameworks:
+        details.append(f"stack {', '.join(frameworks[:3])}")
+    details_text = f" I’m seeing {', '.join(details)}." if details else ""
+    return (
+        f"I’m currently working in {_display_path(workspace)}."
+        f"{details_text} I can inspect the repo structure, files, and project context from here."
+    )
+
+
+def _self_knowledge_reply(tui: Any, text: str, *, get_provider_fn) -> str | None:
+    if _is_identity_prompt(text):
+        return _identity_reply(tui, get_provider_fn=get_provider_fn)
+    if _is_creator_prompt(text):
+        return _creator_reply(tui)
+    if _is_capabilities_prompt(text):
+        return _capabilities_reply(tui, get_provider_fn=get_provider_fn)
+    if _is_runtime_prompt(text):
+        return _runtime_reply(tui, get_provider_fn=get_provider_fn)
+    if _is_workspace_prompt(text):
+        return _workspace_reply(tui)
+    return None
+
+
 def filesystem_prompt_hint(tui: Any) -> tuple[str, str]:
     pending = tui._pending_file_plan
     if not pending:
@@ -101,6 +257,12 @@ def cancel_pending_file_plan(tui: Any) -> bool:
 
 def cancel_transient_state(tui: Any) -> bool:
     changed = False
+    if getattr(tui, "shortcuts_visible", False):
+        tui.shortcuts_visible = False
+        changed = True
+    if getattr(tui, "workspace_trust_visible", False):
+        tui.workspace_trust_visible = False
+        changed = True
     if getattr(tui, "browser_visible", False):
         tui.browser_visible = False
         changed = True
@@ -309,30 +471,15 @@ def run_message(
     tui.set_busy(True)
     tui.scroll_offset = 0
 
-    if _is_identity_prompt(user_input):
-        reply = (
-            "I’m Lumi. The underlying model/provider can vary, but in this chat you’re talking to Lumi."
-        )
+    self_reply = _self_knowledge_reply(tui, user_input, get_provider_fn=get_provider_fn)
+    if self_reply:
         tui.last_msg = user_input
         tui.store.add(Msg("user", user_input))
         tui.memory.add("user", user_input)
-        tui.store.add(Msg("assistant", reply))
-        tui.memory.add("assistant", reply)
+        tui.store.add(Msg("assistant", self_reply))
+        tui.memory.add("assistant", self_reply)
         tui.prev_reply = tui.last_reply
-        tui.last_reply = reply
-        tui.turns += 1
-        tui.set_busy(False)
-        return
-
-    if _is_creator_prompt(user_input):
-        reply = _creator_reply(tui)
-        tui.last_msg = user_input
-        tui.store.add(Msg("user", user_input))
-        tui.memory.add("user", user_input)
-        tui.store.add(Msg("assistant", reply))
-        tui.memory.add("assistant", reply)
-        tui.prev_reply = tui.last_reply
-        tui.last_reply = reply
+        tui.last_reply = self_reply
         tui.turns += 1
         tui.set_busy(False)
         return
@@ -700,6 +847,58 @@ def _provider_preview_lines(provider: str, *, provider_names: dict[str, str], he
     ]
 
 
+def _provider_icon(provider: str) -> str:
+    return {
+        "gemini": "󰋩",
+        "groq": "󰓅",
+        "huggingface": "󰏳",
+        "openrouter": "󰒍",
+        "mistral": "󰼩",
+        "cohere": "󰛩",
+        "github": "󰊤",
+        "bytez": "󰾆",
+        "cloudflare": "󰞒",
+        "vercel": "󰣓",
+        "vertex": "󰊄",
+        "ollama": "󰳆",
+        "council": "󰞋",
+    }.get(provider, "󰇥")
+
+
+def _model_icon(provider: str, model: str) -> str:
+    tags = set(_model_tags(provider, model))
+    if "image" in tags:
+        return "󰉏"
+    if "vision" in tags:
+        return "󰈈"
+    if "audio" in tags:
+        return "󰕾"
+    if "best coding" in tags or "coding" in tags:
+        return "󰅩"
+    if "reasoning" in tags:
+        return "󰧑"
+    if "fast" in tags:
+        return "󰓅"
+    return "󰇥"
+
+
+def _group_icon(group: str) -> str:
+    return {
+        "Current": "󰄬",
+        "Favorites": "󰓎",
+        "Recent": "󰋚",
+        "Recommended": "󰚩",
+        "Image": "󰉏",
+        "Vision": "󰈈",
+        "Audio": "󰕾",
+        "Fast": "󰓅",
+        "Coding": "󰅩",
+        "Reasoning": "󰧑",
+        "Long context": "󰆼",
+        "All models": "󰇥",
+    }.get(group, "󰇥")
+
+
 def _model_preview_lines(provider: str, model: str, *, provider_names: dict[str, str], recommended: bool, current: bool) -> list[str]:
     spec = get_provider_spec(provider)
     reason = "recommended for this provider" if recommended else "available model"
@@ -733,9 +932,8 @@ def _rebuild_picker(
 
     if tui.picker_stage == "providers":
         items: list[dict[str, Any]] = []
-        current_provider = "council" if tui.current_model == "council" else get_provider_fn()
+        current_provider = get_provider_fn()
         configured = [item for item in health_snapshot if item.configured and item.key in available]
-        unavailable = [item for item in health_snapshot if not item.configured]
         if configured:
             items.append({"kind": "header", "label": "Configured providers"})
             providers = configured
@@ -748,43 +946,15 @@ def _rebuild_picker(
                     or any(query in capability for capability in item.capabilities)
                 ]
             for item in providers:
-                meta = f"{item.description} · {provider_context_limit(item.key) // 1000}k ctx"
-                if item.key == current_provider:
-                    meta = "current · " + meta
                 items.append(
                     {
                         "kind": "provider",
                         "value": item.key,
                         "label": provider_names.get(item.key, item.label),
-                        "meta": meta,
+                        "meta": "",
+                        "icon": _provider_icon(item.key),
                         "current": item.key == current_provider,
                         "disabled": False,
-                    }
-                )
-        if len(configured) >= 2 and (not query or "council".startswith(query) or "multi-agent".find(query) != -1):
-            if items:
-                items.append({"kind": "header", "label": "Recommended"})
-            items.append(
-                {
-                    "kind": "provider",
-                    "value": "council",
-                    "label": "⚡ Council",
-                    "meta": "multi-agent debate · strongest routing",
-                    "current": tui.current_model == "council",
-                    "disabled": False,
-                }
-            )
-        if unavailable and not query:
-            items.append({"kind": "header", "label": "Requires setup"})
-            for item in unavailable[:6]:
-                items.append(
-                    {
-                        "kind": "provider",
-                        "value": item.key,
-                        "label": provider_names.get(item.key, item.label),
-                        "meta": f"missing {', '.join(item.missing_env_vars)}",
-                        "current": False,
-                        "disabled": True,
                     }
                 )
         if not items:
@@ -796,15 +966,23 @@ def _rebuild_picker(
         return
 
     provider = tui.picker_provider_key or get_provider_fn()
-    items = [{"kind": "action", "value": "__back__", "label": "← back to providers", "meta": provider_names.get(provider, provider)}]
+    items = [{"kind": "action", "value": "__back__", "label": "back", "meta": "", "icon": "󰁍"}]
     try:
-        models = get_models_fn(provider)
+        all_models = get_models_fn(provider)
+        models, allowlist = filter_models_by_allowlist(provider, all_models)
     except Exception as exc:
         tui.picker_items = items + [{"kind": "hint", "label": f"Could not load models: {exc}"}]
         tui.picker_sel = 0
         tui.picker_empty_message = "Model loading failed"
         _update_picker_preview(tui, provider_names=provider_names, health_by_key=health_by_key)
         return
+    if allowlist:
+        items.append(
+            {
+                "kind": "hint",
+                "label": f".env model allowlist active ({len(models)}/{len(all_models)} shown)",
+            }
+        )
 
     recent = set(tui.little_notes.recent_models_for_provider(provider, limit=8))
     favorites = set(tui.little_notes.favorite_models_for_provider(provider))
@@ -852,33 +1030,32 @@ def _rebuild_picker(
         group_models = grouped.get(group)
         if not group_models:
             continue
-        items.append({"kind": "header", "label": group})
+        items.append({"kind": "header", "label": group, "icon": _group_icon(group)})
         for model in group_models:
             current = provider == get_provider_fn() and model == tui.current_model
             recommended = group == "Recommended"
             label = model.split("/")[-1]
-            if model in favorites:
-                label = "★ " + label
-            meta = _model_meta(provider, model)
-            if current:
-                meta = "current · " + meta
-            elif recommended:
-                meta = "recommended · " + meta
             items.append(
                 {
                     "kind": "model",
                     "value": model,
                     "label": label,
-                    "meta": meta,
+                    "meta": "",
+                    "icon": _model_icon(provider, model),
                     "tags": _model_tags(provider, model),
                     "provider": provider,
                     "recommended": recommended,
                     "current": current,
+                    "favorite": model in favorites,
                 }
             )
 
-    if len(items) == 1:
-        items.append({"kind": "hint", "label": "No models match this filter."})
+    if len(items) <= 2:
+        if allowlist:
+            key = model_allowlist_env_keys(provider)[0]
+            items.append({"kind": "hint", "label": f"No models matched {key} in .env"})
+        else:
+            items.append({"kind": "hint", "label": "No models match this filter."})
     tui.picker_items = items
     tui.picker_sel = _picker_first_selectable(items)
     tui.picker_empty_message = "Type to filter models"
@@ -886,31 +1063,7 @@ def _rebuild_picker(
 
 
 def _update_picker_preview(tui: Any, *, provider_names: dict[str, str] | None = None, health_by_key: dict[str, Any] | None = None) -> None:
-    provider_names = provider_names or getattr(tui, "picker_provider_names", {}) or {}
-    health_by_key = health_by_key or getattr(tui, "picker_health_by_key", {}) or {}
-    if not tui.picker_items:
-        tui.picker_preview_lines = []
-        return
-    try:
-        item = tui.picker_items[tui.picker_sel]
-    except IndexError:
-        tui.picker_preview_lines = []
-        return
-    kind = item.get("kind")
-    if kind == "provider":
-        tui.picker_preview_lines = _provider_preview_lines(item["value"], provider_names=provider_names, health_by_key=health_by_key)
-    elif kind == "model":
-        tui.picker_preview_lines = _model_preview_lines(
-            item.get("provider", tui.picker_provider_key),
-            item["value"],
-            provider_names=provider_names,
-            recommended=bool(item.get("recommended")),
-            current=bool(item.get("current")),
-        )
-    elif kind == "action":
-        tui.picker_preview_lines = ["Back to providers", "Use this to choose a different gateway."]
-    else:
-        tui.picker_preview_lines = [item.get("label", "")]
+    tui.picker_preview_lines = []
 
 
 def open_picker(
@@ -1079,6 +1232,48 @@ def handle_key(
 ) -> None:
     if not key:
         return
+    if getattr(tui, "workspace_trust_visible", False):
+        if key == "ESC":
+            tui.workspace_trust_visible = False
+            tui.redraw()
+            return
+        if key in {"UP", "DOWN", "TAB", "LEFT", "RIGHT"}:
+            tui.workspace_trust_sel = 1 - int(getattr(tui, "workspace_trust_sel", 0) or 0)
+            tui.redraw()
+            return
+        if key in {"1", "2"}:
+            tui.workspace_trust_sel = 0 if key == "1" else 1
+            tui.redraw()
+            return
+        if key == "ENTER":
+            if int(getattr(tui, "workspace_trust_sel", 0) or 0) == 0:
+                tui.accept_workspace_trust()
+            else:
+                tui.decline_workspace_trust()
+            tui.redraw()
+            return
+        return
+    shortcuts_visible = bool(getattr(tui, "shortcuts_visible", False))
+    shortcuts_context_blocked = any(
+        (
+            getattr(tui, "browser_visible", False),
+            tui.slash_visible,
+            tui.path_visible,
+            tui.picker_visible,
+            getattr(tui, "pane_active", False),
+            getattr(getattr(tui, "review_card", None), "active", False),
+        )
+    )
+    if key == "?" and (shortcuts_visible or (not tui.buf and not shortcuts_context_blocked)):
+        tui.shortcuts_visible = not shortcuts_visible
+        tui.redraw()
+        return
+    if shortcuts_visible:
+        if key == "ENTER":
+            tui.shortcuts_visible = False
+            tui.redraw()
+            return
+        tui.shortcuts_visible = False
     if key == "ESC":
         tui._cancel_transient_state()
         return
