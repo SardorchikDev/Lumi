@@ -1,22 +1,70 @@
-# Lumi - rebirth
+<p align="center">
+  <img src="docs/assets/lumi-robot.svg" width="180" alt="Lumi robot logo">
+</p>
 
-Minimal terminal AI for coding, repo work, file management, and grounded agent tasks.
+<h1 align="center">Lumi - rebirth</h1>
 
-[Install](#install) · [Quick Start](#quick-start) · [What Lumi Does](#what-lumi-does) · [Common Workflows](#common-workflows) · [Commands](#commands) · [Plugins](#plugins) · [Development](#development) · [Roadmap](ROADMAP.md)
+<p align="center">
+  Keyboard-first AI terminal for coding, repo work, grounded agent tasks, and multimodal context.
+</p>
 
-## Why Lumi
+<p align="center">
+  <strong>Minimal surface. Heavyweight workflow.</strong>
+</p>
 
-- keyboard-first TUI and classic CLI mode
-- grounded agent flow with previews, confirmations, and rollback
-- natural-language file and folder operations
-- repo-aware workflows for git, files, and verification
-- cached context for web pages, files, PDFs, images, and data
-- optional plugins with approval and permission reporting
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#what-lumi-does">What Lumi Does</a> ·
+  <a href="#tui">TUI</a> ·
+  <a href="#commands">Commands</a> ·
+  <a href="#development">Development</a>
+</p>
+
+<p align="center">
+  <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/SardorchikDev/Lumi/ci.yml?branch=main&style=flat-square&label=ci">
+  <img alt="License" src="https://img.shields.io/github/license/SardorchikDev/Lumi?style=flat-square">
+  <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-0f1720?style=flat-square">
+  <img alt="Interface" src="https://img.shields.io/badge/interface-TUI%20%2B%20CLI-10322c?style=flat-square">
+</p>
+
+> Repo-aware terminal AI that stays sharp, grounded, and fast enough to live in your shell full time.
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <strong>Prompt-first TUI</strong><br>
+      Claude-style top rail, command palette, model picker, shortcuts overlay, review cards, and inline approval flows.
+    </td>
+    <td width="50%" valign="top">
+      <strong>Grounded Agent Mode</strong><br>
+      Structured action plans, rollback-aware file edits, verification passes, and benchmarked filesystem tasks.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <strong>Model Control</strong><br>
+      Boots into Gemini 2.5 Flash when Gemini is configured, supports `/effort`, and only shows configured providers in `/model`.
+    </td>
+    <td width="50%" valign="top">
+      <strong>Real Context</strong><br>
+      Web, files, images, PDFs, data, voice, notes, todos, and long-term memory all feed back into the same workflow.
+    </td>
+  </tr>
+</table>
 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/SardorchikDev/lumi/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SardorchikDev/Lumi/main/install.sh | bash
+```
+
+Useful variants:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/SardorchikDev/Lumi/main/install.sh | bash -s -- --dev
+curl -fsSL https://raw.githubusercontent.com/SardorchikDev/Lumi/main/install.sh | bash -s -- --dir ~/apps/Lumi
+curl -fsSL https://raw.githubusercontent.com/SardorchikDev/Lumi/main/install.sh | bash -s -- --help
 ```
 
 The installer:
@@ -26,33 +74,37 @@ The installer:
 - installs dependencies
 - creates a `lumi` launcher in `~/.local/bin`
 - creates `~/Lumi/.env` if it does not exist
-- initializes runtime state outside the repo under `~/.codex/memories/lumi` by default
-
-Useful variants:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/SardorchikDev/lumi/main/install.sh | bash -s -- --dev
-curl -fsSL https://raw.githubusercontent.com/SardorchikDev/lumi/main/install.sh | bash -s -- --dir ~/apps/Lumi
-curl -fsSL https://raw.githubusercontent.com/SardorchikDev/lumi/main/install.sh | bash -s -- --help
-```
+- initializes runtime state under `~/.codex/memories/lumi`
 
 ## Quick Start
 
 1. Add at least one provider key to `~/Lumi/.env`
 2. Open a new shell or reload your shell config
-3. Run:
+3. Launch Lumi
 
 ```bash
 lumi
 ```
 
-Good first commands inside Lumi:
+Minimal `.env` example:
+
+```env
+GEMINI_API_KEY=
+GROQ_API_KEY=
+HF_TOKEN=
+OPENROUTER_API_KEY=
+MISTRAL_API_KEY=
+AIRFORCE_API_KEY=
+POLLINATIONS_API_KEY=
+```
+
+Good first commands:
 
 ```text
 /onboard
-/rebirth
 /doctor
 /model
+/rebirth
 /status
 ```
 
@@ -61,7 +113,7 @@ Good first prompts:
 ```text
 /agent add tests for this module
 /review src/main.py
-/git status
+/git summary
 /search latest FastAPI release notes
 ```
 
@@ -75,41 +127,59 @@ lumi --yolo
 ## What Lumi Does
 
 - full-screen TUI plus classic CLI mode
-- multi-model chat and council mode
-- grounded agent mode with repo-aware planning and verification
-- natural-language file operations and structured `/fs` commands
-- git helpers inside the app
-- session memory, saved chats, notes, todos, and long-term memory
-- web, file, PDF, image, voice, and structured data helpers
-- plugin loading with approval, audit, and permission reporting
+- grounded agent mode with repo-aware planning, edits, verification, and rollback
+- natural-language file and folder operations plus explicit `/fs` commands
+- model switching, reasoning effort control, and strict provider-aware `/model` menus
+- session memory, long-term memory, notes, todos, and task memory
+- web, file, PDF, image, voice, and structured-data context helpers
+- plugin loading with approval, trust checks, and permission reporting
 
-## Lumi - rebirth Profile
+## Default Behavior
 
-Use `/rebirth` to view a capability matrix and readiness score for core coding-agent workflows.
-Use `/rebirth on` to apply the rebirth defaults:
+When configured, Lumi starts with these defaults:
 
-- detailed response mode
-- compact mode off
-- guardian watcher on
+- provider preference: Gemini first
+- startup model: `gemini-2.5-flash`
+- startup effort: `medium`
+- `/model` only shows configured providers
+- `?` opens the shortcuts overlay when the prompt is empty
+
+Optional model allowlists:
+
+```env
+LUMI_GEMINI_MODELS=gemini-2.5-flash,gemini-2.5-pro
+LUMI_HUGGINGFACE_MODELS=meta-llama/Llama-3.3-70B-Instruct
+LUMI_ALLOWED_MODELS=gemini-2.5-flash
+```
+
+Useful runtime overrides:
+
+```env
+LUMI_HOME=~/Lumi
+LUMI_STATE_DIR=~/.codex/memories/lumi/state
+LUMI_CACHE_DIR=~/.codex/memories/lumi/cache
+```
 
 ## TUI
 
-The default interface is built for keyboard-first use:
+Lumi's default interface is built around a prompt-first workflow:
 
-- stable transcript and prompt layout
-- slash-command picker and model picker
-- prompt history and transcript scrolling
-- starter panel and side pane
-- inline review blocks for pending filesystem actions
+- top welcome card and prompt rail
+- dense transcript with compact `you` and `lumi` labels
+- slash-command palette under the prompt
+- model picker with provider filtering and Nerd Font icons
+- boxed notifications and inline review blocks
+- workspace trust prompt and closeable side panes
 
 Useful keys:
 
-- `Esc` closes transient UI and cancels pending file plans
-- `Ctrl+G` toggles the starter panel
+- `?` shows shortcuts
+- `/` opens the command menu
 - `Ctrl+N` opens the model picker
-- `Up` / `Down` navigate prompt history
-- `Shift+Up` / `Shift+Down` scroll the transcript
+- `Ctrl+G` toggles the starter card
 - `Tab` accepts slash-command or path suggestions
+- `Shift+Up` / `Shift+Down` scroll the transcript
+- `Esc` closes transient UI and cancels pending file plans
 
 ## Common Workflows
 
@@ -121,11 +191,9 @@ Useful keys:
 /fix type errors in src/api
 ```
 
-Lumi agent mode is built around structured actions rather than arbitrary shell execution. It can inspect the repo, plan changes, patch files, run repo-aware verification, and roll back file mutations on failure.
-
 ### File Operations
 
-Lumi understands natural-language file tasks directly in chat:
+Lumi understands direct natural-language file tasks:
 
 ```text
 create a folder named api and add main.py inside it
@@ -164,13 +232,13 @@ Built-in git helpers include:
 
 ### Context Helpers
 
-Use Lumi to pull focused context into the conversation:
+Use Lumi to pull context directly into the conversation:
 
 - `/file <path>`
 - `/project <dir>`
 - `/browse [dir]`
-- `/web <url> [question]`
 - `/search <query>`
+- `/web <url> [question]`
 - `/pdf <path>`
 - `/data <path>`
 - `/image <path> [question]`
@@ -183,13 +251,10 @@ Use Lumi to pull focused context into the conversation:
 | Command | Description |
 |---|---|
 | `/model` | Switch provider and model |
+| `/effort [low\|medium\|high\|ehigh]` | Set reasoning effort |
 | `/clear` | Clear the current conversation |
-| `/save [name]` | Save the current session |
-| `/load [name]` | Load a saved session |
-| `/sessions` | List saved sessions |
-| `/status` | Show Lumi session and workspace status |
+| `/status` | Show session and workspace status |
 | `/doctor` | Check provider and workspace health |
-| `/onboard` | Show first-run guidance |
 | `/rebirth` | Show capability matrix and apply rebirth defaults |
 | `/benchmark` | Show benchmark scenarios |
 | `/exit` | Exit Lumi |
@@ -200,16 +265,12 @@ Use Lumi to pull focused context into the conversation:
 |---|---|
 | `/council <prompt>` | Ask council mode |
 | `/retry` | Retry the last prompt |
-| `/redo [hint]` | Retry from a different angle |
 | `/more` | Expand the last answer |
 | `/rewrite` | Rewrite the last answer |
 | `/tl;dr` | Summarize the last answer |
 | `/short` | Make the next answer concise |
 | `/detailed` | Make the next answer detailed |
 | `/bullets` | Make the next answer bullet-based |
-| `/draft <prompt>` | Draft a message |
-| `/translate <text>` | Translate text |
-| `/summarize [file]` | Summarize content |
 
 ### Code and Context
 
@@ -219,17 +280,9 @@ Use Lumi to pull focused context into the conversation:
 | `/review [file]` | Review code |
 | `/fix <problem>` | Diagnose and fix an issue |
 | `/debug <problem>` | Debug a failure |
-| `/test [file]` | Generate tests |
-| `/docs [file]` | Generate docs/comments |
-| `/types [file]` | Add typing hints |
-| `/comment <file>` | Add inline comments |
 | `/file <path>` | Load a file into context |
 | `/project <dir>` | Load a project into context |
-| `/browse [dir]` | Open the file browser |
 | `/search <query>` | Search the web |
-| `/web <url> [question]` | Fetch and analyze a page |
-| `/pdf <path>` | Load PDF text |
-| `/data <path>` | Analyze CSV or JSON |
 | `/image <path> [question]` | Ask Lumi about an image |
 | `/voice [seconds]` | Record and transcribe voice into the prompt |
 
@@ -239,91 +292,27 @@ Use Lumi to pull focused context into the conversation:
 |---|---|
 | `/remember <fact>` | Save a long-term memory |
 | `/memory` | View stored memories |
-| `/forget` | Remove memories |
-| `/note add|list|search` | Notes |
-| `/todo add|list|done|rm` | Todos |
-| `/export` | Export the current chat |
-| `/tokens` | Show token telemetry |
-| `/context` | Show prompt/context usage |
-| `/permissions [all|plugins]` | Show plugin permission info |
+| `/note add\|list\|search` | Manage notes |
+| `/todo add\|list\|done\|rm` | Manage todos |
 | `/plugins` | Show plugin status |
+| `/permissions [all\|plugins]` | Show plugin permission info |
 
-## Config
+## Rebirth Profile
 
-Provider keys live in:
+Use `/rebirth` to view the capability matrix and readiness score for core coding-agent workflows.
 
-```bash
-~/Lumi/.env
-```
+Use `/rebirth on` to apply the rebirth defaults:
 
-Example:
-
-```env
-GEMINI_API_KEY=
-GROQ_API_KEY=
-HF_TOKEN=
-OPENROUTER_API_KEY=
-MISTRAL_API_KEY=
-AIRFORCE_API_KEY=
-POLLINATIONS_API_KEY=
-```
-
-Useful runtime overrides:
-
-```env
-LUMI_HOME=~/Lumi
-LUMI_STATE_DIR=~/.codex/memories/lumi/state
-LUMI_CACHE_DIR=~/.codex/memories/lumi/cache
-```
-
-Optional model picker allowlists (`/model` will only show these when set):
-
-```env
-LUMI_GEMINI_MODELS=gemini-2.5-flash,gemini-2.5-pro
-LUMI_HUGGINGFACE_MODELS=meta-llama/Llama-3.3-70B-Instruct
-# optional global fallback
-LUMI_ALLOWED_MODELS=gemini-2.5-flash
-```
-
-After changing `.env`, run:
-
-```text
-/doctor
-```
-
-`/model` only shows providers that are configured in your current `.env`.
-
-## Project Context
-
-If a repo contains `LUMI.md`, Lumi loads it as project context.
-
-Example:
-
-```markdown
-# Project Context
-
-## Stack
-Python 3.11, FastAPI, PostgreSQL
-
-## Conventions
-- Type hints everywhere
-- Use pytest
-- Keep functions small
-```
+- detailed response mode
+- compact mode off
+- guardian watcher on
 
 ## Plugins
 
-Plugins live in:
-
-```bash
-~/Lumi/plugins/
-```
-
-Plugin loading is approval-based:
+Plugins live in `~/Lumi/plugins/` and are approval-based:
 
 - Lumi scans plugin files before import
 - plugins must declare `PLUGIN_META`
-- plugins are not imported until approved
 - changing a plugin file invalidates its approval
 - runtime dispatches are logged under `~/.codex/memories/lumi/state/plugins/`
 
@@ -350,28 +339,46 @@ PLUGIN_META = {
 
 DESCRIPTION = {"/greet": "Say hello"}
 
+
 def greet(args, client, model, memory, system_prompt, name):
     return f"hello {args or 'there'}"
+
 
 COMMANDS = {"/greet": greet}
 ```
 
-## Benchmarks
+## Benchmarks and CI
 
-Lumi includes a benchmark harness for agent work.
+Lumi includes a benchmark harness for grounded agent work:
 
-It measures real outcomes rather than summary text alone:
-
-- temp workspaces per scenario
-- setup files per scenario
-- expected file and patch outcomes
-- optional verification commands
-- changed-file tracking
+- temporary workspaces per scenario
+- scenario setup files and expected outcomes
+- verification-command support
+- changed-file tracking and recovery metrics
+- CI regression gate via `scripts/benchmark_gate.py`
 
 Use:
 
 ```text
 /benchmark
+```
+
+## Project Context
+
+If a repo contains `LUMI.md`, Lumi loads it automatically as project context.
+
+Example:
+
+```markdown
+# Project Context
+
+## Stack
+Python 3.11, FastAPI, PostgreSQL
+
+## Conventions
+- Type hints everywhere
+- Use pytest
+- Keep functions small
 ```
 
 ## Development
@@ -392,6 +399,7 @@ pytest tests -q
 ruff check .
 ruff format .
 python scripts/benchmark_gate.py --config configs/benchmark_gate.json
+python scripts/rebirth_audit.py --strict
 ```
 
 ## License
