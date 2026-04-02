@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/assets/lumi-robot.svg" width="180" alt="Lumi robot logo">
-</p>
-
 <h1 align="center">Lumi - rebirth</h1>
 
 <p align="center">
