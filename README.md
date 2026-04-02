@@ -1,10 +1,6 @@
 <h1 align="center">Lumi v0.5.0: Forge</h1>
 
 <p align="center">
-  <img src="docs/assets/lumi-robot.svg" alt="Lumi robot" width="220">
-</p>
-
-<p align="center">
   Terminal AI coding workbench for repo intelligence, background execution, project memory, and prompt-first terminal workflows.
 </p>
 
@@ -27,31 +23,34 @@
   <img alt="License" src="https://img.shields.io/github/license/SardorchikDev/Lumi?style=flat-square">
   <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-10322c?style=flat-square">
 </p>
+<p align="center"><em>Forge brings multi-step, repo-aware execution to a prompt-first CLI.</em></p>
 
 > Lumi is for real repo work: inspect, plan, edit, test, review, and ship from the terminal without collapsing into a generic chat loop.
 
-<table>
-  <tr>
+<div align="center">
+  <table>
+    <tr>
     <td width="50%" valign="top">
-      <strong>Forge Workbench</strong><br>
-      <code>/build</code>, <code>/learn</code>, <code>/review</code>, <code>/fixci</code>, and <code>/ship</code> turn Lumi into a structured coding workflow instead of a one-shot assistant.
-    </td>
+        <strong>Forge Workbench</strong><br>
+        <code>/build</code>, <code>/learn</code>, <code>/review</code>, <code>/fixci</code>, and <code>/ship</code> map requests to risk-aware repo runs.
+      </td>
+      <td width="50%" valign="top">
+        <strong>Repo Intelligence</strong><br>
+        Symbol indices, hotspots, impact files, suggested tests, verification commands, and cached digests keep context ready.
+      </td>
+    </tr>
+    <tr>
     <td width="50%" valign="top">
-      <strong>Repo Intelligence</strong><br>
-      Symbol indexing, dependency hints, hotspots, impact files, suggested tests, verification commands, and cached architecture digests.
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <strong>Project Memory</strong><br>
-      Lumi reads <code>LUMI.md</code>, remembers workspace decisions, stores recent Workbench runs, and keeps artifact history.
-    </td>
-    <td width="50%" valign="top">
-      <strong>Prompt-First TUI</strong><br>
-      Welcome card, prompt rail, compact transcript, command menus, model picker, review cards, shortcuts overlay, and background job pane.
-    </td>
-  </tr>
-</table>
+        <strong>Project Memory</strong><br>
+        `LUMI.md` conventions, decisions, recent runs, and artifact history persist across sessions.
+      </td>
+      <td width="50%" valign="top">
+        <strong>Prompt-First TUI</strong><br>
+        Starter card, prompt rail, compact transcript, menus, shortcuts, review cards, and the jobs pane stay in view.
+      </td>
+    </tr>
+  </table>
+</div>
 
 ## Why Lumi
 
