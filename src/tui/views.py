@@ -459,7 +459,7 @@ class StarterView:
             (runtime, self.style.fg_dim, False),
             (cwd, self.style.muted, False),
         )
-        lines: list[str] = []
+        lines: list[str] = [""]
         for icon, offset, (text, tone, bold) in zip(TUI_LOGO_LINES, logo_offsets, meta_rows, strict=False):
             line = " " * offset
             line += self.style.fg_fn(self.style.fg_dim) + icon.ljust(logo_cell_width - offset) + self.style.reset

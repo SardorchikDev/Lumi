@@ -59,6 +59,7 @@ def test_starter_panel_renders_minimal_header(tmp_path, monkeypatch):
     assert "▝▜█████▛▘" in joined
     assert "Tips for getting started" not in joined
     assert not any(line.startswith("╭") for line in lines)
+    assert lines[0] == ""
     tui._task_executor.shutdown(wait=False)
 
 
