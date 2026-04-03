@@ -1,14 +1,65 @@
+# Local secrets and env files
 .env
-__pycache__/
-*.pyc
-models/weights/
-data/
-.DS_Store
-.venv/
-venv/
-.pytest_cache/
-.ruff_cache/
-*.egg-info/
-*.backup
+.env.*
+!.env.example
+!.env.sample
+.envrc
+.direnv/
+
+# Local tool state
+.codex
+.codex/
 .gemini/
 gha-creds-*.json
+
+# Runtime state and generated local data
+data/
+models/weights/
+*.backup
+*.bak
+*.tmp
+*.temp
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dylib
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyre/
+.pytype/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+build/
+dist/
+site/
+pip-wheel-metadata/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+__pypackages__/
+
+# Editors and shells
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*~
+*.orig
+
+# OS noise
+.DS_Store
+Thumbs.db
