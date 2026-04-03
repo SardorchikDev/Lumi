@@ -65,20 +65,30 @@ pre-commit install
 
 ## Project Structure
 
-```
-main.py              — CLI entry point and interactive loop
+```text
+main.py              — Classic CLI entry point
+install.sh           — Installer and launcher setup
+lumi                 — Portable launcher shim
+configs/             — Config files and benchmark inputs
+docs/                — Project docs assets
+scripts/             — Audit and benchmark scripts
 src/
-  tui/app.py         — Full TUI renderer
-  chat/hf_client.py  — Unified multi-provider API client
-  agents/            — Autonomous agent and council system
-  memory/            — Short-term, long-term, and session storage
-  prompts/           — System prompt construction
-  tools/             — Web search, MCP, RAG, voice
-  utils/             — Themes, markdown, intelligence, filesystem, etc.
+  agents/            — Agent loop, council, verification, edit engine
+  chat/              — Providers, model catalogs, streaming, cost, effort
+  cli/               — CLI parsing, rendering, and shared runtime context
+  memory/            — Conversation store, short-term, and long-term memory
+  prompts/           — Persona and system prompt construction
+  tools/             — Agentic tools, search, MCP, RAG, voice
+  tui/               — Prompt-first terminal UI and interaction logic
+  utils/             — Repo profile, permissions, hooks, export, git helpers
 tests/               — Unit and integration tests
-configs/             — YAML configuration
-data/                — Runtime data (memory, sessions, personas)
 ```
+
+Notes:
+
+- Keep product code under `src/`.
+- Keep runtime state and generated artifacts out of the tracked tree.
+- Do not commit local caches, undo snapshots, `egg-info`, backup files, or repo-local memory dumps.
 
 ## Writing Tests
 

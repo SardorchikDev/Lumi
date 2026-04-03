@@ -50,3 +50,37 @@ def test_install_launcher_preserves_callers_working_directory():
     assert "readlink -f" in launcher
     assert "venv/bin/lumi" not in launcher
     assert "cd ~/Lumi" not in launcher
+
+
+def test_install_script_updates_common_shell_profiles_for_path():
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    assert '$HOME/.profile' in text
+    assert '$HOME/.bashrc' in text
+    assert '$HOME/.bash_profile' in text
+    assert '$HOME/.zshrc' in text
+    assert '$HOME/.zprofile' in text
+    assert '$HOME/.kshrc' in text
+    assert '$HOME/.mkshrc' in text
+    assert '$HOME/.config/fish/config.fish' in text
+    assert 'configure_all_shell_paths' in text
+
+
+def test_install_script_considers_common_user_bin_directories():
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    assert 'select_default_bin_dir' in text
+    assert '"$HOME/.local/bin"' in text
+    assert '"$HOME/bin"' in text
+    assert 'BIN_DIR_EXPLICIT=false' in text
+
+
+def test_install_script_prints_shell_reload_hint():
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+
+    assert 'shell_reload_hint' in text
+    assert "$HOME/.zshrc" in text
+    assert "$HOME/.bashrc" in text
+    assert "$HOME/.config/fish/config.fish" in text
+    assert "$HOME/.profile" in text
+    assert 'run ${PU}$RELOAD_CMD${R}' in text

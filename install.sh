@@ -29,7 +29,7 @@ Usage:
 Options:
   --dev                 install dev extras and pre-commit hooks
   --dir <path>          install checkout into this directory (default: ~/Lumi)
-  --bin-dir <path>      install launcher into this directory (default: ~/.local/bin)
+  --bin-dir <path>      install launcher into this directory (default: first user bin dir in PATH)
   --repo <url>          clone from a different git remote
   --branch <name>       clone a specific branch on fresh installs (default: main)
   --profile <path>      write PATH update to this shell profile
@@ -54,6 +54,46 @@ path_export_value() {
     esac
 }
 
+path_contains_dir() {
+    local needle="$1"
+    local entry resolved
+    local old_ifs="$IFS"
+    IFS=':'
+    for entry in $PATH; do
+        resolved="$(expand_home "$entry")"
+        if [ "$resolved" = "$needle" ]; then
+            IFS="$old_ifs"
+            return 0
+        fi
+    done
+    IFS="$old_ifs"
+    return 1
+}
+
+select_default_bin_dir() {
+    local entry resolved candidate
+    local old_ifs="$IFS"
+    IFS=':'
+    for entry in $PATH; do
+        resolved="$(expand_home "$entry")"
+        case "$resolved" in
+            "$HOME/.local/bin"|"$HOME/bin")
+                IFS="$old_ifs"
+                printf '%s\n' "$resolved"
+                return
+                ;;
+        esac
+    done
+    IFS="$old_ifs"
+    for candidate in "$HOME/.local/bin" "$HOME/bin"; do
+        if [ -d "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return
+        fi
+    done
+    printf '%s\n' "$HOME/.local/bin"
+}
+
 banner() {
     echo ""
     echo -e "${PU}    ██╗      ██╗   ██╗  ███╗   ███╗  ██╗${R}"
@@ -73,6 +113,7 @@ BRANCH="main"
 PROFILE_FILE=""
 DEV_MODE=false
 NO_PATH=false
+BIN_DIR_EXPLICIT=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -88,6 +129,7 @@ while [ $# -gt 0 ]; do
             shift
             [ $# -gt 0 ] || fail "Missing value for --bin-dir"
             BIN_DIR="$1"
+            BIN_DIR_EXPLICIT=true
             ;;
         --repo)
             shift
@@ -119,6 +161,9 @@ while [ $# -gt 0 ]; do
 done
 
 INSTALL_DIR="$(expand_home "$INSTALL_DIR")"
+if ! $BIN_DIR_EXPLICIT; then
+    BIN_DIR="$(select_default_bin_dir)"
+fi
 BIN_DIR="$(expand_home "$BIN_DIR")"
 PROFILE_FILE="$(expand_home "$PROFILE_FILE")"
 BIN_DIR_EXPORT="$(path_export_value "$BIN_DIR")"
@@ -333,40 +378,61 @@ add_path_fish() {
     ok "Added $BIN_DIR to fish PATH in $config_file"
 }
 
+configure_all_shell_paths() {
+    add_path_line "$HOME/.profile"
+    add_path_line "$HOME/.bashrc"
+    add_path_line "$HOME/.bash_profile"
+    add_path_line "$HOME/.zshrc"
+    add_path_line "$HOME/.zprofile"
+    add_path_line "$HOME/.kshrc"
+    add_path_line "$HOME/.mkshrc"
+    add_path_fish "$HOME/.config/fish/config.fish"
+}
+
+shell_reload_hint() {
+    if [ -n "$PROFILE_FILE" ]; then
+        case "$PROFILE_FILE" in
+            *.fish) printf 'source %s\n' "$PROFILE_FILE" ;;
+            *) printf '. %s\n' "$PROFILE_FILE" ;;
+        esac
+        return
+    fi
+
+    case "$(basename "${SHELL:-}")" in
+        fish) printf 'source %s\n' "$HOME/.config/fish/config.fish" ;;
+        zsh) printf 'source %s\n' "$HOME/.zshrc" ;;
+        bash)
+            if [ -f "$HOME/.bashrc" ]; then
+                printf 'source %s\n' "$HOME/.bashrc"
+            elif [ -f "$HOME/.bash_profile" ]; then
+                printf 'source %s\n' "$HOME/.bash_profile"
+            else
+                printf '. %s\n' "$HOME/.profile"
+            fi
+            ;;
+        sh) printf '. %s\n' "$HOME/.profile" ;;
+        ksh) printf '. %s\n' "$HOME/.kshrc" ;;
+        mksh) printf '. %s\n' "$HOME/.mkshrc" ;;
+        *)
+            if [ -f "$HOME/.profile" ]; then
+                printf '. %s\n' "$HOME/.profile"
+            else
+                printf 'open a new terminal session\n'
+            fi
+            ;;
+    esac
+}
+
 if $NO_PATH; then
     warn "Skipping PATH modification (--no-path)"
 else
-    SHELL_NAME="$(basename "${SHELL:-}")"
     if [ -n "$PROFILE_FILE" ]; then
         case "$PROFILE_FILE" in
             *.fish) add_path_fish "$PROFILE_FILE" ;;
             *) add_path_line "$PROFILE_FILE" ;;
         esac
     else
-        case "$SHELL_NAME" in
-            fish)
-                add_path_fish "$HOME/.config/fish/config.fish"
-                ;;
-            zsh)
-                add_path_line "$HOME/.zshrc"
-                ;;
-            bash)
-                if [ -f "$HOME/.bashrc" ]; then
-                    add_path_line "$HOME/.bashrc"
-                elif [ -f "$HOME/.bash_profile" ]; then
-                    add_path_line "$HOME/.bash_profile"
-                else
-                    add_path_line "$HOME/.profile"
-                fi
-                ;;
-            *)
-                if [ -f "$HOME/.profile" ]; then
-                    add_path_line "$HOME/.profile"
-                else
-                    warn "Unknown shell '${SHELL_NAME:-unknown}' — manually add $BIN_DIR to your PATH"
-                fi
-                ;;
-        esac
+        configure_all_shell_paths
     fi
 fi
 
@@ -381,9 +447,10 @@ echo -e "  ${DG}launcher:${R}     ${YE}$BIN_DIR/lumi${R}"
 echo -e "  ${DG}state:${R}        ${YE}$STATE_DIR_DEFAULT${R}"
 echo -e "  ${DG}cache:${R}        ${YE}$CACHE_DIR_DEFAULT${R}"
 echo ""
+RELOAD_CMD="$(shell_reload_hint)"
 echo -e "  ${CY}Next steps:${R}"
 echo -e "  ${DG}1.${R} add at least one API key to ${YE}$INSTALL_DIR/.env${R}"
-echo -e "  ${DG}2.${R} reload your shell config or open a new terminal"
+echo -e "  ${DG}2.${R} run ${PU}$RELOAD_CMD${R}"
 echo -e "  ${DG}3.${R} run ${PU}lumi${R}"
 echo -e "  ${DG}4.${R} inside Lumi, run ${PU}/doctor${R} and ${PU}/model${R}"
 echo ""

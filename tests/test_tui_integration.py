@@ -550,6 +550,7 @@ def test_prompt_bar_renders_claude_style_rail(tmp_path, monkeypatch):
     assert prompt[2].strip().startswith("─")
     assert "inspect this repo" in prompt[1]
     assert "shortcuts" in prompt[3]
+    assert "/effort ◐ medium" in prompt[3]
     assert len(prompt[0]) == 90
     tui._task_executor.shutdown(wait=False)
 
@@ -1033,6 +1034,18 @@ def test_effort_command_accepts_ehigh_and_updates_request_profile(tmp_path, monk
     assert captured["max_tokens"] == 16384
     assert captured["temperature"] == 0.1
     assert "Reasoning effort: extra high." in str(captured["messages"][0]["content"])
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_footer_shows_effort_max_after_ehigh_selection(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    registry.commands["/effort"]["func"](tui, "ehigh")
+    prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
+    prompt = [_strip_ansi(line) for line in prompt_lines]
+
+    assert tui.reasoning_effort == "ehigh"
+    assert "/effort ◉ max" in prompt[3]
     tui._task_executor.shutdown(wait=False)
 
 

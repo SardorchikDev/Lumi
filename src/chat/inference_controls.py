@@ -11,6 +11,8 @@ EFFORT_ALIASES = {
     "extra-high": "ehigh",
     "extra_high": "ehigh",
     "xhigh": "ehigh",
+    "max": "ehigh",
+    "maximum": "ehigh",
     "very high": "ehigh",
     "very-high": "ehigh",
     "very_high": "ehigh",
@@ -78,6 +80,23 @@ def normalize_reasoning_effort(value: str | None) -> str:
         return "medium"
     normalized = EFFORT_ALIASES.get(lowered, lowered)
     return normalized if normalized in EFFORT_PROFILES else "medium"
+
+
+def display_reasoning_effort(effort: str | None, *, short: bool = False) -> str:
+    normalized = normalize_reasoning_effort(effort)
+    if normalized == "ehigh":
+        return "max" if short else "extra high"
+    return normalized
+
+
+def display_reasoning_indicator(effort: str | None) -> str:
+    normalized = normalize_reasoning_effort(effort)
+    return {
+        "low": "○",
+        "medium": "◐",
+        "high": "◕",
+        "ehigh": "◉",
+    }.get(normalized, "◐")
 
 
 def get_effort_profile(effort: str | None) -> EffortProfile:

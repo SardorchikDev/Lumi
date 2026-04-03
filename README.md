@@ -105,17 +105,6 @@ That means:
 - stronger repo memory and dynamic context building
 - a cleaner path from chat request to real repo action
 
-Planning artifacts:
-
-- [LUMI_MIRROR_SPEC.md](/home/sardorchikdev/Lumi/LUMI_MIRROR_SPEC.md)
-- [ROADMAP.md](/home/sardorchikdev/Lumi/ROADMAP.md)
-
-Audit command:
-
-```bash
-./venv/bin/python scripts/claude_parity_audit.py
-```
-
 ## Install
 
 ```bash
@@ -472,6 +461,38 @@ Python 3.11, FastAPI, PostgreSQL
 - Ship concise release notes
 ```
 
+## Project Structure
+
+The repo is intentionally source-first. Runtime state, caches, sessions, and generated packaging files are not part of the tracked project layout.
+
+```text
+.
+├── configs/         configuration and benchmark gate inputs
+├── docs/            docs assets and supporting media
+├── scripts/         audit and benchmark entry scripts
+├── src/
+│   ├── agents/      agent loop, council, verification, edit engine
+│   ├── chat/        provider clients, model catalogs, cost, effort controls
+│   ├── cli/         classic CLI parsing, rendering, and shared context
+│   ├── memory/      conversation store, short-term memory, long-term memory
+│   ├── prompts/     system prompt and dynamic context building
+│   ├── tools/       agent tool runtime, search, MCP, RAG, voice
+│   ├── tui/         prompt-first terminal UI, views, input, session state
+│   └── utils/       repo profile, permissions, hooks, export, git helpers
+├── tests/           unit and integration coverage
+├── install.sh       installer
+├── lumi             launcher shim
+├── main.py          classic CLI entrypoint
+└── README.md        project overview
+```
+
+Structure notes:
+
+- `src/` is the real product surface.
+- `configs/`, `scripts/`, and `tests/` support that surface.
+- runtime state lives outside the repo under Lumi's state/cache directories, not in tracked source folders.
+- generated files like `egg-info`, undo snapshots, model caches, and local memory artifacts are intentionally ignored.
+
 ## Development
 
 ```bash
@@ -494,7 +515,6 @@ python scripts/rebirth_audit.py --strict
 
 See also:
 
-- [LUMI_MIRROR_SPEC.md](LUMI_MIRROR_SPEC.md)
 - [LUMI_REBIRTH_SPEC.md](LUMI_REBIRTH_SPEC.md)
 
 ## License

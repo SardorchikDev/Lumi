@@ -39,7 +39,12 @@ from src.chat.hf_client import (
     pick_startup_model,
     set_provider,
 )
-from src.chat.inference_controls import EFFORT_LEVELS, apply_reasoning_effort, normalize_reasoning_effort
+from src.chat.inference_controls import (
+    EFFORT_LEVELS,
+    apply_reasoning_effort,
+    display_reasoning_effort,
+    normalize_reasoning_effort,
+)
 from src.chat.model_filters import filter_models_by_allowlist, model_allowlist_env_keys
 from src.chat.optimizer import (
     get_global_context_cache,
@@ -390,7 +395,7 @@ def print_help() -> None:
 
     section("SETTINGS")
     cmd("/model",                    "switch provider and model (interactive picker)")
-    cmd("/effort [level]",           "set default reasoning effort: low|medium|high|ehigh")
+    cmd("/effort [level]",           "set default reasoning effort: low|medium|high|ehigh|max")
     cmd("/brief [on|off]",           "toggle concise responses by default")
     cmd("/fast [on|off]",            "toggle faster, low-effort response mode")
     cmd("/theme",                    "show the fixed ANSI palette")
@@ -2335,21 +2340,21 @@ def main() -> None:  # noqa: C901
                 reasoning_effort = normalize_reasoning_effort(runtime_config.reasoning_effort)
                 fast_mode = False
                 _cli_reasoning_effort = reasoning_effort
-                info(f"Effort {reasoning_effort}")
+                info(f"Effort {display_reasoning_effort(reasoning_effort)}")
                 continue
             if arg.lower() in {"status", "show"}:
-                info(f"Reasoning effort: {normalize_reasoning_effort(reasoning_effort)}")
+                info(f"Reasoning effort: {display_reasoning_effort(reasoning_effort)}")
                 continue
-            allowed = {"low", "medium", "high", "ehigh", "extra high", "extra-high", "extra_high", "xhigh", "very high", "very-high", "very_high"}
+            allowed = {"low", "medium", "high", "ehigh", "max", "maximum", "extra high", "extra-high", "extra_high", "xhigh", "very high", "very-high", "very_high"}
             if arg.strip().lower() not in allowed:
-                warn("Usage: /effort [low|medium|high|ehigh|status]")
+                warn("Usage: /effort [low|medium|high|ehigh|max|status]")
                 continue
             normalized = normalize_reasoning_effort(arg)
             runtime_config = update_runtime_config(pathlib.Path.cwd(), reasoning_effort=normalized, fast_mode=False)
             reasoning_effort = normalize_reasoning_effort(runtime_config.reasoning_effort)
             fast_mode = False
             _cli_reasoning_effort = reasoning_effort
-            info(f"Effort {reasoning_effort}")
+            info(f"Effort {display_reasoning_effort(reasoning_effort)}")
             continue
 
         if cmd == "/add-dir":

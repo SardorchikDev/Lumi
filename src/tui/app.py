@@ -56,6 +56,8 @@ from src.chat.hf_client import (
 from src.chat.inference_controls import (
     EFFORT_LEVELS,
     apply_reasoning_effort,
+    display_reasoning_effort,
+    display_reasoning_indicator,
     normalize_reasoning_effort,
     provider_effort_options,
     tune_inference_request,
@@ -1242,10 +1244,12 @@ class Renderer:
             content_rows.append(("› ", MUTED, self._prompt_placeholder(chat_w)[:text_w]))
 
         effort = normalize_reasoning_effort(getattr(tui, "reasoning_effort", "medium"))
+        effort_label = display_reasoning_effort(effort, short=True)
+        effort_icon = display_reasoning_indicator(effort)
         project_name = Path.cwd().resolve().name or "~"
         branch = self._branch_display()
         footer_left = f"{project_name} ({branch})"
-        footer_right_plain = f"? for shortcuts   ◐ {effort}"
+        footer_right_plain = f"? for shortcuts   /effort {effort_icon} {effort_label}"
         gap = max(2, chat_w - len(footer_left) - len(footer_right_plain))
         footer_line = (
             _fg(MUTED)
@@ -3065,7 +3069,7 @@ def cmd_short(tui: LumiTUI, arg: str): tui.response_mode = "short"; tui._notify(
 def cmd_detailed(tui: LumiTUI, arg: str): tui.response_mode = "detailed"; tui._notify("Mode: detailed")
 @registry.register("/bullets", "Next reply: bullet points only")
 def cmd_bullets(tui: LumiTUI, arg: str): tui.response_mode = "bullets"; tui._notify("Mode: bullets")
-@registry.register("/effort", "Set reasoning effort: low | medium | high | ehigh")
+@registry.register("/effort", "Set reasoning effort: low | medium | high | ehigh | max")
 def cmd_effort(tui: LumiTUI, arg: str):
     raw = arg.strip().lower()
     if not raw:
@@ -3075,25 +3079,27 @@ def cmd_effort(tui: LumiTUI, arg: str):
         except ValueError:
             next_value = "medium"
         tui._sync_runtime_config(reasoning_effort=next_value, fast_mode=False)
-        tui._notify(f"Effort: {next_value}")
+        tui._notify(f"Effort: {display_reasoning_effort(next_value)}")
         return
     if raw in {"status", "show"}:
-        tui._sys(f"Reasoning effort: {normalize_reasoning_effort(getattr(tui, 'reasoning_effort', 'medium'))}")
+        tui._sys(f"Reasoning effort: {display_reasoning_effort(getattr(tui, 'reasoning_effort', 'medium'))}")
         return
     normalized = normalize_reasoning_effort(raw)
     if raw not in EFFORT_LEVELS and raw not in {
         "extra high",
         "extra-high",
         "extra_high",
+        "max",
+        "maximum",
         "xhigh",
         "very high",
         "very-high",
         "very_high",
     }:
-        tui._err("Usage: /effort [low|medium|high|ehigh|status]")
+        tui._err("Usage: /effort [low|medium|high|ehigh|max|status]")
         return
     tui._sync_runtime_config(reasoning_effort=normalized, fast_mode=False)
-    tui._notify(f"Effort: {normalized}")
+    tui._notify(f"Effort: {display_reasoning_effort(normalized)}")
 
 # ── New utility commands ──────────────────────────────────────────────────────
 
