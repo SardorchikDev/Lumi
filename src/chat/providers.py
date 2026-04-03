@@ -33,6 +33,19 @@ class ProviderHealth:
 
 
 PROVIDER_SPECS: dict[str, ProviderSpec] = {
+    "claude": ProviderSpec(
+        "claude",
+        "Claude",
+        ("CLAUDE_API_KEY",),
+        frozenset({"chat", "stream", "long_context", "vision"}),
+        "Anthropic Claude models",
+        200_000,
+        ("haiku",),
+        ("sonnet", "opus", "4", "3.7"),
+        (
+            ("vision", ("claude-sonnet-4-5", "claude-opus-4", "claude-3-7-sonnet-latest")),
+        ),
+    ),
     "gemini": ProviderSpec(
         "gemini",
         "Gemini",
@@ -178,6 +191,7 @@ PROVIDER_SPECS: dict[str, ProviderSpec] = {
 
 DEFAULT_PROVIDER_ORDER = [
     "gemini",
+    "claude",
     "huggingface",
     "groq",
     "openrouter",

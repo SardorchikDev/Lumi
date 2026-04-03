@@ -1,4 +1,18 @@
-#!/bin/bash
-cd ~/Lumi
-source venv/bin/activate
-python main.py "$@"
+#!/usr/bin/env bash
+set -e
+
+SOURCE_PATH="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+    RESOLVED_PATH="$(readlink -f "$SOURCE_PATH" 2>/dev/null || true)"
+    if [ -n "$RESOLVED_PATH" ]; then
+        SOURCE_PATH="$RESOLVED_PATH"
+    fi
+fi
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$SOURCE_PATH")" && pwd)"
+
+export LUMI_HOME="${LUMI_HOME:-$SCRIPT_DIR}"
+export LUMI_STATE_DIR="${LUMI_STATE_DIR:-$HOME/.codex/memories/lumi/state}"
+export LUMI_CACHE_DIR="${LUMI_CACHE_DIR:-$HOME/.codex/memories/lumi/cache}"
+
+exec "$SCRIPT_DIR/venv/bin/python" "$SCRIPT_DIR/main.py" "$@"

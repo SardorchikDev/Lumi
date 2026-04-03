@@ -15,6 +15,8 @@ def _make_tui(tmp_path, monkeypatch) -> LumiTUI:
     monkeypatch.setattr("src.tui.app.get_provider", lambda: "huggingface")
     monkeypatch.setattr("src.tui.mode_sessions.CONVERSATIONS_DIR", tmp_path / "conversations")
     monkeypatch.setattr("src.memory.longterm.MEMORY_FILE", tmp_path / "longterm.json")
+    monkeypatch.setattr("src.utils.skills.LUMI_HOME", tmp_path / "lumi-home")
+    monkeypatch.setattr("src.utils.hooks.LUMI_HOME", tmp_path / "lumi-home")
     tui = LumiTUI()
     notes_path = tmp_path / "little_notes.json"
     tui.little_notes = LittleNotesStore(notes_path)
@@ -35,12 +37,13 @@ def test_starter_panel_renders_single_top_box(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
 
-    assert "Forge" in joined
+    assert "Mirror" in joined
     assert "Welcome back!" in joined
     assert "Tips for getting started" in joined
     assert "Recent activity" in joined
     assert "HuggingFace" in joined
     assert "Llama-3.3" in joined
+    assert "▐▛███▜▌" in joined
     assert "▝▜█████▛▘" in joined
     assert "approval:" not in joined
     assert any(line.startswith("╭") for line in lines)
@@ -302,7 +305,7 @@ def test_capability_questions_answer_with_lumi_self_profile(tmp_path, monkeypatc
     messages = tui.store.snapshot()
     assert any(
         msg.role == "assistant"
-        and "In Forge" in msg.text
+        and "In Mirror" in msg.text
         and "edit" in msg.text
         and "search the web" in msg.text
         for msg in messages
@@ -461,7 +464,7 @@ def test_recent_commands_clear_between_tui_sessions(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in second.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
     assert "/clear" not in joined
-    assert "Forge" in joined
+    assert "Mirror" in joined
 
     first._task_executor.shutdown(wait=False)
     second._task_executor.shutdown(wait=False)
@@ -1018,6 +1021,22 @@ def test_slash_popup_footer_stays_above_prompt_rail(tmp_path, monkeypatch):
     tui._task_executor.shutdown(wait=False)
 
 
+def test_slash_hits_include_workspace_skill(tmp_path, monkeypatch):
+    (tmp_path / "skills").mkdir()
+    (tmp_path / "skills" / "release.md").write_text(
+        "---\nname: Release Helper\ncommand: /release\n---\nDraft release notes for {{args}}.\n",
+        encoding="utf-8",
+    )
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.buf = "/rel"
+    tui.cur_pos = len(tui.buf)
+
+    tui._update_slash()
+
+    assert any(hit[0] == "/release" for hit in tui.slash_hits)
+    tui._task_executor.shutdown(wait=False)
+
+
 def test_page_keys_scroll_browser_popup_selection(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.redraw = lambda: None
@@ -1185,19 +1204,19 @@ def test_model_picker_uses_icons_without_preview_documentation(tmp_path, monkeyp
 def test_build_plan_command_opens_workbench_plan_pane(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     monkeypatch.setattr("src.tui.command_groups.prepare_workbench_plan", lambda *args, **kwargs: SimpleNamespace())
-    monkeypatch.setattr("src.tui.command_groups.render_workbench_plan", lambda _plan: "Forge\nbuild plan")
+    monkeypatch.setattr("src.tui.command_groups.render_workbench_plan", lambda _plan: "Mirror\nbuild plan")
 
     registry.commands["/build"]["func"](tui, "--plan add search")
 
     assert tui.pane_active is True
     assert tui.pane.title == "build plan"
-    assert "Forge" in "\n".join(tui.pane.content())
+    assert "Mirror" in "\n".join(tui.pane.content())
     tui._task_executor.shutdown(wait=False)
 
 
 def test_learn_command_opens_workbench_report_pane(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
-    monkeypatch.setattr("src.tui.command_groups.render_workbench_report", lambda *_args, **_kwargs: "Forge\nrepo map")
+    monkeypatch.setattr("src.tui.command_groups.render_workbench_report", lambda *_args, **_kwargs: "Mirror\nrepo map")
 
     registry.commands["/learn"]["func"](tui, "architecture")
 
@@ -1347,6 +1366,30 @@ def test_permissions_command_renders_permission_report(tmp_path, monkeypatch):
     messages = tui.store.snapshot()
     assert any(msg.role == "system" and "Plugin permissions" in msg.text for msg in messages)
     assert any(msg.role == "system" and "loaded plugins" in msg.text for msg in messages)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_skill_command_executes_through_chat_runtime(tmp_path, monkeypatch):
+    (tmp_path / "skills").mkdir()
+    (tmp_path / "skills" / "release.md").write_text(
+        "---\nname: Release Helper\ncommand: /release\n---\nDraft release notes for {{args}}.\n",
+        encoding="utf-8",
+    )
+    tui = _make_tui(tmp_path, monkeypatch)
+    captured: dict[str, object] = {}
+
+    def fake_stream(messages, _model, *_args):
+        captured["messages"] = messages
+        return "Release notes ready."
+
+    tui._tui_stream = fake_stream
+
+    tui._execute_command("/release", "v0.6.0")
+
+    messages = tui.store.snapshot()
+    assert any(msg.role == "user" and msg.text == "/release v0.6.0" for msg in messages)
+    assert tui.last_reply == "Release notes ready."
+    assert "Draft release notes for v0.6.0." in captured["messages"][-1]["content"]
     tui._task_executor.shutdown(wait=False)
 
 
@@ -1565,3 +1608,58 @@ def test_voice_command_reports_missing_transcription_backend(tmp_path, monkeypat
     messages = tui.store.snapshot()
     assert any(msg.role == "error" and "Voice transcription needs GROQ_API_KEY or HF_TOKEN" in msg.text for msg in messages)
     assert not audio_path.exists()
+
+
+def test_config_command_updates_runtime_effort(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.utils.runtime_config.RUNTIME_CONFIG_DIR", tmp_path / "runtime")
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    registry.commands["/config"]["func"](tui, "set effort high")
+
+    assert tui.reasoning_effort == "high"
+    registry.commands["/config"]["func"](tui, "show")
+    assert any(msg.role == "system" and "Lumi config" in msg.text for msg in tui.store.snapshot())
+    tui._task_executor.shutdown(wait=False)
+
+
+
+def test_add_dir_and_files_commands_include_extra_context_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.utils.runtime_config.RUNTIME_CONFIG_DIR", tmp_path / "runtime")
+    extra = tmp_path / "shared"
+    extra.mkdir()
+    (extra / "helper.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    registry.commands["/add-dir"]["func"](tui, "shared")
+    registry.commands["/files"]["func"](tui, "helper")
+
+    assert tui.pane.active is True
+    joined = "\n".join(tui.pane.content())
+    assert str(extra.resolve()) in joined
+    assert "helper.py" in joined
+    tui._task_executor.shutdown(wait=False)
+
+
+
+def test_tasks_and_agents_commands_open_claude_style_reports(tmp_path, monkeypatch):
+    from src.agents import task_memory
+
+    monkeypatch.setattr("src.utils.runtime_config.RUNTIME_CONFIG_DIR", tmp_path / "runtime")
+    monkeypatch.setattr(task_memory, "TASK_MEMORY_PATH", tmp_path / "task_memory.json")
+    monkeypatch.setattr(
+        "src.utils.claude_parity._get_available_agents",
+        lambda: [{"name": "Gemini Lead", "provider": "gemini", "role": "lead", "strengths": ["planning", "coding"]}],
+    )
+    task_memory.start_active_run("fix the failing tests", base_dir=tmp_path)
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.agent_active_objective = "build: fix the failing tests"
+    tui.agent_tasks = [{"status": "running", "text": "profiling workspace"}]
+
+    registry.commands["/tasks"]["func"](tui, "")
+    assert tui.pane.title == "tasks"
+    assert any("fix the failing tests" in line for line in tui.pane.content())
+
+    registry.commands["/agents"]["func"](tui, "")
+    assert tui.pane.title == "agents"
+    assert any("Gemini Lead" in line for line in tui.pane.content())
+    tui._task_executor.shutdown(wait=False)

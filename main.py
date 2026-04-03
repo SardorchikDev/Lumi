@@ -39,6 +39,7 @@ from src.chat.hf_client import (
     pick_startup_model,
     set_provider,
 )
+from src.chat.inference_controls import EFFORT_LEVELS, apply_reasoning_effort, normalize_reasoning_effort
 from src.chat.model_filters import filter_models_by_allowlist, model_allowlist_env_keys
 from src.chat.optimizer import (
     get_global_context_cache,
@@ -73,6 +74,12 @@ from src.tools.mcp import list_servers as mcp_list
 from src.tools.mcp import remove_server as mcp_remove
 from src.tools.search import search, search_display
 from src.utils.autoremember import auto_extract_facts
+from src.utils.claude_parity import (
+    render_agents_report,
+    render_files_report,
+    render_tasks_report,
+    render_version_report,
+)
 from src.utils.export import export_md
 from src.utils.filesystem import (
     format_creation_summary,
@@ -83,6 +90,7 @@ from src.utils.filesystem import (
 from src.utils.git_tools import GIT_USAGE, run_git_subcommand
 from src.utils.history import save as history_save
 from src.utils.history import setup as history_setup
+from src.utils.hooks import render_hook_report, run_hooks
 from src.utils.intelligence import (
     classify_request,
     emotion_hint,
@@ -100,7 +108,18 @@ from src.utils.plugins import (
     render_plugin_audit_report,
 )
 from src.utils.plugins import dispatch as plugin_dispatch
+from src.utils.project_context import find_project_context_file, preferred_project_context_name
 from src.utils.rebirth import load_rebirth_profile, rebirth_status_summary, render_rebirth_report
+from src.utils.runtime_config import (
+    add_context_directory,
+    load_runtime_config,
+    parse_runtime_config_update,
+    remove_context_directory,
+    render_runtime_config_report,
+    reset_runtime_config,
+    update_runtime_config,
+)
+from src.utils.skills import build_skill_prompt, find_skill, render_skill_detail, render_skill_inventory_report
 from src.utils.system_reports import build_doctor_report, build_onboarding_report, build_status_report
 from src.utils.themes import get_theme, list_themes, load_theme_name, save_theme_name
 from src.utils.todo import todo_add, todo_clear_done, todo_done, todo_list, todo_remove
@@ -117,6 +136,8 @@ from src.utils.tools import (
 from src.utils.voice import record_audio, speak, transcribe_groq
 from src.utils.web import fetch_url
 from src.utils.workbench import (
+    WORKBENCH_NAME,
+    WORKBENCH_VERSION,
     execute_workbench,
     prepare_workbench_plan,
     render_workbench_plan,
@@ -142,10 +163,11 @@ def make_system_prompt(
 
 _context_cache = get_global_context_cache()
 _session_telemetry = get_global_telemetry()
+_cli_reasoning_effort = "medium"
 
 
-def build_messages(system_prompt: str, history: list[dict[str, str]], *, model: str = "") -> list[dict[str, str]]:
-    return build_runtime_messages(
+def build_messages(system_prompt: str, history: list[dict[str, str]], *, model: str = "", effort: str | None = None) -> list[dict[str, str]]:
+    messages = build_runtime_messages(
         system_prompt,
         history,
         model=model,
@@ -156,10 +178,31 @@ def build_messages(system_prompt: str, history: list[dict[str, str]], *, model: 
         search_markers=("page content", "url:"),
         file_markers=("loaded file", "project loaded", "create a folder"),
     )
+    return apply_reasoning_effort(messages, effort or _cli_reasoning_effort)
 
 
 def _remember_context_text(label: str, content: str, *, kind: str) -> None:
     _context_cache.remember_text(f"{kind}:{label}", label, content, kind=kind)
+
+
+def _summarize_hook_failure(result) -> str:
+    detail = result.stderr or result.stdout or f"exit {result.returncode}"
+    return f"Hook {result.spec.name} failed: {detail}"
+
+
+def _emit_cli_hook_results(results: list, *, block_on_required: bool) -> bool:
+    blocked = False
+    for result in results:
+        if result.stdout:
+            info(f"hook {result.spec.name}: {result.stdout}")
+        if not result.ok:
+            message = _summarize_hook_failure(result)
+            if result.blocked and block_on_required and not blocked:
+                fail(message)
+                blocked = True
+            else:
+                warn(message)
+    return blocked
 
 
 def _route_helper_model(current_model: str, mode: str) -> str:
@@ -236,7 +279,7 @@ def print_help() -> None:
         print(f"  {CY}  {name:<28}{R}{DG}{desc}{R}")
 
     print(f"\n{line}")
-    print(f"  {PU}{B}  ✦  LUMI v0.5.0: FORGE COMMANDS{R}")
+    print(f"  {PU}{B}  ✦  LUMI v{WORKBENCH_VERSION}: {WORKBENCH_NAME.upper()} COMMANDS{R}")
     print(line)
 
     section("CHAT")
@@ -245,7 +288,10 @@ def print_help() -> None:
     cmd("/context",                  "show token usage and context window")
     cmd("/status",                   "session + workspace status summary")
     cmd("/doctor",                   "check Lumi setup and workspace health")
+    cmd("/config [show|set|reset]",  "view or update persistent workspace runtime settings")
     cmd("/onboard",                  "show first-run and workspace guidance")
+    cmd("/skills [inspect <name>]",  "list markdown skills or inspect one")
+    cmd("/hooks [inspect]",          "show lifecycle hooks and automation wiring")
     cmd("/rebirth [status|on|off]", "rebirth profile capability report and toggle")
     cmd("/benchmark [list]",         "show built-in benchmark scenarios")
     cmd("/redo [hint]",              "regenerate last answer, optionally with a hint")
@@ -264,6 +310,8 @@ def print_help() -> None:
     cmd("/ship [goal]",              "workbench: verify and generate release artifacts")
     cmd("/edit <path>",              "edit a file — AI rewrites, shows diff, confirms")
     cmd("/file <path>",              "load file as context")
+    cmd("/files [task]",             "list changed files, hotspots, and active context")
+    cmd("/add-dir <path>",           "add an extra directory to Lumi's repo context")
     cmd("/project <dir>",            "load entire codebase as context")
     cmd("/fix <error>",              "diagnose and fix an error")
     cmd("/review [file]",            "full code review")
@@ -301,7 +349,10 @@ def print_help() -> None:
 
     section("AUTONOMOUS")
     cmd("/agent <task>",             "multi-step autonomous agent")
-    cmd("/lumi.md show|create",      "view or create project context file")
+    cmd("/agents",                   "show active objective and available council agents")
+    cmd("/tasks",                    "show active and recent workbench tasks")
+    cmd("/lumi.md show|create",      "view or create Lumi project context")
+    cmd("/claude.md show|create",    "Claude Code-compatible project context file")
 
     section("MCP SERVERS")
     cmd("/mcp list",                 "show configured MCP servers")
@@ -312,6 +363,8 @@ def print_help() -> None:
 
     section("PLUGINS")
     cmd("/plugins [inspect|audit]",  "list loaded plugins, inspect metadata, or audit permissions")
+    cmd("/plugin ...",               "alias for /plugins")
+    cmd("/reload-plugins",           "reload trusted plugins")
     cmd("/permissions [all|plugins]", "show plugin permission model")
     cmd("/plugins reload",           f"reload plugins from {PLUGINS_DIR}")
 
@@ -324,15 +377,21 @@ def print_help() -> None:
     section("SESSIONS")
     cmd("/save [name]",              "save conversation with optional name")
     cmd("/load [name]",              "load session by name or latest")
+    cmd("/resume [name]",            "alias for /load")
     cmd("/sessions",                 "list all saved sessions")
+    cmd("/session",                  "alias for /sessions")
     cmd("/export",                   "export current session as markdown")
     cmd("/find <keyword>",           "search through past sessions")
 
     section("SETTINGS")
     cmd("/model",                    "switch provider and model (interactive picker)")
+    cmd("/effort [level]",           "set default reasoning effort: low|medium|high|ehigh")
+    cmd("/brief [on|off]",           "toggle concise responses by default")
+    cmd("/fast [on|off]",            "toggle faster, low-effort response mode")
     cmd("/theme",                    "show the fixed ANSI palette")
     cmd("/cost",                     "show token usage this session")
     cmd("/compact",                  "toggle minimal output mode")
+    cmd("/version",                  "show Lumi version and runtime info")
     cmd("/quit",                     "save and exit")
 
     print(f"\n{line}")
@@ -1906,6 +1965,7 @@ def _parse_args():
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:  # noqa: C901
+    global _compact_mode, _cli_reasoning_effort
     cli = _parse_args()
 
     if cli.version:
@@ -2014,8 +2074,9 @@ def main() -> None:  # noqa: C901
         os.environ["LUMI_VERBOSE"] = "1"
 
     # ── Session state ─────────────────────────────────────────────────────────
+    runtime_config = load_runtime_config(pathlib.Path.cwd())
     current_theme      = load_theme_name()
-    multiline          = False
+    multiline          = bool(runtime_config.multiline)
     last_msg: str | None     = None
     last_reply: str | None   = None
     prev_reply: str | None   = None
@@ -2023,6 +2084,11 @@ def main() -> None:  # noqa: C901
     system_prompt_ref  = [system_prompt]
     turns              = 0
     response_mode: str | None = None
+    brief_mode         = bool(runtime_config.brief_mode)
+    fast_mode          = bool(runtime_config.fast_mode)
+    _compact_mode      = bool(runtime_config.compact_mode)
+    reasoning_effort   = "low" if fast_mode else normalize_reasoning_effort(runtime_config.reasoning_effort)
+    _cli_reasoning_effort = reasoning_effort
     AUTOSAVE_EVERY     = 5
     AUTOREMEMBER_EVERY = 8
     max_turns          = cli.max_turns
@@ -2081,13 +2147,12 @@ def main() -> None:  # noqa: C901
             sys.exit(1)
         sys.exit(0)
 
-    # ── LUMI.md project context ───────────────────────────────────────────────
-    for _md_path in [pathlib.Path("LUMI.md"), pathlib.Path("lumi.md")]:
-        if _md_path.exists():
-            _lumi_md = _md_path.read_text(encoding="utf-8").strip()
-            system_prompt += f"\n\n--- Project context (LUMI.md) ---\n{_lumi_md}"
-            info(f"Loaded LUMI.md project context ({len(_lumi_md)} chars)")
-            break
+    # ── Project context (LUMI.md / CLAUDE.md) ────────────────────────────────
+    _context_path = find_project_context_file(pathlib.Path.cwd())
+    if _context_path is not None:
+        _context_text = _context_path.read_text(encoding="utf-8").strip()
+        system_prompt += f"\n\n--- Project context ({_context_path.name}) ---\n{_context_text}"
+        info(f"Loaded {_context_path.name} project context ({len(_context_text)} chars)")
 
     _loaded_plugins = load_plugins()
     if _loaded_plugins:
@@ -2133,6 +2198,21 @@ def main() -> None:  # noqa: C901
             continue
 
         cmd = user_input.split()[0] if user_input.startswith("/") else None
+        display_user_input = user_input
+        after_command_payload: tuple[str, str, str] | None = None
+
+        if cmd == "/session":
+            cmd = "/sessions"
+            user_input = user_input.replace("/session", "/sessions", 1)
+        elif cmd == "/resume":
+            cmd = "/load"
+            user_input = user_input.replace("/resume", "/load", 1)
+        elif cmd == "/plugin":
+            cmd = "/plugins"
+            user_input = user_input.replace("/plugin", "/plugins", 1)
+        elif cmd == "/reload-plugins":
+            cmd = "/plugins"
+            user_input = "/plugins reload"
 
         # ── Slash command dispatch ────────────────────────────────────────────
 
@@ -2146,6 +2226,159 @@ def main() -> None:  # noqa: C901
 
         if cmd == "/help":
             print_help()
+            continue
+
+        if cmd == "/version":
+            print("\n  " + render_version_report(version=WORKBENCH_VERSION, provider=get_provider(), model=current_model).replace("\n", "\n  ") + "\n")
+            continue
+
+        if cmd == "/config":
+            arg = user_input.split(maxsplit=1)[1].strip() if " " in user_input else ""
+            if not arg or arg.lower() in {"show", "list"}:
+                print(
+                    "\n  "
+                    + render_runtime_config_report(
+                        base_dir=pathlib.Path.cwd(),
+                        provider=get_provider(),
+                        model=current_model,
+                        compact_mode=_compact_mode,
+                        multiline=multiline,
+                        reasoning_effort=reasoning_effort,
+                        brief_mode=brief_mode,
+                        fast_mode=fast_mode,
+                    ).replace("\n", "\n  ")
+                    + "\n"
+                )
+                continue
+            if arg.lower() == "reset":
+                runtime_config = reset_runtime_config(pathlib.Path.cwd())
+                multiline = bool(runtime_config.multiline)
+                _compact_mode = bool(runtime_config.compact_mode)
+                brief_mode = bool(runtime_config.brief_mode)
+                fast_mode = bool(runtime_config.fast_mode)
+                reasoning_effort = "low" if fast_mode else normalize_reasoning_effort(runtime_config.reasoning_effort)
+                _cli_reasoning_effort = reasoning_effort
+                info("Config reset.")
+                continue
+            parts = arg.split(maxsplit=2)
+            if len(parts) == 3 and parts[0].lower() == "set":
+                try:
+                    updates = parse_runtime_config_update(parts[1], parts[2])
+                    runtime_config = update_runtime_config(pathlib.Path.cwd(), **updates)
+                except ValueError as exc:
+                    warn(str(exc))
+                    continue
+                multiline = bool(runtime_config.multiline)
+                _compact_mode = bool(runtime_config.compact_mode)
+                brief_mode = bool(runtime_config.brief_mode)
+                fast_mode = bool(runtime_config.fast_mode)
+                reasoning_effort = "low" if fast_mode else normalize_reasoning_effort(runtime_config.reasoning_effort)
+                _cli_reasoning_effort = reasoning_effort
+                info(f"Config updated: {parts[1]}")
+                continue
+            warn("Usage: /config [show|reset|set <key> <value>]")
+            continue
+
+        if cmd == "/brief":
+            arg = user_input.split(maxsplit=1)[1].strip() if " " in user_input else ""
+            if not arg or arg.lower() == "toggle":
+                runtime_config = update_runtime_config(pathlib.Path.cwd(), brief_mode=not brief_mode)
+            else:
+                try:
+                    runtime_config = update_runtime_config(pathlib.Path.cwd(), **parse_runtime_config_update("brief", arg))
+                except ValueError as exc:
+                    warn(str(exc))
+                    continue
+            brief_mode = bool(runtime_config.brief_mode)
+            info(f"Brief {'on' if brief_mode else 'off'}")
+            continue
+
+        if cmd == "/fast":
+            arg = user_input.split(maxsplit=1)[1].strip() if " " in user_input else ""
+            if not arg or arg.lower() == "toggle":
+                runtime_config = update_runtime_config(pathlib.Path.cwd(), fast_mode=not fast_mode)
+            else:
+                try:
+                    runtime_config = update_runtime_config(pathlib.Path.cwd(), **parse_runtime_config_update("fast", arg))
+                except ValueError as exc:
+                    warn(str(exc))
+                    continue
+            fast_mode = bool(runtime_config.fast_mode)
+            reasoning_effort = "low" if fast_mode else normalize_reasoning_effort(runtime_config.reasoning_effort)
+            _cli_reasoning_effort = reasoning_effort
+            info(f"Fast {'on' if fast_mode else 'off'}")
+            continue
+
+        if cmd == "/effort":
+            arg = user_input.split(maxsplit=1)[1].strip() if " " in user_input else ""
+            if not arg:
+                current = normalize_reasoning_effort(reasoning_effort)
+                try:
+                    next_value = EFFORT_LEVELS[(EFFORT_LEVELS.index(current) + 1) % len(EFFORT_LEVELS)]
+                except ValueError:
+                    next_value = "medium"
+                runtime_config = update_runtime_config(pathlib.Path.cwd(), reasoning_effort=next_value, fast_mode=False)
+                reasoning_effort = normalize_reasoning_effort(runtime_config.reasoning_effort)
+                fast_mode = False
+                _cli_reasoning_effort = reasoning_effort
+                info(f"Effort {reasoning_effort}")
+                continue
+            if arg.lower() in {"status", "show"}:
+                info(f"Reasoning effort: {normalize_reasoning_effort(reasoning_effort)}")
+                continue
+            allowed = {"low", "medium", "high", "ehigh", "extra high", "extra-high", "extra_high", "xhigh", "very high", "very-high", "very_high"}
+            if arg.strip().lower() not in allowed:
+                warn("Usage: /effort [low|medium|high|ehigh|status]")
+                continue
+            normalized = normalize_reasoning_effort(arg)
+            runtime_config = update_runtime_config(pathlib.Path.cwd(), reasoning_effort=normalized, fast_mode=False)
+            reasoning_effort = normalize_reasoning_effort(runtime_config.reasoning_effort)
+            fast_mode = False
+            _cli_reasoning_effort = reasoning_effort
+            info(f"Effort {reasoning_effort}")
+            continue
+
+        if cmd == "/add-dir":
+            arg = user_input.split(maxsplit=1)[1].strip() if " " in user_input else ""
+            if not arg or arg.lower() == "list":
+                config_lines = ["Context directories:"]
+                if runtime_config.extra_dirs:
+                    config_lines.extend(f"  - {item}" for item in runtime_config.extra_dirs)
+                else:
+                    config_lines.append("  - none")
+                print("\n  " + "\n  ".join(config_lines) + "\n")
+                continue
+            parts = arg.split(maxsplit=1)
+            if parts[0].lower() in {"remove", "rm", "del"}:
+                if len(parts) < 2:
+                    warn("Usage: /add-dir remove <path>")
+                    continue
+                try:
+                    runtime_config, removed = remove_context_directory(parts[1], base_dir=pathlib.Path.cwd())
+                except ValueError as exc:
+                    warn(str(exc))
+                    continue
+                ok(f"Removed context directory → {removed}")
+                continue
+            try:
+                runtime_config, added = add_context_directory(arg, base_dir=pathlib.Path.cwd())
+            except ValueError as exc:
+                warn(str(exc))
+                continue
+            ok(f"Added context directory → {added}")
+            continue
+
+        if cmd == "/files":
+            arg = user_input.split(maxsplit=1)[1].strip() if " " in user_input else ""
+            print("\n  " + render_files_report(pathlib.Path.cwd(), task=arg).replace("\n", "\n  ") + "\n")
+            continue
+
+        if cmd == "/tasks":
+            print("\n  " + render_tasks_report(pathlib.Path.cwd()).replace("\n", "\n  ") + "\n")
+            continue
+
+        if cmd == "/agents":
+            print("\n  " + render_agents_report(base_dir=pathlib.Path.cwd()).replace("\n", "\n  ") + "\n")
             continue
 
         if cmd in {"/build", "/learn", "/fixci", "/ship"}:
@@ -2471,7 +2704,8 @@ def main() -> None:  # noqa: C901
             continue
 
         if cmd == "/multi":
-            multiline = not multiline
+            runtime_config = update_runtime_config(pathlib.Path.cwd(), multiline=not multiline)
+            multiline = bool(runtime_config.multiline)
             info(f"Multi-line input {'on' if multiline else 'off'}")
             continue
 
@@ -2630,6 +2864,29 @@ def main() -> None:  # noqa: C901
             )
             continue
 
+        if cmd == "/skills":
+            arg = user_input.split(maxsplit=1)[1].strip() if " " in user_input else ""
+            parts = arg.split(maxsplit=1)
+            if not parts:
+                print("\n  " + render_skill_inventory_report(base_dir=pathlib.Path.cwd()).replace("\n", "\n  ") + "\n")
+                continue
+            if parts[0] == "inspect" and len(parts) == 2:
+                print("\n  " + render_skill_detail(parts[1], base_dir=pathlib.Path.cwd()).replace("\n", "\n  ") + "\n")
+                continue
+            warn("Usage: /skills [inspect <name>]")
+            continue
+
+        if cmd == "/hooks":
+            arg = user_input.split(maxsplit=1)[1].strip() if " " in user_input else ""
+            if arg in {"", "summary"}:
+                print("\n  " + render_hook_report(base_dir=pathlib.Path.cwd()).replace("\n", "\n  ") + "\n")
+                continue
+            if arg == "inspect":
+                print("\n  " + render_hook_report(base_dir=pathlib.Path.cwd(), detail=True).replace("\n", "\n  ") + "\n")
+                continue
+            warn("Usage: /hooks [inspect]")
+            continue
+
         if cmd == "/rebirth":
             sub = (user_input.split(maxsplit=1)[1:] or ["status"])[0].strip().lower() or "status"
             if sub in {"status", "report"}:
@@ -2668,25 +2925,27 @@ def main() -> None:  # noqa: C901
             print("\n  " + render_benchmark_catalog(load_benchmark_scenarios()).replace("\n", "\n  ") + "\n")
             continue
 
-        if cmd == "/lumi.md":
+        if cmd in {"/lumi.md", "/claude.md"}:
             sub = (user_input.split(maxsplit=1)[1:] or [""])[0].strip()
+            context_path = find_project_context_file(pathlib.Path.cwd())
+            preferred_name = "CLAUDE.md" if cmd == "/claude.md" else preferred_project_context_name(pathlib.Path.cwd())
+            target_path = pathlib.Path(preferred_name)
             if sub == "show":
-                md_f = pathlib.Path("LUMI.md")
-                if md_f.exists():
-                    print(f"\n  {GR}{md_f.read_text()}{R}\n")
+                if context_path and context_path.exists():
+                    print(f"\n  {GR}{context_path.read_text()}{R}\n")
                 else:
-                    warn("No LUMI.md in current directory")
+                    warn("No LUMI.md or CLAUDE.md in current directory")
             elif sub == "create":
-                if pathlib.Path("LUMI.md").exists():
-                    warn("LUMI.md already exists")
+                if context_path and context_path.exists():
+                    warn(f"{context_path.name} already exists")
                 else:
-                    pathlib.Path("LUMI.md").write_text(
+                    target_path.write_text(
                         "# Project Context\n\n## Stack\n\n## Conventions\n\n## Rules\n",
                         encoding="utf-8",
                     )
-                    ok("Created LUMI.md — edit it, then restart Lumi to load it")
+                    ok(f"Created {target_path.name} — edit it, then restart Lumi to load it")
             else:
-                info("Usage: /lumi.md show | /lumi.md create")
+                info("Usage: /lumi.md show|create  |  /claude.md show|create")
             continue
 
         if cmd == "/search":
@@ -2896,7 +3155,9 @@ def main() -> None:  # noqa: C901
             continue
 
         if cmd == "/compact":
-            on = toggle_compact()
+            runtime_config = update_runtime_config(pathlib.Path.cwd(), compact_mode=not _compact_mode)
+            _compact_mode = bool(runtime_config.compact_mode)
+            on = _compact_mode
             info(f"Compact mode {'on' if on else 'off'}")
             continue
 
@@ -2919,19 +3180,60 @@ def main() -> None:  # noqa: C901
             continue
 
         if cmd and cmd.startswith("/"):
-            # Check plugins before declaring unknown
-            handled, plug_result = plugin_dispatch(
-                cmd,
-                user_input.split(maxsplit=1)[1] if " " in user_input else "",
-                client=client, model=current_model,
-                memory=memory, system_prompt=system_prompt, name=name,
+            command_args = user_input.split(maxsplit=1)[1] if " " in user_input else ""
+            before_command = run_hooks(
+                "before_command",
+                base_dir=pathlib.Path.cwd(),
+                command=cmd,
+                args=command_args,
+                user_input=display_user_input,
             )
-            if handled:
-                if plug_result:
-                    print(f"  {GR}{plug_result}{R}")
+            if _emit_cli_hook_results(before_command, block_on_required=True):
+                continue
+
+            skill = find_skill(cmd, base_dir=pathlib.Path.cwd())
+            if skill is not None:
+                before_message = run_hooks(
+                    "before_message",
+                    base_dir=pathlib.Path.cwd(),
+                    command=cmd,
+                    args=command_args,
+                    user_input=display_user_input,
+                )
+                if _emit_cli_hook_results(before_message, block_on_required=True):
+                    continue
+                user_input = build_skill_prompt(skill, command_args, workspace=pathlib.Path.cwd())
+                after_command_payload = (cmd, command_args, display_user_input)
+                cmd = None
             else:
+                handled, plug_result = plugin_dispatch(
+                    cmd,
+                    command_args,
+                    client=client, model=current_model,
+                    memory=memory, system_prompt=system_prompt, name=name,
+                )
+                if handled:
+                    if plug_result:
+                        print(f"  {GR}{plug_result}{R}")
+                    after_command = run_hooks(
+                        "after_command",
+                        base_dir=pathlib.Path.cwd(),
+                        command=cmd,
+                        args=command_args,
+                        user_input=display_user_input,
+                    )
+                    _emit_cli_hook_results(after_command, block_on_required=False)
+                    continue
                 fail(f"Unknown command: {cmd}  —  type /help")
-            continue
+                continue
+        elif not cmd:
+            before_message = run_hooks(
+                "before_message",
+                base_dir=pathlib.Path.cwd(),
+                user_input=display_user_input,
+            )
+            if _emit_cli_hook_results(before_message, block_on_required=True):
+                continue
 
         # ── Intelligence layer ────────────────────────────────────────────────
         _cls_model     = current_model if current_model != "council" else "gemini-2.0-flash-lite"
@@ -3112,9 +3414,11 @@ def main() -> None:  # noqa: C901
             messages[-1]["content"] += "\n\n[Reply in detail — be thorough and comprehensive.]"
         elif response_mode == "bullets":
             messages[-1]["content"] += "\n\n[Reply using bullet points only.]"
+        elif brief_mode:
+            messages[-1]["content"] += "\n\n[Reply concisely. Prefer dense, direct wording.]"
         response_mode = None
 
-        print_you(user_input)
+        print_you(display_user_input)
 
         try:
             raw_reply, client, current_model, new_prov = stream_with_fallback(
@@ -3131,8 +3435,26 @@ def main() -> None:  # noqa: C901
             memory.pop_last()
             continue
 
-        memory.replace_last("user", user_input)
+        memory.replace_last("user", display_user_input)
         memory.add("assistant", raw_reply)
+        after_response = run_hooks(
+            "after_response",
+            base_dir=pathlib.Path.cwd(),
+            command=after_command_payload[0] if after_command_payload else "",
+            args=after_command_payload[1] if after_command_payload else "",
+            user_input=display_user_input,
+            response=raw_reply,
+        )
+        _emit_cli_hook_results(after_response, block_on_required=False)
+        if after_command_payload is not None:
+            after_command = run_hooks(
+                "after_command",
+                base_dir=pathlib.Path.cwd(),
+                command=after_command_payload[0],
+                args=after_command_payload[1],
+                user_input=after_command_payload[2],
+            )
+            _emit_cli_hook_results(after_command, block_on_required=False)
         prev_reply = last_reply
         last_reply = raw_reply
         turns     += 1

@@ -19,6 +19,7 @@ from src.chat.client_factory import make_vertex_client as _factory_make_vertex_c
 from src.chat.model_catalogs import (
     AIRFORCE_MODELS,
     BYTEZ_MODELS,
+    CLAUDE_MODELS,
     GEMINI_ALL_MODELS,
     GITHUB_MODELS,
     GROQ_FALLBACK,
@@ -29,6 +30,7 @@ from src.chat.model_catalogs import (
 )
 from src.chat.model_fetchers import fetch_airforce_models as _fetch_airforce_models
 from src.chat.model_fetchers import fetch_bytez_models as _fetch_bytez_models
+from src.chat.model_fetchers import fetch_claude_models as _fetch_claude_models
 from src.chat.model_fetchers import fetch_github_models as _fetch_github_models
 from src.chat.model_fetchers import fetch_groq_models as _fetch_groq_models
 from src.chat.model_fetchers import fetch_openrouter_models as _fetch_openrouter_models
@@ -79,6 +81,7 @@ _models_cache_fetched_at: dict[str, float] = {}
 MODEL_CACHE_TTL_SECONDS = 900
 _MODEL_REGISTRY = ModelRegistry(cache_dir=MODEL_CACHE_DIR, ttl_seconds=MODEL_CACHE_TTL_SECONDS)
 STARTUP_MODEL_PREFERENCES: dict[str, tuple[str, ...]] = {
+    "claude": ("claude-sonnet-4-5", "claude-3-7-sonnet-latest", "claude-3-5-sonnet-latest", "claude-haiku-3-5"),
     "gemini": ("gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-lite"),
     "vertex": ("gemini-2.5-flash-preview-04-17", "gemini-2.5-pro-preview-05-06"),
 }
@@ -113,6 +116,7 @@ def _sync_registry_globals() -> None:
 def _provider_catalog(provider: str) -> ProviderCatalog | None:
     catalog = resolve_provider_catalog(provider)
     local_fetchers = {
+        "claude": _fetch_claude_models,
         "groq": _fetch_groq_models,
         "openrouter": _fetch_openrouter_models,
         "github": _fetch_github_models,
@@ -122,6 +126,7 @@ def _provider_catalog(provider: str) -> ProviderCatalog | None:
         "pollinations": _fetch_pollinations_models,
     }
     local_curated = {
+        "claude": tuple(CLAUDE_MODELS),
         "groq": tuple(GROQ_FALLBACK),
         "openrouter": tuple(OPENROUTER_MODELS),
         "github": tuple(GITHUB_MODELS),
@@ -183,6 +188,7 @@ def get_provider() -> str:
     raise OSError(
         "No API key found in .env\n"
         "  GEMINI_API_KEY=...      https://aistudio.google.com/apikey\n"
+        "  CLAUDE_API_KEY=...      https://console.anthropic.com/settings/keys\n"
         "  GROQ_API_KEY=...        https://console.groq.com\n"
         "  OPENROUTER_API_KEY=...  https://openrouter.ai/keys\n"
         "  MISTRAL_API_KEY=...     https://console.mistral.ai\n"

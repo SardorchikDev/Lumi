@@ -1,189 +1,109 @@
 # Lumi Roadmap
 
-This roadmap is the concrete path from Lumi's current grounded-agent foundation to a calmer, more reliable coding assistant that can compete on trust, edit quality, and workflow.
+Lumi's next program is not cosmetic polish. It is a Claude-parity push followed by a runtime rewrite.
 
-## Goal
+## Release Path
 
-Lumi should feel:
+- `v0.5.0: Forge`
+  - current release
+  - repo-aware workbench, project memory, hooks, skills, and background execution baseline
+- `v0.6.0: Mirror`
+  - Python parity release
+  - closes the highest-value command, workflow, and subsystem gaps against Claude Code
+- `v1.0.0: Native`
+  - Bun/TypeScript/Ink rewrite
+  - reimplements Lumi on a runtime shape closer to Claude Code once Mirror behavior is stable
 
-- repo-aware before it acts
-- precise when it edits
-- honest about risk
-- resilient when checks fail
-- visually consistent in the TUI
-- measurable through benchmarks
-- coherent across long-running tasks
+## Mirror Goal
 
-## Current Baseline
+Mirror should make Lumi feel close enough to Claude Code in real use that the later rewrite is mainly architectural, not a product redesign.
 
-Already in place:
+That means closing gaps in:
 
-- structured agent actions instead of free-form shell execution
-- grouped preflight summaries and diff previews
-- rollback and undo for filesystem actions
-- repo-aware verification detection
-- patch-oriented edit actions
-- persisted little notes and starter-panel guidance
-- task-memory persistence for prior runs
+- permission rules
+- tool architecture
+- git workflows
+- code review surfaces
+- sessions and context control
+- tasks and agents
+- repo intelligence
+- IDE bridge foundations
+- settings, usage, and install flows
+- TUI control density
+- measurable parity auditing
 
-## Phase 1: Reliable Core
+## The 17 Mirror Workstreams
 
-### 1. Repo-Aware Planning And Verification
+1. Wildcard tool permission engine
+2. Explicit tool registry
+3. Git workflow suite
+4. Code-quality command suite
+5. Session and context parity
+6. Background task engine
+7. Sub-agent orchestration
+8. LSP repo intelligence
+9. IDE bridge
+10. Full settings layer
+11. Usage and telemetry surfaces
+12. Install, init, and upgrade flows
+13. Plugin and skill lifecycle parity
+14. Remote and device handoff layer
+15. TUI control-density parity
+16. Missing command parity cleanup
+17. Parity and regression audit
 
-Deliverables:
+Full spec: [LUMI_MIRROR_SPEC.md](/home/sardorchikdev/Lumi/LUMI_MIRROR_SPEC.md)
 
-- detect frameworks, entrypoints, config files, package manager, and verification tools
-- include that repo profile in planning context
-- prefer `run_verify` over hardcoded check guesses
+## Execution Order
 
-Acceptance criteria:
+### Phase 1: Control Plane
 
-- planning context shows detected frameworks and key config files
-- agent picks repo-native verification commands without user spelling them out
-- broad tasks inspect repo shape before mutating files
+- permission engine
+- tool registry
+- git workflow suite
+- code-quality suite
 
-### 2. Precise Patch/Edit Engine
+### Phase 2: Runtime Core
 
-Deliverables:
+- session/context parity
+- background task engine
+- sub-agent orchestration
+- LSP repo intelligence
 
-- multi-hunk patch application
-- anchored context patching
-- line-range patching with conflict detection
-- structured JSON/YAML editors
+### Phase 3: Operator Surfaces
 
-Acceptance criteria:
+- IDE bridge
+- settings layer
+- usage/telemetry
+- install/init/upgrade
+- plugin and skill lifecycle parity
+- remote/device handoff
+- TUI control-density parity
 
-- existing files are patched more often than fully rewritten
-- ambiguous edits fail closed instead of guessing
-- file diffs stay small for localized changes
+### Phase 4: Lock And Rewrite
 
-### 3. Failure Recovery And Retry Logic
+- remaining command cleanup
+- parity audit and regression gate
+- freeze behavior
+- move to `v1.0.0: Native`
 
-Deliverables:
+## Audit Rule
 
-- classify common failures
-- request one bounded recovery plan
-- retry the failed step after recovery
+Parity claims should be backed by the audit command, not by UI similarity.
 
-Acceptance criteria:
+Run:
 
-- common “fix test, rerun check” flows recover automatically once
-- recovery stays bounded and visible in the transcript
-- failure summaries include which checks failed
+```bash
+./venv/bin/python scripts/claude_parity_audit.py
+```
 
-## Phase 2: Trust And Operator UX
+## Rewrite Rule
 
-### 4. Cleaner Approval And Diff UX
+Do not switch languages until these contracts are stable:
 
-Deliverables:
-
-- grouped plan summary before execution
-- diff previews for file edits
-- delete previews with counts
-- review-only mode and rollback scope
-
-Acceptance criteria:
-
-- users can see reads, edits, deletes, and checks at a glance
-- risky operations are previewed before execution
-- failed runs can be rolled back with clear scope
-
-### 5. TUI Consistency And Polish
-
-Deliverables:
-
-- unified starter/chat/approval visual system
-- stable prompt placement
-- cleaner transcript rendering
-- useful but subtle `little notes`
-
-Acceptance criteria:
-
-- the UI no longer feels like separate stitched-together modes
-- pending confirmations have their own obvious prompt state
-- code blocks and transcript spacing are readable in long sessions
-
-## Phase 3: Measurement And Continuity
-
-### 6. Benchmark Suite
-
-Deliverables:
-
-- scenario set for scaffolding, file management, patching, and verification
-- suite summary with pass rate, average score, recovery rate, and rollback rate
-- benchmark scenarios checked into the repo
-
-Acceptance criteria:
-
-- Lumi can be scored against the same tasks across releases
-- regressions are visible instead of anecdotal
-- success is measured by both outcome and safety signals
-
-### 7. Better Long-Running Task Memory
-
-Deliverables:
-
-- persist active objective
-- persist touched files and failed checks while a run is active
-- include active-task memory in planning context
-
-Acceptance criteria:
-
-- interrupted work can resume with useful context
-- task memory is task-scoped, not just chat history
-- recent failures are visible in future planning
-
-## Stretch Work
-
-These are the next steps once the seven core milestones above feel solid.
-
-### 8. Smarter Repo Graph
-
-- symbol graph for definitions/usages/tests
-- likely target-file ranking by task
-- better changed-file inspection
-
-### 9. Safer File Operations
-
-- richer move/copy/rename planning
-- archive/delete flows with previews
-- broader structured config editing
-
-### 10. Benchmark-Gated Releases
-
-- benchmark summary in CI
-- release notes tied to benchmark movement
-- regression thresholds before shipping
-
-## Suggested Release Plan
-
-### v0.4
-
-- framework/config-aware repo profiling
-- active task memory
-- stronger benchmark helpers
-
-### v0.5
-
-- tighter retry and recovery heuristics
-- better verification summaries
-- benchmark scenarios expanded
-
-### v0.6
-
-- TUI approval/transcript unification
-- better patch affordances and edit previews
-- more polished long-session agent UX
-
-## What “Claude Code Level” Means For Lumi
-
-Lumi should:
-
-- inspect the repo before editing
-- choose the right files with less babysitting
-- patch precisely instead of rewriting broadly
-- run the right checks automatically
-- recover once from common failures
-- show exactly what it will change
-- keep a calm, coherent UI
-- remember active work across turns
+- tool contracts
+- permission contracts
+- task and agent lifecycle contracts
+- settings schema
+- command definitions
+- parity audit criteria

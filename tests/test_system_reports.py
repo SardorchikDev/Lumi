@@ -44,6 +44,8 @@ def test_build_doctor_report_surfaces_missing_setup(tmp_path, monkeypatch):
     monkeypatch.setattr(longterm, "EPISODIC_DB_PATH", tmp_path / "episodes.sqlite3")
     monkeypatch.setattr(longterm, "LEGACY_EPISODIC_DB_PATH", tmp_path / "episodes.pkl")
     monkeypatch.setattr(system_reports, "LUMI_HOME", tmp_path / "lumi-home")
+    monkeypatch.setattr("src.utils.skills.LUMI_HOME", tmp_path / "lumi-home")
+    monkeypatch.setattr("src.utils.hooks.LUMI_HOME", tmp_path / "lumi-home")
     plugins._registry.clear()
     plugins._plugin_meta.clear()
 
@@ -56,11 +58,30 @@ def test_build_doctor_report_surfaces_missing_setup(tmp_path, monkeypatch):
 
     assert "Lumi doctor" in report
     assert "No configured providers detected." in report
-    assert "No LUMI.md project context file found." in report
+    assert "No LUMI.md or CLAUDE.md project context file found." in report
     assert "No .env file found" in report
     assert "Runtime:" in report
     assert "Rebirth:" in report
     assert "Workbench:" in report
+
+
+def test_build_doctor_report_accepts_claude_md_context(tmp_path, monkeypatch):
+    (tmp_path / "CLAUDE.md").write_text("# Instructions\n", encoding="utf-8")
+    monkeypatch.setattr(longterm, "MEMORY_FILE", tmp_path / "longterm.json")
+    monkeypatch.setattr(longterm, "EPISODIC_DB_PATH", tmp_path / "episodes.sqlite3")
+    monkeypatch.setattr(longterm, "LEGACY_EPISODIC_DB_PATH", tmp_path / "episodes.pkl")
+    monkeypatch.setattr(system_reports, "LUMI_HOME", tmp_path / "lumi-home")
+    monkeypatch.setattr("src.utils.skills.LUMI_HOME", tmp_path / "lumi-home")
+    monkeypatch.setattr("src.utils.hooks.LUMI_HOME", tmp_path / "lumi-home")
+
+    report = build_doctor_report(
+        base_dir=tmp_path,
+        provider="",
+        model="",
+        configured_providers=[],
+    )
+
+    assert "No LUMI.md or CLAUDE.md project context file found." not in report
 
 
 def test_build_onboarding_report_includes_workspace_summary(tmp_path, monkeypatch):

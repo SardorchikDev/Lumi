@@ -1,4 +1,4 @@
-"""Tests for the Lumi Forge Workbench subsystem."""
+"""Tests for the Lumi Mirror Workbench subsystem."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def test_build_repo_intelligence_indexes_symbols_and_tests(tmp_path, monkeypatch
     assert "tests/test_app.py" in intelligence.suggested_tests
     assert cached is not None
     assert cached.symbol_count == intelligence.symbol_count
-    assert "Forge" in workbench.workbench_status_summary(tmp_path)
+    assert "Mirror" in workbench.workbench_status_summary(tmp_path)
 
 
 def test_project_memory_persists_conventions_and_decisions(tmp_path, monkeypatch):

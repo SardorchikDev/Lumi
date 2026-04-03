@@ -11,18 +11,20 @@ from src.agents.benchmark import load_benchmark_scenarios, render_benchmark_cata
 from src.tui.review_cards import file_review_card
 from src.tui.state import Msg
 from src.utils.git_tools import GIT_USAGE, run_git_subcommand
+from src.utils.hooks import render_hook_report
+from src.utils.skills import render_skill_detail, render_skill_inventory_report
 from src.utils.system_reports import build_onboarding_report
 from src.utils.workbench import WORKBENCH_TITLE, prepare_workbench_plan, render_workbench_plan, render_workbench_report
 
 HELP_CATEGORIES = {
     "💬 Chat": ["/clear", "/retry", "/redo", "/undo", "/more", "/rewrite", "/tl;dr", "/summarize", "/translate", "/short", "/detailed", "/bullets", "/multi"],
     "🔧 Code": ["/build", "/review", "/learn", "/fixci", "/ship", "/fix", "/debug", "/explain", "/improve", "/optimize", "/security", "/refactor", "/test", "/docs", "/types", "/comment", "/run", "/edit"],
-    "📁 Files": ["/file", "/browse", "/find", "/grep", "/tree", "/project", "/fs"],
+    "📁 Files": ["/file", "/browse", "/find", "/grep", "/tree", "/project", "/fs", "/files", "/add-dir"],
     "🔀 Git": ["/git", "/pr", "/changelog", "/standup", "/readme"],
     "🌐 Web": ["/search", "/web", "/image", "/imagine", "/data"],
-    "🧠 Memory": ["/remember", "/memory", "/forget", "/save", "/load", "/sessions", "/export", "/tokens", "/context"],
-    "🛠️ Tools": ["/shell", "/scaffold", "/lint", "/fmt", "/todo", "/note", "/draft", "/weather", "/timer", "/copy", "/paste", "/diff", "/pdf", "/jobs"],
-    "⚙️ System": ["/status", "/doctor", "/onboard", "/rebirth", "/benchmark", "/permissions", "/model", "/council", "/mode", "/offline", "/godmode", "/pane", "/apply", "/index", "/rag", "/voice", "/persona", "/sys", "/plugins", "/compact", "/help", "/exit"],
+    "🧠 Memory": ["/remember", "/memory", "/forget", "/save", "/load", "/resume", "/sessions", "/session", "/export", "/tokens", "/cost", "/context", "/skills"],
+    "🛠️ Tools": ["/shell", "/scaffold", "/lint", "/fmt", "/todo", "/note", "/draft", "/weather", "/timer", "/copy", "/paste", "/diff", "/pdf", "/jobs", "/hooks"],
+    "⚙️ System": ["/status", "/doctor", "/onboard", "/rebirth", "/benchmark", "/permissions", "/config", "/model", "/brief", "/fast", "/effort", "/council", "/agents", "/tasks", "/mode", "/offline", "/godmode", "/pane", "/apply", "/index", "/rag", "/voice", "/persona", "/sys", "/plugins", "/plugin", "/reload-plugins", "/compact", "/version", "/help", "/exit"],
 }
 
 
@@ -227,6 +229,28 @@ def register_command_groups(
         lines.append(f"\n  {len(registry.commands)} commands available. Tab to autocomplete.")
         lines.append("\n  Shortcuts: Ctrl+N=model picker | Ctrl+L=clear | Ctrl+R=retry | Tab=complete")
         tui._sys("\n".join(lines))
+
+    @registry.register("/skills", "List markdown skills or inspect one: /skills [inspect <name>]")
+    def cmd_skills(tui, arg: str):
+        parts = arg.strip().split(maxsplit=1)
+        if not parts:
+            tui._sys(render_skill_inventory_report(base_dir=Path.cwd()))
+            return
+        if parts[0] == "inspect" and len(parts) == 2:
+            tui._sys(render_skill_detail(parts[1], base_dir=Path.cwd()))
+            return
+        tui._err("Usage: /skills [inspect <name>]")
+
+    @registry.register("/hooks", "Show lifecycle hooks: /hooks [inspect]")
+    def cmd_hooks(tui, arg: str):
+        sub = arg.strip().lower()
+        if sub in {"", "summary"}:
+            tui._sys(render_hook_report(base_dir=Path.cwd()))
+            return
+        if sub == "inspect":
+            tui._sys(render_hook_report(base_dir=Path.cwd(), detail=True))
+            return
+        tui._err("Usage: /hooks [inspect]")
 
     @registry.register("/build", "Workbench: inspect, edit, test, review, and prepare artifacts")
     def cmd_build(tui, arg: str):

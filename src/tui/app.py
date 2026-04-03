@@ -179,6 +179,12 @@ from src.tui.session import initialize_ui_state
 from src.tui.state import AgentState, Msg, PaneState, ReviewCard, Store
 from src.tui.views import OverlayView, PaneView, StarterView, TranscriptView, ViewStyle
 from src.utils.autoremember import auto_extract_facts
+from src.utils.claude_parity import (
+    render_agents_report,
+    render_files_report,
+    render_tasks_report,
+    render_version_report,
+)
 from src.utils.filesystem import (
     execute_operation_plan,
     generate_delete_plan,
@@ -211,12 +217,23 @@ from src.utils.plugins import (
     revoke_plugin,
 )
 from src.utils.plugins import dispatch as plugin_dispatch
+from src.utils.project_context import load_project_context
 from src.utils.rebirth import load_rebirth_profile, rebirth_status_summary, render_rebirth_report
 from src.utils.repo_profile import inspect_workspace
+from src.utils.runtime_config import (
+    add_context_directory,
+    load_runtime_config,
+    parse_runtime_config_update,
+    remove_context_directory,
+    render_runtime_config_report,
+    reset_runtime_config,
+    update_runtime_config,
+)
 from src.utils.system_reports import build_doctor_report, build_status_report
 from src.utils.web import fetch_url
 from src.utils.workbench import (
     WORKBENCH_TITLE,
+    WORKBENCH_VERSION,
     execute_workbench,
     render_workbench_result,
 )
@@ -530,14 +547,14 @@ def _rule(width, label=""):
     return _fg(BORDER) + "─" * left + R + _fg(MUTED) + plain + R + _fg(BORDER) + "─" * right + R
 
 PROV_NAME = {
-    "gemini": "Gemini", "groq": "Groq", "openrouter": "OpenRouter",
+    "claude": "Claude", "gemini": "Gemini", "groq": "Groq", "openrouter": "OpenRouter",
     "mistral": "Mistral", "huggingface": "HuggingFace", "github": "GitHub Models",
     "cohere": "Cohere", "bytez": "Bytez", "cloudflare": "Cloudflare",
     "ollama": "Ollama", "council": "⚡ Council",
     "vercel": "Vercel AI", "vertex": "Vertex AI",
 }
 PROV_COL = {
-    "gemini": CYAN, "groq": ORANGE, "openrouter": PURPLE, "mistral": RED,
+    "claude": ORANGE, "gemini": CYAN, "groq": ORANGE, "openrouter": PURPLE, "mistral": RED,
     "huggingface": YELLOW, "github": FG_HI, "cohere": GREEN,
     "bytez": TEAL, "cloudflare": ORANGE, "ollama": FG_DIM, "council": PURPLE,
     "vercel": TEAL, "vertex": BLUE,
@@ -589,12 +606,16 @@ class CommandRegistry:
     def __init__(self):
         self.commands = {}
         self.examples = {
+            "/add-dir": "/add-dir ../shared-lib",
             "/agent": "/agent fix the failing tests and keep the diff small",
             "/browse": "/browse src",
+            "/config": "/config set effort high",
+            "/files": "/files auth routing",
             "/file": "/file src/tui/app.py",
             "/fs": "/fs mkdir docs",
             "/git": "/git status",
             "/help": "/help",
+            "/hooks": "/hooks inspect",
             "/memory": "/memory",
             "/model": "/model",
             "/onboard": "/onboard",
@@ -604,7 +625,10 @@ class CommandRegistry:
             "/rag": "/rag how does the agent patch files?",
             "/review": "/review src/chat/hf_client.py",
             "/search": "/search latest ruff rule docs",
+            "/skills": "/skills inspect release",
             "/status": "/status",
+            "/tasks": "/tasks",
+            "/version": "/version",
         }
     def register(self, name, desc, aliases=None):
         def decorator(func):
@@ -639,15 +663,15 @@ class CommandRegistry:
         return score
 
     def _infer_category(self, name):
-        if name in {"/model", "/theme", "/persona", "/mode", "/offline", "/plugins", "/permissions", "/status", "/doctor", "/onboard", "/benchmark", "/quit", "/exit"}:
+        if name in {"/model", "/theme", "/persona", "/mode", "/offline", "/plugins", "/plugin", "/permissions", "/config", "/status", "/doctor", "/onboard", "/benchmark", "/hooks", "/brief", "/fast", "/effort", "/version", "/quit", "/exit"}:
             return "settings"
-        if name in {"/agent", "/scaffold", "/edit", "/review", "/fix", "/debug", "/improve", "/optimize", "/security", "/refactor", "/test", "/explain"}:
+        if name in {"/agent", "/agents", "/tasks", "/jobs", "/build", "/learn", "/ship", "/fixci", "/scaffold", "/edit", "/review", "/fix", "/debug", "/improve", "/optimize", "/security", "/refactor", "/test", "/explain"}:
             return "code"
         if name in {"/search", "/web", "/image", "/data", "/pdf", "/rag", "/index"}:
             return "research"
-        if name in {"/remember", "/memory", "/forget", "/save", "/load", "/sessions", "/export", "/find", "/note", "/todo"}:
+        if name in {"/remember", "/memory", "/forget", "/save", "/load", "/resume", "/sessions", "/session", "/export", "/find", "/note", "/todo", "/skills"}:
             return "memory"
-        if name in {"/browse", "/fs", "/file", "/project", "/shell", "/grep", "/tree", "/lint", "/fmt", "/run", "/apply", "/pane"}:
+        if name in {"/browse", "/fs", "/files", "/add-dir", "/file", "/project", "/shell", "/grep", "/tree", "/lint", "/fmt", "/run", "/apply", "/pane"}:
             return "workspace"
         return "chat"
 
@@ -1085,6 +1109,7 @@ class LumiTUI:
         self.turns = 0; self.last_msg = None; self.last_reply = None
         self.prev_reply = None; self.response_mode = None
         self.multiline = False; self._compact = False; self.busy = False
+        self.brief_mode = False; self.fast_mode = False
         self.reasoning_effort = "medium"
         self._last_prompt_top = 1
         self._last_prompt_height = 1
@@ -1107,9 +1132,25 @@ class LumiTUI:
             history=self.history,
             notes_store=LittleNotesStore(),
         )
+        self.runtime_config = load_runtime_config(Path.cwd())
+        self._apply_runtime_config(self.runtime_config)
         self.browser_cwd = os.getcwd()
         self.workspace_profile = inspect_workspace(Path.cwd())
         self.workspace_trust_visible = self._should_prompt_workspace_trust()
+
+    def _apply_runtime_config(self, config) -> None:
+        self.runtime_config = config
+        self.multiline = bool(config.multiline)
+        self._compact = bool(config.compact_mode)
+        self.brief_mode = bool(config.brief_mode)
+        self.fast_mode = bool(config.fast_mode)
+        self.reasoning_effort = "low" if self.fast_mode else normalize_reasoning_effort(config.reasoning_effort)
+
+    def _sync_runtime_config(self, **updates):
+        config = update_runtime_config(Path.cwd(), **updates)
+        self._apply_runtime_config(config)
+        self.workspace_profile = inspect_workspace(Path.cwd())
+        return config
 
     def set_pane(
         self,
@@ -1714,8 +1755,9 @@ class LumiTUI:
             log.exception("Failed to index saved mode conversations on startup")
 
         self._loaded_plugins = load_plugins()
-        for md_path in[Path("LUMI.md"), Path("lumi.md")]:
-            if md_path.exists(): self.system_prompt += f"\n\n--- Project context (LUMI.md) ---\n{md_path.read_text().strip()}"; break
+        context_path, context_text = load_project_context(Path.cwd())
+        if context_path is not None and context_text:
+            self.system_prompt += f"\n\n--- Project context ({context_path.name}) ---\n{context_text}"
 
         fd = sys.stdin.fileno(); old = termios.tcgetattr(fd)
         self.original_termios = old
@@ -1886,6 +1928,10 @@ class LumiTUI:
             arg,
             registry=registry,
             plugin_dispatch_fn=plugin_dispatch,
+            build_messages_fn=build_messages,
+            session_save_fn=session_save,
+            auto_extract_facts_fn=auto_extract_facts,
+            log=log,
         )
 
 
@@ -2091,7 +2137,7 @@ def cmd_save(tui: LumiTUI, arg: str):
     try: p = session_save(tui.memory.get(), arg.strip() if arg else ""); tui._notify(f"Saved → {Path(p).name}" if p else "Saved")
     except Exception as e: tui._err(str(e))
 
-@registry.register("/load", "Load memory save string")
+@registry.register("/load", "Load memory save string", aliases=["/resume"])
 def cmd_load(tui: LumiTUI, arg: str):
     try:
         h = load_by_name(arg.strip()) if arg.strip() else load_latest()
@@ -2241,7 +2287,7 @@ def cmd_types(tui: LumiTUI, arg: str):
 
 @registry.register("/multi", "Toggle multiline input mode")
 def cmd_multi(tui: LumiTUI, arg: str):
-    tui.multiline = not tui.multiline
+    tui._sync_runtime_config(multiline=not tui.multiline)
     tui._notify(f"Multiline {'ON — Enter=newline, Ctrl+D=submit' if tui.multiline else 'OFF'}")
 
 @registry.register("/remember", "Save a fact to long-term memory")
@@ -2305,7 +2351,7 @@ def cmd_effort(tui: LumiTUI, arg: str):
             next_value = EFFORT_LEVELS[(EFFORT_LEVELS.index(current) + 1) % len(EFFORT_LEVELS)]
         except ValueError:
             next_value = "medium"
-        tui.reasoning_effort = next_value
+        tui._sync_runtime_config(reasoning_effort=next_value, fast_mode=False)
         tui._notify(f"Effort: {next_value}")
         return
     if raw in {"status", "show"}:
@@ -2323,15 +2369,165 @@ def cmd_effort(tui: LumiTUI, arg: str):
     }:
         tui._err("Usage: /effort [low|medium|high|ehigh|status]")
         return
-    tui.reasoning_effort = normalized
+    tui._sync_runtime_config(reasoning_effort=normalized, fast_mode=False)
     tui._notify(f"Effort: {normalized}")
 
 # ── New utility commands ──────────────────────────────────────────────────────
 
 @registry.register("/compact", "Toggle compact display mode")
-def cmd_compact(tui: LumiTUI, arg: str): tui._compact = not tui._compact; tui._sys(f"Compact {'on' if tui._compact else 'off'}")
+def cmd_compact(tui: LumiTUI, arg: str):
+    tui._sync_runtime_config(compact_mode=not tui._compact)
+    tui._sys(f"Compact {'on' if tui._compact else 'off'}")
 
-@registry.register("/tokens", "Show estimated token usage")
+
+@registry.register("/brief", "Toggle brief output mode")
+def cmd_brief(tui: LumiTUI, arg: str):
+    raw = arg.strip().lower()
+    if raw in {"", "toggle"}:
+        tui._sync_runtime_config(brief_mode=not tui.brief_mode)
+    else:
+        try:
+            tui._sync_runtime_config(**parse_runtime_config_update("brief", raw))
+        except ValueError as exc:
+            tui._err(str(exc))
+            return
+    tui._notify(f"Brief {'on' if tui.brief_mode else 'off'}")
+
+
+@registry.register("/fast", "Toggle fast mode")
+def cmd_fast(tui: LumiTUI, arg: str):
+    raw = arg.strip().lower()
+    if raw in {"", "toggle"}:
+        tui._sync_runtime_config(fast_mode=not tui.fast_mode)
+    else:
+        try:
+            tui._sync_runtime_config(**parse_runtime_config_update("fast", raw))
+        except ValueError as exc:
+            tui._err(str(exc))
+            return
+    tui._notify(f"Fast {'on' if tui.fast_mode else 'off'}")
+
+
+@registry.register("/config", "Show or update runtime settings")
+def cmd_config(tui: LumiTUI, arg: str):
+    raw = arg.strip()
+    if not raw or raw.lower() in {"show", "list"}:
+        tui._sys(
+            render_runtime_config_report(
+                base_dir=Path.cwd(),
+                provider=get_provider(),
+                model=tui.current_model,
+                compact_mode=tui._compact,
+                multiline=tui.multiline,
+                reasoning_effort=tui.reasoning_effort,
+                brief_mode=tui.brief_mode,
+                fast_mode=tui.fast_mode,
+            )
+        )
+        return
+    parts = raw.split(maxsplit=2)
+    if len(parts) == 1 and parts[0].lower() == "reset":
+        config = reset_runtime_config(Path.cwd())
+        tui._apply_runtime_config(config)
+        tui.workspace_profile = inspect_workspace(Path.cwd())
+        tui._notify("Config reset")
+        return
+    if len(parts) == 3 and parts[0].lower() == "set":
+        try:
+            updates = parse_runtime_config_update(parts[1], parts[2])
+            tui._sync_runtime_config(**updates)
+        except ValueError as exc:
+            tui._err(str(exc))
+            return
+        tui._notify(f"Config updated: {parts[1]}")
+        return
+    tui._err("Usage: /config [show|reset|set <key> <value>]")
+
+
+@registry.register("/add-dir", "Add or remove extra workspace context directories")
+def cmd_add_dir(tui: LumiTUI, arg: str):
+    raw = arg.strip()
+    if not raw or raw.lower() == "list":
+        config = load_runtime_config(Path.cwd())
+        lines = ["Context directories:"]
+        if config.extra_dirs:
+            lines.extend(f"  - {item}" for item in config.extra_dirs)
+        else:
+            lines.append("  - none")
+        tui._sys("\n".join(lines))
+        return
+    parts = raw.split(maxsplit=1)
+    action = parts[0].lower()
+    target = parts[1].strip() if len(parts) > 1 else ""
+    try:
+        if action in {"remove", "rm", "del"}:
+            if not target:
+                tui._err("Usage: /add-dir remove <path>")
+                return
+            config, removed = remove_context_directory(target, base_dir=Path.cwd())
+            tui._apply_runtime_config(config)
+            tui.workspace_profile = inspect_workspace(Path.cwd())
+            tui._notify(f"Removed context dir: {removed}")
+            return
+        config, added = add_context_directory(raw, base_dir=Path.cwd())
+    except ValueError as exc:
+        tui._err(str(exc))
+        return
+    tui._apply_runtime_config(config)
+    tui.workspace_profile = inspect_workspace(Path.cwd())
+    tui._notify(f"Added context dir: {added}")
+
+
+@registry.register("/files", "Show workspace files, hotspots, and context directories")
+def cmd_files(tui: LumiTUI, arg: str):
+    tui.set_pane(
+        title="files",
+        subtitle=WORKBENCH_TITLE,
+        lines=render_files_report(Path.cwd(), task=arg.strip()).splitlines(),
+        footer="Esc close  ·  /add-dir <path>  ·  /files <task>",
+        close_on_escape=True,
+    )
+    tui.redraw()
+
+
+@registry.register("/tasks", "Show active and recent workbench tasks")
+def cmd_tasks(tui: LumiTUI, arg: str):
+    lines = render_tasks_report(Path.cwd()).splitlines()
+    if tui.workbench_jobs:
+        lines.extend(["", "Live jobs"])
+        for item in tui.workbench_jobs[:6]:
+            lines.append(f"  - [{item.get('status', '?')}] {item.get('mode', 'job')} · {item.get('objective', '')}")
+    tui.set_pane(
+        title="tasks",
+        subtitle=WORKBENCH_TITLE,
+        lines=lines,
+        footer="Esc close  ·  /jobs",
+        close_on_escape=True,
+    )
+    tui.redraw()
+
+
+@registry.register("/agents", "Show active objective and available agents")
+def cmd_agents(tui: LumiTUI, arg: str):
+    tui.set_pane(
+        title="agents",
+        subtitle=WORKBENCH_TITLE,
+        lines=render_agents_report(
+            base_dir=Path.cwd(),
+            active_objective=tui.agent_active_objective or "",
+            active_tasks=tui.agent_tasks,
+        ).splitlines(),
+        footer="Esc close  ·  /agent <objective>  ·  /council",
+        close_on_escape=True,
+    )
+    tui.redraw()
+
+
+@registry.register("/version", "Show Lumi version and runtime info")
+def cmd_version(tui: LumiTUI, arg: str):
+    tui._sys(render_version_report(version=WORKBENCH_VERSION, provider=get_provider(), model=tui.current_model))
+
+@registry.register("/tokens", "Show estimated token usage", aliases=["/cost"])
 def cmd_tokens(tui: LumiTUI, arg: str):
     tui._sys(_session_telemetry.render_usage_report())
 
@@ -2395,7 +2591,7 @@ def cmd_persona(tui: LumiTUI, arg: str):
 @registry.register("/sys", "Show current system prompt")
 def cmd_sys(tui: LumiTUI, arg: str): tui._sys(f"System prompt ({len(tui.system_prompt)} chars):\n{tui.system_prompt[:500]}...")
 
-@registry.register("/sessions", "List saved sessions")
+@registry.register("/sessions", "List saved sessions", aliases=["/session"])
 def cmd_sessions(tui: LumiTUI, arg: str):
     from src.config import SESSIONS_DIR
     sdir = SESSIONS_DIR
@@ -2694,7 +2890,7 @@ def cmd_timer(tui: LumiTUI, arg: str):
         time.sleep(secs); tui._notify(f"Timer done! ({arg.strip()})", 10)
     threading.Thread(target=_tick, daemon=True).start()
 
-@registry.register("/plugins", "List loaded plugins")
+@registry.register("/plugins", "List loaded plugins", aliases=["/plugin"])
 def cmd_plugins(tui: LumiTUI, arg: str):
     parts = arg.strip().split(None, 1)
     sub = parts[0].lower() if parts else ""
@@ -2741,6 +2937,11 @@ def cmd_plugins(tui: LumiTUI, arg: str):
         return
 
     tui._sys(render_plugin_inventory_report("summary"))
+
+
+@registry.register("/reload-plugins", "Reload trusted plugins")
+def cmd_reload_plugins(tui: LumiTUI, arg: str):
+    tui._execute_command("/plugins", "reload")
 
 
 @registry.register("/permissions", "Show plugin permissions: /permissions [all|plugins]")

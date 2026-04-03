@@ -7,6 +7,7 @@ import time
 
 from openai import OpenAI
 
+from src.chat.claude_compat import AnthropicCompatClient
 from src.chat.providers import get_provider_spec
 
 
@@ -33,6 +34,11 @@ def _vertex_base_url() -> str:
 
 def make_client(provider: str, *, ollama_base: str = "http://localhost:11434") -> OpenAI:
     _validate_provider(provider)
+    if provider == "claude":
+        return AnthropicCompatClient(
+            base_url=os.getenv("CLAUDE_BASE_URL", "https://api.anthropic.com/v1"),
+            api_key=os.getenv("CLAUDE_API_KEY", ""),
+        )
     if provider == "gemini":
         return OpenAI(
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/",

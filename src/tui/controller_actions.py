@@ -19,6 +19,8 @@ from src.chat.providers import (
     provider_supports,
 )
 from src.tui.state import Msg
+from src.utils.hooks import run_hooks
+from src.utils.skills import build_skill_prompt, find_skill, skill_hits
 
 
 def _normalized_prompt(text: str) -> str:
@@ -92,6 +94,86 @@ def _is_workspace_prompt(text: str) -> bool:
     return any(phrase in lowered for phrase in phrases)
 
 
+def _summarize_hook_failure(result) -> str:
+    detail = result.stderr or result.stdout or f"exit {result.returncode}"
+    return f"Hook {result.spec.name} failed: {detail}"
+
+
+def _emit_hook_results(tui: Any, results: list, *, notify: bool = False) -> bool:
+    blocked = False
+    for result in results:
+        if result.stdout:
+            tui._sys(f"hook {result.spec.name}: {result.stdout}")
+        if not result.ok:
+            message = _summarize_hook_failure(result)
+            if notify:
+                tui._notify(message)
+            else:
+                tui._err(message)
+            blocked = blocked or result.blocked
+    return blocked
+
+
+def _run_skill_turn(
+    tui: Any,
+    command_text: str,
+    prompt: str,
+    *,
+    build_messages_fn,
+    session_save_fn,
+    auto_extract_facts_fn,
+    log,
+) -> None:
+    before = run_hooks(
+        "before_message",
+        base_dir=Path.cwd(),
+        command=command_text.split()[0],
+        args=command_text.split(None, 1)[1] if " " in command_text else "",
+        user_input=command_text,
+    )
+    if _emit_hook_results(tui, before):
+        return
+    try:
+        tui.set_busy(True)
+        tui.scroll_offset = 0
+        tui.last_msg = command_text
+        tui.store.add(Msg("user", command_text))
+        tui.memory.add("user", prompt)
+        messages = build_messages_fn(tui.system_prompt, tui.memory.get())
+        tui.redraw()
+        raw_reply = tui._tui_stream(messages, tui.current_model)
+        tui.memory.replace_last("user", command_text)
+        tui.memory.add("assistant", raw_reply)
+        after = run_hooks(
+            "after_response",
+            base_dir=Path.cwd(),
+            command=command_text.split()[0],
+            args=command_text.split(None, 1)[1] if " " in command_text else "",
+            user_input=command_text,
+            response=raw_reply,
+        )
+        _emit_hook_results(tui, after, notify=True)
+        tui.prev_reply = tui.last_reply
+        tui.last_reply = raw_reply
+        tui.turns += 1
+        if tui.turns % 5 == 0:
+            tui._task_executor.submit(lambda: session_save_fn(tui.memory.get()))
+        if tui.turns % 8 == 0:
+            def _bg_remember() -> None:
+                try:
+                    if auto_extract_facts_fn(tui.client, tui.current_model, tui.memory.get()):
+                        with tui._state_lock:
+                            tui.system_prompt = tui._make_system_prompt()
+                except Exception:
+                    log.exception("Auto-remember failed")
+
+            tui._task_executor.submit(_bg_remember)
+    except Exception as exc:
+        tui._err(str(exc))
+    finally:
+        tui.set_busy(False)
+
+
 def _is_creator_prompt(text: str) -> bool:
     lowered = _normalized_prompt(text)
     direct_phrases = (
@@ -155,7 +237,7 @@ def _identity_reply(tui: Any, *, get_provider_fn) -> str:
         or "Sardor Sodiqov (SardorchikDev)"
     )
     return (
-        f"I’m Lumi. Forge is the current Lumi workbench release, built by {creator}. "
+        f"I’m Lumi. Mirror is the current Lumi workbench release, built by {creator}. "
         f"I can work across files, memory, search, repo-aware tasks, and structured coding workflows. "
         f"Right now I’m running on {provider_label} with {model}."
     )
@@ -179,7 +261,7 @@ def _capabilities_reply(tui: Any, *, get_provider_fn) -> str:
         abilities.append("use trusted plugins")
     abilities_text = ", ".join(abilities[:-1]) + f", and {abilities[-1]}" if len(abilities) > 1 else abilities[0]
     return (
-        f"I’m Lumi. In Forge, I can {abilities_text}. "
+        f"I’m Lumi. In Mirror, I can {abilities_text}. "
         f"My current runtime is {provider_label} with {model}."
     )
 
@@ -358,7 +440,15 @@ def browser_select(tui: Any) -> None:
 def update_slash(tui: Any, *, registry, suggest_paths_fn) -> None:
     if tui.buf.startswith("/"):
         query = tui.buf.lower()
-        tui.slash_hits = registry.get_hits(query)
+        dynamic_hits = skill_hits(
+            query,
+            base_dir=Path.cwd(),
+            exclude_commands=set(registry.commands),
+            limit=8,
+        )
+        hits = list(dynamic_hits)
+        hits.extend(item for item in registry.get_hits(query) if item[0] not in {hit[0] for hit in hits})
+        tui.slash_hits = hits[:12]
         tui.slash_sel = 0
         tui.slash_visible = bool(tui.slash_hits)
         tui.path_visible = False
@@ -470,6 +560,10 @@ def run_message(
 ) -> None:
     tui.set_busy(True)
     tui.scroll_offset = 0
+    before_hooks = run_hooks("before_message", base_dir=Path.cwd(), user_input=user_input)
+    if _emit_hook_results(tui, before_hooks):
+        tui.set_busy(False)
+        return
 
     self_reply = _self_knowledge_reply(tui, user_input, get_provider_fn=get_provider_fn)
     if self_reply:
@@ -481,6 +575,13 @@ def run_message(
         tui.prev_reply = tui.last_reply
         tui.last_reply = self_reply
         tui.turns += 1
+        after_hooks = run_hooks(
+            "after_response",
+            base_dir=Path.cwd(),
+            user_input=user_input,
+            response=self_reply,
+        )
+        _emit_hook_results(tui, after_hooks, notify=True)
         tui.set_busy(False)
         return
 
@@ -507,6 +608,8 @@ def run_message(
         augmented += "\n\n[Reply in detail — be thorough and comprehensive.]"
     elif tui.response_mode == "bullets":
         augmented += "\n\n[Reply using bullet points only.]"
+    elif getattr(tui, "brief_mode", False):
+        augmented += "\n\n[Reply concisely. Prefer dense, direct wording.]"
     tui.response_mode = None
 
     if should_search_fn(user_input):
@@ -573,6 +676,13 @@ def run_message(
     raw_reply = tui._tui_stream(messages, tui.current_model)
     tui.memory.replace_last("user", user_input)
     tui.memory.add("assistant", raw_reply)
+    after_hooks = run_hooks(
+        "after_response",
+        base_dir=Path.cwd(),
+        user_input=user_input,
+        response=raw_reply,
+    )
+    _emit_hook_results(tui, after_hooks, notify=True)
 
     tui.prev_reply = tui.last_reply
     tui.last_reply = raw_reply
@@ -894,6 +1004,7 @@ def _provider_preview_lines(provider: str, *, provider_names: dict[str, str], he
 
 def _provider_icon(provider: str) -> str:
     return {
+        "claude": "󰋦",
         "gemini": "󰋩",
         "groq": "󰓅",
         "huggingface": "󰏳",
@@ -1244,11 +1355,60 @@ def confirm_picker(
     tui.picker_query = ""
 
 
-def execute_command(tui: Any, cmd, arg, *, registry, plugin_dispatch_fn) -> None:
+def execute_command(
+    tui: Any,
+    cmd,
+    arg,
+    *,
+    registry,
+    plugin_dispatch_fn,
+    build_messages_fn,
+    session_save_fn,
+    auto_extract_facts_fn,
+    log,
+) -> None:
+    before_hooks = run_hooks(
+        "before_command",
+        base_dir=Path.cwd(),
+        command=cmd,
+        args=arg,
+        user_input=f"{cmd} {arg}".strip(),
+    )
+    if _emit_hook_results(tui, before_hooks):
+        return
     if cmd in registry.commands:
         if cmd not in {"/help"}:
             tui.recent_commands = tui.little_notes.record_command(cmd)[:3]
         registry.commands[cmd]["func"](tui, arg)
+        after_hooks = run_hooks(
+            "after_command",
+            base_dir=Path.cwd(),
+            command=cmd,
+            args=arg,
+            user_input=f"{cmd} {arg}".strip(),
+        )
+        _emit_hook_results(tui, after_hooks, notify=True)
+        return
+    skill = find_skill(cmd, base_dir=Path.cwd())
+    if skill is not None:
+        tui.recent_commands = tui.little_notes.record_command(cmd)[:3]
+        _run_skill_turn(
+            tui,
+            f"{cmd} {arg}".strip(),
+            build_skill_prompt(skill, arg, workspace=Path.cwd()),
+            build_messages_fn=build_messages_fn,
+            session_save_fn=session_save_fn,
+            auto_extract_facts_fn=auto_extract_facts_fn,
+            log=log,
+        )
+        after_hooks = run_hooks(
+            "after_command",
+            base_dir=Path.cwd(),
+            command=cmd,
+            args=arg,
+            user_input=f"{cmd} {arg}".strip(),
+        )
+        _emit_hook_results(tui, after_hooks, notify=True)
         return
     handled, plugin_result = plugin_dispatch_fn(
         cmd,
@@ -1263,6 +1423,14 @@ def execute_command(tui: Any, cmd, arg, *, registry, plugin_dispatch_fn) -> None
         tui.recent_commands = tui.little_notes.record_command(cmd)[:3]
         if plugin_result:
             tui._sys(plugin_result)
+        after_hooks = run_hooks(
+            "after_command",
+            base_dir=Path.cwd(),
+            command=cmd,
+            args=arg,
+            user_input=f"{cmd} {arg}".strip(),
+        )
+        _emit_hook_results(tui, after_hooks, notify=True)
         return
     tui._err(f"Unknown command: {cmd}  (try /help)")
 

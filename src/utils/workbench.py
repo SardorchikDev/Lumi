@@ -1,4 +1,4 @@
-"""Workbench orchestration for Lumi v0.5.0: Forge."""
+"""Workbench orchestration for Lumi v0.6.0: Mirror."""
 
 from __future__ import annotations
 
@@ -17,10 +17,12 @@ from typing import Any
 from src.config import CACHE_ROOT, DATA_DIR
 from src.memory.short_term import ShortTermMemory
 from src.utils.git_tools import run_git_subcommand
+from src.utils.project_context import find_project_context_file
 from src.utils.repo_profile import find_relevant_paths, inspect_workspace, render_workspace_overview
+from src.utils.runtime_config import display_context_path, iter_context_roots
 
-WORKBENCH_NAME = "Forge"
-WORKBENCH_VERSION = "0.5.0"
+WORKBENCH_NAME = "Mirror"
+WORKBENCH_VERSION = "0.6.0"
 WORKBENCH_TITLE = f"Lumi v{WORKBENCH_VERSION}: {WORKBENCH_NAME}"
 WORKBENCH_STATE_DIR = DATA_DIR / "workbench"
 WORKBENCH_CACHE_DIR = CACHE_ROOT / "workbench"
@@ -210,17 +212,25 @@ def _iter_repo_files(base_dir: Path) -> list[Path]:
     allowed = {".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".rs", ".md", ".toml", ".json", ".yaml", ".yml", ".sh"}
     ignored = {".git", "node_modules", "__pycache__", "venv", ".venv", ".pytest_cache", ".ruff_cache"}
     files: list[Path] = []
-    for path in base_dir.rglob("*"):
-        if any(part in ignored for part in path.parts):
-            continue
-        if not path.is_file() or path.suffix.lower() not in allowed:
-            continue
-        try:
-            if path.stat().st_size > 300_000:
+    seen: set[str] = set()
+    for root in iter_context_roots(base_dir):
+        for path in root.rglob("*"):
+            if any(part in ignored for part in path.parts):
                 continue
-        except OSError:
-            continue
-        files.append(path)
+            if not path.is_file() or path.suffix.lower() not in allowed:
+                continue
+            try:
+                if path.stat().st_size > 300_000:
+                    continue
+            except OSError:
+                continue
+            key = str(path.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(path)
+            if len(files) >= MAX_INDEX_FILES:
+                break
         if len(files) >= MAX_INDEX_FILES:
             break
     return sorted(files)
@@ -233,7 +243,7 @@ def _extract_symbols(path: Path, text: str, base_dir: Path) -> list[SymbolRecord
         for kind, pattern in patterns:
             match = re.search(pattern, line)
             if match:
-                symbols.append(SymbolRecord(match.group(1), kind, str(path.relative_to(base_dir)), lineno))
+                symbols.append(SymbolRecord(match.group(1), kind, display_context_path(path, base_dir=base_dir), lineno))
     return symbols
 
 
@@ -276,7 +286,8 @@ def _local_hotspots(files: list[Path], base_dir: Path, symbol_map: dict[str, int
 def _read_context_snippets(base_dir: Path, paths: tuple[str, ...]) -> list[str]:
     snippets: list[str] = []
     for rel in paths[:MAX_CONTEXT_SNIPPETS]:
-        path = base_dir / rel
+        candidate = Path(rel).expanduser()
+        path = candidate if candidate.is_absolute() else (base_dir / rel)
         text = _read_text(path, MAX_CONTEXT_CHARS)
         if not text:
             continue
@@ -313,8 +324,8 @@ def _find_suggested_tests(base_dir: Path, profile, relevant: tuple[str, ...], ch
 
 def _extract_conventions_from_context(base_dir: Path) -> tuple[str, ...]:
     conventions: list[str] = []
-    context_path = base_dir / "LUMI.md"
-    if not context_path.exists():
+    context_path = find_project_context_file(base_dir)
+    if context_path is None:
         return ()
     for raw in _read_text(context_path).splitlines():
         line = raw.strip().lstrip("-*").strip()
@@ -463,7 +474,7 @@ def build_repo_intelligence(base_dir: Path | None = None, *, task: str = "") -> 
     warnings: list[str] = list(profile.notes)
 
     for path in files:
-        rel = str(path.relative_to(root))
+        rel = display_context_path(path, base_dir=root)
         text = _read_text(path, limit=20_000)
         file_symbols = _extract_symbols(path, text, root)
         if file_symbols:

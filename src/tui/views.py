@@ -35,6 +35,11 @@ def _load_app_version() -> str:
 
 
 APP_VERSION = _load_app_version()
+TUI_LOGO_LINES: tuple[str, ...] = (
+    "▐▛███▜▌",
+    "▝▜█████▛▘",
+    "▘▘ ▝▝",
+)
 SHORTCUT_ROWS: tuple[tuple[str, str], ...] = (
     ("?", "show or hide shortcuts"),
     ("/", "open the command menu"),
@@ -294,7 +299,7 @@ class StarterView:
         left_col = min(52, max(38, total_w // 3 + 8))
         right_col = max(36, total_w - left_col - 5)
         top_fill = left_col + right_col + 5
-        title = f" Lumi v{APP_VERSION}: Forge "
+        title = f" Lumi v{APP_VERSION}: Mirror "
         title = title[: max(0, top_fill - 2)]
         left_rule = max(0, (top_fill - len(title)) // 2)
         right_rule = max(0, top_fill - len(title) - left_rule)
@@ -347,21 +352,12 @@ class StarterView:
         ]
         identity_line = self._fit_plain(f"{provider} · {model}", left_col)
         cwd_line = self._fit_plain(cwd_short, left_col)
-        centered_left = {
-            "Welcome back!",
-            "▐▛███▜▌",
-            "▝▜█████▛▘",
-            "▘▘ ▝▝",
-            identity_line,
-            cwd_line,
-        }
+        centered_left = {"Welcome back!", *TUI_LOGO_LINES, identity_line, cwd_line}
         logo = [
             "",
             "Welcome back!",
             "",
-            "▐▛███▜▌",
-            "▝▜█████▛▘",
-            "▘▘ ▝▝",
+            *TUI_LOGO_LINES,
             "",
             identity_line,
             cwd_line,
@@ -425,7 +421,7 @@ class StarterView:
             return left + prefix + self.style.fg_fn(tone) + text[:content_w] + self.style.reset
 
         return [
-            row("Lumi Forge", self.style.fg_hi, bold=True)
+            row("Lumi Mirror", self.style.fg_hi, bold=True)
             + self.style.fg_fn(self.style.muted)
             + f"  v{APP_VERSION}"
             + self.style.reset,
@@ -743,11 +739,18 @@ class OverlayView:
     @staticmethod
     def _command_icon(cmd: str) -> str:
         return {
+            "/add-dir": "󰉓",
+            "/agents": "󰚩",
+            "/brief": "󰘙",
+            "/config": "󰒓",
+            "/files": "󰈔",
+            "/fast": "󰓅",
             "/model": "󰒓",
             "/mode": "󰆍",
             "/browse": "󰉋",
             "/file": "󰈔",
             "/permissions": "󰌾",
+            "/hooks": "󰛢",
             "/review": "󰦨",
             "/image": "󰉏",
             "/voice": "󰍬",
@@ -755,9 +758,14 @@ class OverlayView:
             "/agent": "󰚩",
             "/git": "󰊢",
             "/memory": "󰍛",
+            "/skills": "󰠮",
             "/plugins": "󰏖",
+            "/plugin": "󰏖",
+            "/reload-plugins": "󰑐",
             "/offline": "󰛳",
             "/compact": "󰘕",
+            "/tasks": "󰄳",
+            "/version": "󰑔",
         }.get(cmd, "󰘳")
 
     def _popup_anchor(self, rows: int, chat_w: int, total_lines: int) -> tuple[int, int, int]:

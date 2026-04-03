@@ -9,13 +9,16 @@ from src.chat.providers import provider_health_snapshot, provider_label
 from src.config import CACHE_ROOT, LUMI_HOME, PLUGINS_DIR, STATE_ROOT, UI_STATE_DIR
 from src.memory.longterm import memory_stats
 from src.utils.git_tools import summarize_git_state
+from src.utils.hooks import load_hook_specs
 from src.utils.plugins import audit_plugins, describe_plugins
+from src.utils.project_context import preferred_project_context_name
 from src.utils.rebirth import rebirth_status_summary
 from src.utils.repo_profile import (
     build_onboarding_hints,
     inspect_workspace,
     render_workspace_overview,
 )
+from src.utils.skills import scan_skills
 from src.utils.workbench import workbench_status_summary
 
 
@@ -55,6 +58,8 @@ def build_status_report(
     longterm = memory_stats()
     git_summary = summarize_git_state(root)
     plugins = describe_plugins()
+    skills = scan_skills(root)
+    hooks = load_hook_specs(root)
     active_run = get_active_run(root)
     provider_health = provider_health_snapshot(has_ollama=provider == "ollama")
     vision_ready = _capability_ready_labels(provider_health, "vision")
@@ -82,6 +87,8 @@ def build_status_report(
     lines.append(f"  Rebirth:   {rebirth_status_summary()}")
     lines.append(f"  Workbench: {workbench_status_summary(root)}")
     lines.append(f"  Runtime:   state {STATE_ROOT} · cache {CACHE_ROOT}")
+    lines.append(f"  Skills:    {len(skills)} discovered")
+    lines.append(f"  Hooks:     {len(hooks)} active")
     if vision_ready or voice_ready:
         lines.append(
             "  Media:     "
@@ -144,6 +151,8 @@ def build_doctor_report(
     root = (base_dir or Path.cwd()).resolve()
     profile = inspect_workspace(root)
     plugins = describe_plugins()
+    skills = scan_skills(root)
+    hooks = load_hook_specs(root)
     plugin_audit = audit_plugins()
     env_file = _find_env_file(root)
     configured = configured_providers or []
@@ -158,6 +167,8 @@ def build_doctor_report(
         + (", ".join(provider_label(name) for name in configured) if configured else "none configured")
     )
     lines.append(f"  Plugins:   {len(plugins)} loaded")
+    lines.append(f"  Skills:    {len(skills)} discovered")
+    lines.append(f"  Hooks:     {len(hooks)} active")
     lines.append(f"  Runtime:   state {STATE_ROOT} · cache {CACHE_ROOT}")
     lines.append(f"  UI state:  {UI_STATE_DIR}")
     lines.append(f"  Plugins:   {PLUGINS_DIR}")
@@ -179,8 +190,8 @@ def build_doctor_report(
         warnings.append("No configured providers detected.")
         suggestions.append("Add a provider key and run /model to verify routing.")
     if not profile.project_context_path:
-        warnings.append("No LUMI.md project context file found.")
-        suggestions.append("Add LUMI.md so Lumi can pick up project conventions.")
+        warnings.append("No LUMI.md or CLAUDE.md project context file found.")
+        suggestions.append(f"Add {preferred_project_context_name(root)} so Lumi can pick up project conventions.")
     if not profile.verification_commands:
         warnings.append("No verification commands detected for this repo.")
         suggestions.append("Add tests or lint/typecheck config so agent runs can verify changes.")

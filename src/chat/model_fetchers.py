@@ -11,6 +11,7 @@ from src.chat.model_catalogs import (
     BYTEZ_CLOSED_PREFIXES,
     BYTEZ_MODELS,
     BYTEZ_SKIP_PATTERNS,
+    CLAUDE_MODELS,
     GEMINI_ALL_MODELS,
     GITHUB_MODELS,
     GROQ_DECOMMISSIONED,
@@ -45,6 +46,38 @@ def fetch_github_models() -> list[str]:
     except Exception:
         pass
     return GITHUB_MODELS[:]
+
+
+def fetch_claude_models() -> list[str]:
+    try:
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/models",
+            headers={
+                "x-api-key": os.getenv("CLAUDE_API_KEY", ""),
+                "anthropic-version": "2023-06-01",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=6) as response:
+            data = json.loads(response.read())
+        raw = data.get("data", []) if isinstance(data, dict) else []
+        live = []
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            model_id = item.get("id", "")
+            if not model_id:
+                continue
+            if any(skip in model_id.lower() for skip in ("embed", "tts", "audio", "image")):
+                continue
+            live.append(model_id)
+        if not live:
+            return CLAUDE_MODELS[:]
+        curated_set = set(CLAUDE_MODELS)
+        ordered = [model for model in CLAUDE_MODELS if model in set(live)]
+        extras = [model for model in live if model not in curated_set]
+        return ordered + extras if ordered or extras else CLAUDE_MODELS[:]
+    except Exception:
+        return CLAUDE_MODELS[:]
 
 
 def fetch_bytez_models() -> list[str]:

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Lumi AI installer
-# curl -fsSL https://raw.githubusercontent.com/SardorchikDev/lumi/main/install.sh | bash
+# curl -fsSL https://raw.githubusercontent.com/SardorchikDev/Lumi/main/install.sh | bash
 
 set -euo pipefail
 
@@ -21,7 +21,7 @@ step() { echo -e "\n  ${B}${PU}$1${R}"; }
 
 usage() {
     cat <<'EOF'
-Lumi installer
+Lumi Mirror installer
 
 Usage:
   ./install.sh [options]
@@ -62,13 +62,13 @@ banner() {
     echo -e "${PU}    ██║      ██║   ██║  ██║╚██╔╝██║  ██║${R}"
     echo -e "${PU}    ███████╗ ╚██████╔╝  ██║ ╚═╝ ██║  ██║${R}"
     echo -e "${PU}    ╚══════╝  ╚═════╝   ╚═╝     ╚═╝  ╚═╝${R}"
-    echo -e "${DG}           A I   I N S T A L L E R${R}"
+    echo -e "${DG}          M I R R O R   I N S T A L L E R${R}"
     echo ""
 }
 
 INSTALL_DIR="$HOME/Lumi"
 BIN_DIR="$HOME/.local/bin"
-REPO="https://github.com/SardorchikDev/lumi"
+REPO="https://github.com/SardorchikDev/Lumi"
 BRANCH="main"
 PROFILE_FILE=""
 DEV_MODE=false
@@ -244,6 +244,7 @@ if [ ! -f "$INSTALL_DIR/.env" ]; then
 
 # Hosted model providers
 GEMINI_API_KEY=        # https://aistudio.google.com/apikey
+CLAUDE_API_KEY=        # https://console.anthropic.com/settings/keys
 GROQ_API_KEY=          # https://console.groq.com
 OPENROUTER_API_KEY=    # https://openrouter.ai/keys
 MISTRAL_API_KEY=       # https://console.mistral.ai
@@ -290,11 +291,6 @@ export LUMI_HOME="$INSTALL_DIR"
 export LUMI_STATE_DIR="\${LUMI_STATE_DIR:-$STATE_DIR_DEFAULT}"
 export LUMI_CACHE_DIR="\${LUMI_CACHE_DIR:-$CACHE_DIR_DEFAULT}"
 
-if [ -x "$INSTALL_DIR/venv/bin/lumi" ]; then
-    exec "$INSTALL_DIR/venv/bin/lumi" "\$@"
-fi
-
-cd "$INSTALL_DIR"
 exec "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/main.py" "\$@"
 EOF
 
@@ -376,7 +372,7 @@ fi
 
 echo ""
 echo -e "  ${PU}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}"
-echo -e "  ${GN}${B}Lumi installed successfully!${R}"
+echo -e "  ${GN}${B}Lumi v0.6.0: Mirror installed successfully!${R}"
 echo -e "  ${PU}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}"
 echo ""
 echo -e "  ${CY}Install summary:${R}"

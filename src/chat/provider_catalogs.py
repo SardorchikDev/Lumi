@@ -7,6 +7,7 @@ from collections.abc import Callable
 from src.chat.model_catalogs import (
     AIRFORCE_MODELS,
     BYTEZ_MODELS,
+    CLAUDE_MODELS,
     CLOUDFLARE_MODELS,
     COHERE_MODELS,
     GEMINI_ALL_MODELS,
@@ -22,6 +23,7 @@ from src.chat.model_catalogs import (
 from src.chat.model_fetchers import (
     fetch_airforce_models,
     fetch_bytez_models,
+    fetch_claude_models,
     fetch_gemini_models,
     fetch_github_models,
     fetch_groq_models,
@@ -42,6 +44,7 @@ STATIC_PROVIDER_CATALOGS: dict[str, ProviderCatalog] = {
 
 def provider_catalog(provider: str) -> ProviderCatalog | None:
     dynamic_catalogs: dict[str, ProviderCatalog] = {
+        "claude": ProviderCatalog(tuple(CLAUDE_MODELS), fetch_claude_models),
         "gemini": ProviderCatalog(tuple(GEMINI_ALL_MODELS), fetch_gemini_models),
         "groq": ProviderCatalog(tuple(GROQ_FALLBACK), fetch_groq_models),
         "openrouter": ProviderCatalog(tuple(OPENROUTER_MODELS), fetch_openrouter_models),

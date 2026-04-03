@@ -118,6 +118,16 @@ GITHUB_MODELS = [
     "Mistral-large",
 ]
 
+CLAUDE_MODELS = [
+    "claude-sonnet-4-5",
+    "claude-opus-4",
+    "claude-haiku-3-5",
+    "claude-sonnet-3-7",
+    "claude-3-7-sonnet-latest",
+    "claude-3-5-sonnet-latest",
+    "claude-3-5-haiku-latest",
+]
+
 COHERE_MODELS = [
     "command-a-03-2025",
     "command-a-reasoning-08-2025",

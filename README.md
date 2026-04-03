@@ -1,29 +1,30 @@
-<h1 align="center">Lumi v0.5.0: Forge</h1>
+<h1 align="center">Lumi</h1>
 
 <p align="center">
   Terminal AI coding workbench for repo intelligence, background execution, project memory, and prompt-first terminal workflows.
 </p>
 
 <p align="center">
-  <strong>Release name:</strong> <code>Forge</code>
+  <strong>Current release:</strong> <code>v0.6.0: Mirror</code><br>
+  <strong>Rewrite target:</strong> <code>v1.0.0: Native</code>
 </p>
 
 <p align="center">
   <a href="#install">Install</a> ·
   <a href="#quick-start">Quick Start</a> ·
-  <a href="#whats-new-in-050">What's New</a> ·
-  <a href="#forge-workflow">Forge Workflow</a> ·
+  <a href="#whats-new-in-060">What's New</a> ·
+  <a href="#mirror-workflow">Mirror Workflow</a> ·
   <a href="#commands">Commands</a> ·
   <a href="#development">Development</a>
 </p>
 
 <p align="center">
   <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/SardorchikDev/Lumi/ci.yml?branch=main&style=flat-square&label=ci">
-  <img alt="Version" src="https://img.shields.io/badge/version-0.5.0-0f1720?style=flat-square">
+  <img alt="Release" src="https://img.shields.io/badge/release-0.6.0%20Mirror-16324f?style=flat-square">
   <img alt="License" src="https://img.shields.io/github/license/SardorchikDev/Lumi?style=flat-square">
   <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-10322c?style=flat-square">
 </p>
-<p align="center"><em>Forge brings multi-step, repo-aware execution to a prompt-first CLI.</em></p>
+<p align="center"><em>Mirror is the current Claude-parity push. Native is the later Bun/TypeScript/Ink rewrite.</em></p>
 
 > Lumi is for real repo work: inspect, plan, edit, test, review, and ship from the terminal without collapsing into a generic chat loop.
 
@@ -31,7 +32,7 @@
   <table>
     <tr>
     <td width="50%" valign="top">
-        <strong>Forge Workbench</strong><br>
+        <strong>Mirror Workbench</strong><br>
         <code>/build</code>, <code>/learn</code>, <code>/review</code>, <code>/fixci</code>, and <code>/ship</code> map requests to risk-aware repo runs.
       </td>
       <td width="50%" valign="top">
@@ -40,9 +41,9 @@
       </td>
     </tr>
     <tr>
-    <td width="50%" valign="top">
+      <td width="50%" valign="top">
         <strong>Project Memory</strong><br>
-        `LUMI.md` conventions, decisions, recent runs, and artifact history persist across sessions.
+        `LUMI.md` or `CLAUDE.md` conventions, decisions, recent runs, and artifact history persist across sessions.
       </td>
       <td width="50%" valign="top">
         <strong>Prompt-First TUI</strong><br>
@@ -60,19 +61,18 @@
 - has both a full TUI and classic CLI mode
 - includes release gates for benchmark and capability audits
 
-## What's New In 0.5.0
+## What's New In 0.6.0
 
 ### Added
 
-- Forge Workbench with `/build`, `/learn`, `/review workspace`, `/fixci`, `/ship`, and `/jobs`
-- background Workbench execution with live job summaries in the TUI
-- repo intelligence cache with symbols, imports, hotspots, impact files, suggested tests, and context digests
-- project memory for conventions, decisions, recent runs, and artifact history
-- generated commit titles, PR descriptions, release notes, changelog entries, test summaries, and architecture summaries
+- Mirror branding across the TUI, CLI, docs, and installer
+- Claude parity audit command via `scripts/claude_parity_audit.py`
+- `LUMI_MIRROR_SPEC.md` and refreshed `ROADMAP.md` for the 17-workstream Mirror program
+- current release metadata aligned around `v0.6.0: Mirror`
 
 ### Improved
 
-- Forge branding across the TUI and docs
+- Mirror Workbench identity across runtime status and startup surfaces
 - Gemini-first startup with `gemini-2.5-flash` as the preferred default when configured
 - `/model` only showing configured providers
 - `/effort` support with real runtime profiles
@@ -80,8 +80,35 @@
 
 ### Operational
 
-- benchmark gate and rebirth audit remain part of the release path
+- benchmark gate, rebirth audit, and Claude parity audit remain part of the release path
 - CI is aligned with current GitHub Actions runtime expectations
+
+## Mirror Program
+
+`v0.6.0: Mirror` is the Python-side Claude-parity release.
+
+It is focused on:
+
+- wildcard permission rules
+- an explicit tool registry
+- real git workflow commands
+- deeper task and agent orchestration
+- LSP-backed repo intelligence
+- IDE bridge groundwork
+- fuller config, privacy, usage, and install surfaces
+- denser TUI operator controls
+- measurable parity auditing
+
+Planning artifacts:
+
+- [LUMI_MIRROR_SPEC.md](/home/sardorchikdev/Lumi/LUMI_MIRROR_SPEC.md)
+- [ROADMAP.md](/home/sardorchikdev/Lumi/ROADMAP.md)
+
+Audit command:
+
+```bash
+./venv/bin/python scripts/claude_parity_audit.py
+```
 
 ## Install
 
@@ -120,6 +147,7 @@ Minimal `.env` example:
 
 ```env
 GEMINI_API_KEY=
+CLAUDE_API_KEY=
 GROQ_API_KEY=
 HF_TOKEN=
 OPENROUTER_API_KEY=
@@ -134,6 +162,8 @@ Good first commands:
 /onboard
 /doctor
 /model
+/skills
+/hooks
 /learn architecture
 /build --plan add tests for parser errors
 /jobs
@@ -174,9 +204,9 @@ LUMI_STATE_DIR=~/.codex/memories/lumi/state
 LUMI_CACHE_DIR=~/.codex/memories/lumi/cache
 ```
 
-## Forge Workflow
+## Mirror Workflow
 
-Forge adds a real coding loop.
+Mirror adds a real coding loop.
 
 1. `/learn` maps the repo, conventions, hotspots, impact files, and suggested tests.
 2. `/build` turns a request into a risk-aware implementation run.
@@ -205,7 +235,7 @@ Use when you want Lumi to understand the repo before making changes.
 
 ### `/review`
 
-Existing file review stays in place. Empty-target or `workspace` review routes through Forge.
+Existing file review stays in place. Empty-target or `workspace` review routes through Mirror.
 
 ```text
 /review workspace
@@ -259,7 +289,7 @@ Lumi keeps lightweight workspace memory under the Workbench state directory.
 
 It stores:
 
-- conventions from `LUMI.md`
+- conventions from `LUMI.md` or `CLAUDE.md`
 - decisions made during runs
 - recent Workbench executions
 - generated artifact history
@@ -301,12 +331,14 @@ Useful keys:
 | `/status` | Show session and workspace status |
 | `/doctor` | Check provider and workspace health |
 | `/onboard` | Show first-run and workspace guidance |
+| `/skills [inspect <name>]` | List markdown skills or inspect one |
+| `/hooks [inspect]` | Show lifecycle hook configuration |
 | `/rebirth [status\|on\|off]` | Show the rebirth capability profile and toggles |
 | `/benchmark [list]` | Show built-in benchmark scenarios |
 | `/clear` | Clear the current conversation |
 | `/exit` | Exit Lumi |
 
-### Forge Workbench
+### Mirror Workbench
 
 | Command | Description |
 |---|---|
@@ -340,12 +372,57 @@ Useful keys:
 | `/memory` | View stored memories |
 | `/note add\|list\|search` | Manage notes |
 | `/todo add\|list\|done\|rm` | Manage todos |
+| `/lumi.md show\|create` | Show or create Lumi project context |
+| `/claude.md show\|create` | Show or create Claude Code-compatible project context |
 | `/plugins` | Show plugin status |
 | `/permissions [all\|plugins]` | Show plugin permission info |
 
+## Skills and Hooks
+
+### Skills
+
+Lumi can turn markdown files into slash commands.
+
+- workspace roots: `./skills/` and `./.lumi/skills/`
+- global root: `~/Lumi/skills/`
+- runtime command: `/skills`
+- dynamic execution: each discovered skill command appears in the `/` menu and runs through Lumi's normal model, memory, and repo context stack
+
+Example skill:
+
+```markdown
+---
+name: Release Helper
+command: /release
+description: Draft release notes for the current branch.
+---
+Draft release notes for {{args}} in {{workspace}}.
+```
+
+### Hooks
+
+Hooks provide deterministic shell automation around Lumi lifecycle events.
+
+- config roots: `./hooks.json`, `./.lumi/hooks.json`, and `~/Lumi/configs/hooks.json`
+- supported events: `before_message`, `after_response`, `before_command`, `after_command`
+- runtime command: `/hooks`
+
+Example hook config:
+
+```json
+{
+  "before_message": [
+    {
+      "name": "lint-guard",
+      "command": "printf '%s' \"$LUMI_HOOK_INPUT\""
+    }
+  ]
+}
+```
+
 ## Rebirth Profile
 
-`Forge` is the release name. `Rebirth` is still a runtime profile.
+`Mirror` is the release name. `Rebirth` is still a runtime profile.
 
 Use `/rebirth` to view the capability matrix and readiness score for core coding-agent workflows.
 
@@ -366,7 +443,7 @@ The CI workflow prints gate diagnostics directly into logs when a failure happen
 
 ## Project Context
 
-If a repo contains `LUMI.md`, Lumi loads it automatically as project context and Workbench memory seed data.
+If a repo contains `LUMI.md` or `CLAUDE.md`, Lumi loads it automatically as project context and Workbench memory seed data.
 
 Example:
 
@@ -405,7 +482,7 @@ python scripts/rebirth_audit.py --strict
 
 See also:
 
-- [LUMI_FORGE_SPEC.md](LUMI_FORGE_SPEC.md)
+- [LUMI_MIRROR_SPEC.md](LUMI_MIRROR_SPEC.md)
 - [LUMI_REBIRTH_SPEC.md](LUMI_REBIRTH_SPEC.md)
 
 ## License

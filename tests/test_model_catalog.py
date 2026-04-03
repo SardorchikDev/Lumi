@@ -6,8 +6,8 @@ import json
 import time
 
 from src.chat import hf_client
-from src.chat.model_catalogs import AIRFORCE_MODELS, GEMINI_ALL_MODELS, GEMINI_CONFIRMED
-from src.chat.model_fetchers import fetch_airforce_models, fetch_gemini_models
+from src.chat.model_catalogs import AIRFORCE_MODELS, CLAUDE_MODELS, GEMINI_ALL_MODELS, GEMINI_CONFIRMED
+from src.chat.model_fetchers import fetch_airforce_models, fetch_claude_models, fetch_gemini_models
 
 
 def test_discover_models_uses_fresh_disk_cache(tmp_path, monkeypatch):
@@ -36,6 +36,16 @@ def test_get_models_falls_back_to_curated_list_when_discovery_is_empty(monkeypat
 
     models = hf_client.get_models("vercel")
     assert models == hf_client.VERCEL_MODELS
+
+
+def test_get_models_falls_back_to_claude_curated_list_when_discovery_is_empty(monkeypatch):
+    monkeypatch.setattr(hf_client, "_models_cache", {})
+    monkeypatch.setattr(hf_client, "_models_cache_fetched_at", {})
+    monkeypatch.setattr(hf_client, "_read_catalog_cache", lambda provider: None)
+    monkeypatch.setattr(hf_client, "_fetch_claude_models", list)
+
+    models = hf_client.get_models("claude")
+    assert models == hf_client.CLAUDE_MODELS
 
 
 def test_get_models_falls_back_to_airforce_curated_list_when_discovery_is_empty(monkeypatch):
@@ -160,6 +170,15 @@ def test_make_client_supports_airforce_and_pollinations(monkeypatch):
     assert str(pollinations.base_url) == "https://gen.pollinations.ai/v1/"
 
 
+def test_make_client_supports_claude(monkeypatch):
+    monkeypatch.setenv("CLAUDE_API_KEY", "claude-key")
+
+    client = hf_client._make_client("claude")
+
+    assert client.base_url == "https://api.anthropic.com/v1"
+    assert hasattr(client.chat, "completions")
+
+
 def test_set_provider_does_not_eagerly_build_vertex_client(monkeypatch):
     monkeypatch.setattr(hf_client, "_active_provider", None)
     monkeypatch.setattr(hf_client, "_active_client", "stale")
@@ -223,6 +242,16 @@ def test_fetch_airforce_models_filters_removed_model(monkeypatch):
 
     models = fetch_airforce_models()
     assert models == ["gpt-4o-mini", "gpt-4o"]
+
+
+def test_fetch_claude_models_falls_back_to_curated_list(monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise OSError("network down")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+
+    models = fetch_claude_models()
+    assert models == CLAUDE_MODELS
 
 
 def test_fetch_gemini_models_keeps_curated_models_even_when_api_returns_small_subset(monkeypatch):

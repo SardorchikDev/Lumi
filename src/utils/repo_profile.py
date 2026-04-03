@@ -10,6 +10,9 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.utils.project_context import find_project_context_file
+from src.utils.runtime_config import display_context_path, iter_context_roots, load_runtime_config
+
 
 @dataclass(frozen=True)
 class WorkspaceProfile:
@@ -27,6 +30,7 @@ class WorkspaceProfile:
     notes: tuple[str, ...] = ()
     git_branch: str | None = None
     changed_files: tuple[str, ...] = ()
+    context_directories: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -216,14 +220,15 @@ def detect_languages(base_dir: Path) -> tuple[str, ...]:
         ".php": "php",
     }
     counts: dict[str, int] = {}
-    for path in base_dir.rglob("*"):
-        if not path.is_file():
-            continue
-        if any(part in {".git", "node_modules", "__pycache__", "venv", ".venv"} for part in path.parts):
-            continue
-        language = mapping.get(path.suffix.lower())
-        if language:
-            counts[language] = counts.get(language, 0) + 1
+    for root in iter_context_roots(base_dir):
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            if any(part in {".git", "node_modules", "__pycache__", "venv", ".venv"} for part in path.parts):
+                continue
+            language = mapping.get(path.suffix.lower())
+            if language:
+                counts[language] = counts.get(language, 0) + 1
     ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     return tuple(language for language, _ in ranked[:5])
 
@@ -248,6 +253,9 @@ def detect_test_directories(base_dir: Path) -> tuple[str, ...]:
 def detect_config_files(base_dir: Path) -> tuple[str, ...]:
     candidates = (
         "LUMI.md",
+        "lumi.md",
+        "CLAUDE.md",
+        "claude.md",
         ".env.example",
         ".env",
         "pyproject.toml",
@@ -305,6 +313,11 @@ def detect_changed_files(base_dir: Path, limit: int = 12) -> tuple[str, ...]:
     return tuple(changed[:limit])
 
 
+def detect_context_directories(base_dir: Path) -> tuple[str, ...]:
+    config = load_runtime_config(base_dir)
+    return tuple(config.extra_dirs)
+
+
 def _task_keywords(task: str) -> list[str]:
     words = re.findall(r"[A-Za-z_][A-Za-z0-9_./-]{2,}", task.lower())
     stop = {"the", "and", "for", "with", "this", "that", "into", "from", "then", "file", "folder"}
@@ -316,27 +329,32 @@ def find_relevant_paths(base_dir: Path, task: str, limit: int = 8) -> tuple[str,
     if not keywords:
         return ()
     matches: list[tuple[int, str]] = []
-    for path in base_dir.rglob("*"):
-        if not path.is_file():
-            continue
-        if any(part in {".git", "__pycache__", "node_modules", "venv", ".venv"} for part in path.parts):
-            continue
-        relative = str(path.relative_to(base_dir))
-        lower_name = relative.lower()
-        score = 0
-        for word in keywords:
-            if word in lower_name:
-                score += 3
-        if score == 0:
-            try:
-                text = path.read_text(encoding="utf-8", errors="replace")[:4000].lower()
-            except OSError:
+    seen: set[str] = set()
+    for root in iter_context_roots(base_dir):
+        for path in root.rglob("*"):
+            if not path.is_file():
                 continue
+            if any(part in {".git", "__pycache__", "node_modules", "venv", ".venv"} for part in path.parts):
+                continue
+            relative = display_context_path(path, base_dir=base_dir)
+            if relative in seen:
+                continue
+            seen.add(relative)
+            lower_name = relative.lower()
+            score = 0
             for word in keywords:
-                if word in text:
-                    score += 1
-        if score:
-            matches.append((score, relative))
+                if word in lower_name:
+                    score += 3
+            if score == 0:
+                try:
+                    text = path.read_text(encoding="utf-8", errors="replace")[:4000].lower()
+                except OSError:
+                    continue
+                for word in keywords:
+                    if word in text:
+                        score += 1
+            if score:
+                matches.append((score, relative))
     matches.sort(key=lambda item: (-item[0], item[1]))
     return tuple(relative for _, relative in matches[:limit])
 
@@ -358,7 +376,8 @@ def inspect_workspace(base_dir: Path | None = None) -> WorkspaceProfile:
     notes: list[str] = []
     if not verification:
         notes.append("no verification commands detected")
-    project_context_path = "LUMI.md" if (root / "LUMI.md").exists() else None
+    context_path = find_project_context_file(root)
+    project_context_path = context_path.name if context_path is not None else None
     readme_path = next(
         (name for name in ("README.md", "readme.md", "README.rst") if (root / name).exists()),
         None,
@@ -378,6 +397,7 @@ def inspect_workspace(base_dir: Path | None = None) -> WorkspaceProfile:
         notes=tuple(notes),
         git_branch=detect_git_branch(root),
         changed_files=detect_changed_files(root),
+        context_directories=detect_context_directories(root),
     )
 
 
@@ -399,6 +419,8 @@ def inspect_task_workspace(
 
 def render_workspace_overview(profile: WorkspaceProfile) -> str:
     lines = [f"Workspace: {profile.base_dir}"]
+    if profile.context_directories:
+        lines.append(f"  Context:   {', '.join(profile.context_directories[:4])}")
     if profile.languages:
         lines.append(f"  Languages: {', '.join(profile.languages)}")
     if profile.frameworks:
@@ -423,7 +445,7 @@ def render_workspace_overview(profile: WorkspaceProfile) -> str:
 def build_onboarding_hints(profile: WorkspaceProfile) -> list[str]:
     hints: list[str] = []
     if not profile.project_context_path:
-        hints.append("Create LUMI.md so Lumi can learn project conventions.")
+        hints.append("Create LUMI.md or CLAUDE.md so Lumi can learn project conventions.")
     if not profile.readme_path:
         hints.append("Add a README.md with setup and verification commands for better repo grounding.")
     if not profile.verification_commands:
@@ -461,6 +483,9 @@ def build_planning_context(
 
     key_files = [
         "LUMI.md",
+        "lumi.md",
+        "CLAUDE.md",
+        "claude.md",
         "README.md",
         "pyproject.toml",
         "requirements.txt",
