@@ -17,6 +17,8 @@ from typing import Any
 from src.agents.edit_engine import build_file_write_preview
 from src.chat.optimizer import estimate_message_tokens, estimate_tokens
 from src.tools.base import ToolContext, ToolRegistry, run_async
+from src.tools.search import search as run_web_search
+from src.utils.live_lookup import lookup_time, lookup_weather
 from src.utils.permissions import PermissionError, PermissionRequest, PermissionRequired
 
 XML_TOOL_CALL_RE = re.compile(r"<tool_call\s+name=\"(?P<name>[a-zA-Z0-9_:-]+)\">\s*(?P<body>.*?)\s*</tool_call>", re.DOTALL)
@@ -286,6 +288,8 @@ def _parse_xml_response(response: Any) -> tuple[str, list[dict[str, Any]], int]:
 def _permission_value(tool_name: str, input_data: dict[str, Any]) -> str:
     if tool_name in {"read_file", "write_file", "edit_file", "multi_edit", "list_dir", "git_diff"}:
         return str(input_data.get("path") or input_data.get("pattern") or "*")
+    if tool_name in {"web_search", "weather_lookup", "time_lookup"}:
+        return str(input_data.get("query") or input_data.get("location") or "*")
     if tool_name == "run_shell":
         return str(input_data.get("command") or "")
     if tool_name == "git_commit":
@@ -295,6 +299,10 @@ def _permission_value(tool_name: str, input_data: dict[str, Any]) -> str:
 
 
 def _display_permission_value(tool_name: str, input_data: dict[str, Any]) -> str:
+    if tool_name == "web_search":
+        return str(input_data.get("query") or "web search")
+    if tool_name in {"weather_lookup", "time_lookup"}:
+        return str(input_data.get("location") or tool_name)
     if tool_name == "run_shell":
         return f"$ {str(input_data.get('command') or '')}".strip()
     if tool_name == "git_commit":
@@ -560,9 +568,70 @@ async def _tool_todo_read(input_data: dict[str, Any], context: ToolContext) -> s
     return "\n".join(f"- [{item.get('status', 'pending')}] {item.get('task', '')} ({item.get('priority', 'medium')})" for item in todos) or "(no todos)"
 
 
+async def _tool_web_search(input_data: dict[str, Any], context: ToolContext) -> str:
+    _ = context
+    query = str(input_data.get("query") or "").strip()
+    if not query:
+        raise ValueError("web_search requires query")
+    fetch_top = bool(input_data.get("fetch_top", True))
+    return await asyncio.to_thread(run_web_search, query, fetch_top)
+
+
+async def _tool_weather_lookup(input_data: dict[str, Any], context: ToolContext) -> str:
+    _ = context
+    location = str(input_data.get("location") or "").strip()
+    detailed = bool(input_data.get("detailed", True))
+    return await asyncio.to_thread(lookup_weather, location, detailed=detailed)
+
+
+async def _tool_time_lookup(input_data: dict[str, Any], context: ToolContext) -> str:
+    _ = context
+    location = str(input_data.get("location") or "").strip()
+    return await asyncio.to_thread(lookup_time, location)
+
+
 
 def build_default_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
+    registry.register(
+        "web_search",
+        "Search the web for current information and fetch the top result.",
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string"},
+                "fetch_top": {"type": "boolean"},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        _tool_web_search,
+    )
+    registry.register(
+        "weather_lookup",
+        "Get current weather for a location.",
+        {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string"},
+                "detailed": {"type": "boolean"},
+            },
+            "additionalProperties": False,
+        },
+        _tool_weather_lookup,
+    )
+    registry.register(
+        "time_lookup",
+        "Get the current local time for a city, country, or timezone.",
+        {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string"},
+            },
+            "additionalProperties": False,
+        },
+        _tool_time_lookup,
+    )
     registry.register(
         "read_file",
         "Read a file with optional line range.",
@@ -739,15 +808,21 @@ def build_default_tool_registry() -> ToolRegistry:
 
 
 
-def build_agentic_system_hint() -> str:
-    return (
-        "Behavior rules:\n"
-        "- Prefer edit_file over write_file for existing files.\n"
-        "- Always read a file before editing it.\n"
-        "- Run tests after making code changes if a test runner is detected.\n"
-        "- Ask for clarification if a task is ambiguous rather than guessing.\n"
-        "- Keep responses concise and action-oriented."
-    )
+def build_agentic_system_hint(*, live_lookup: bool = True) -> str:
+    lines = [
+        "Behavior rules:",
+        "- Prefer edit_file over write_file for existing files.",
+        "- Always read a file before editing it.",
+        "- Run tests after making code changes if a test runner is detected.",
+        "- Ask for clarification if a task is ambiguous rather than guessing.",
+        "- Keep responses concise and action-oriented.",
+    ]
+    if live_lookup:
+        lines.insert(
+            4,
+            "- For current events, latest facts, time, timezone, date, or weather, use live lookup tools before answering.",
+        )
+    return "\n".join(lines)
 
 
 

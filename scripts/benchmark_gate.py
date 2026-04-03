@@ -17,7 +17,9 @@ if str(ROOT) not in sys.path:
 from src.agents.benchmark import (  # noqa: E402
     BenchmarkRunOutcome,
     BenchmarkScenario,
+    benchmark_payload,
     load_benchmark_scenarios,
+    render_benchmark_markdown,
     render_benchmark_results,
     render_benchmark_summary,
     run_benchmark_suite,
@@ -94,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Workspace template path (defaults to an empty temporary workspace)",
     )
     parser.add_argument("--output-json", default="", help="Optional path to write machine-readable results")
+    parser.add_argument("--output-markdown", default="", help="Optional path to write a Markdown benchmark report")
     args = parser.parse_args(argv)
 
     config_path = Path(args.config).resolve()
@@ -151,36 +154,17 @@ def main(argv: list[str] | None = None) -> int:
                     f"scenario {name} score {scenario_result.score:.2f} < {threshold_float:.2f}"
                 )
 
-    payload = {
-        "summary": {
-            "total": summary.total,
-            "passed": summary.passed,
-            "pass_rate": pass_rate,
-            "average_score": summary.average_score,
-            "verification_pass_rate": summary.verification_pass_rate,
-            "recovery_rate": summary.recovery_rate,
-            "rollback_rate": summary.rollback_rate,
-        },
-        "results": [
-            {
-                "scenario": result.scenario,
-                "success": result.success,
-                "score": result.score,
-                "verification_ok": result.verification_ok,
-                "recovery_used": result.recovery_used,
-                "rollback_used": result.rollback_used,
-                "changed_files": list(result.changed_files),
-                "verification_details": list(result.verification_details),
-            }
-            for result in results
-        ],
-        "threshold_failures": failures,
-    }
+    payload = benchmark_payload(summary, results)
+    payload["threshold_failures"] = failures
 
     if args.output_json:
         output_path = Path(args.output_json).resolve()
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    if args.output_markdown:
+        output_path = Path(args.output_markdown).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(render_benchmark_markdown(summary, results), encoding="utf-8")
 
     if failures:
         print("\nBenchmark gate failed:")

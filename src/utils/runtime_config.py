@@ -24,6 +24,7 @@ class RuntimeConfig:
     workspace: str
     updated_at: str
     extra_dirs: tuple[str, ...] = ()
+    live_lookup: bool = True
     fast_mode: bool = False
     brief_mode: bool = False
     compact_mode: bool = False
@@ -109,6 +110,7 @@ def load_runtime_config(base_dir: Path | None = None) -> RuntimeConfig:
         workspace=str(payload.get("workspace") or str(root)),
         updated_at=str(payload.get("updated_at") or _now()),
         extra_dirs=_normalize_extra_dirs(root, payload.get("extra_dirs", [])),
+        live_lookup=bool(payload.get("live_lookup", True)),
         fast_mode=bool(payload.get("fast_mode", False)),
         brief_mode=bool(payload.get("brief_mode", False)),
         compact_mode=bool(payload.get("compact_mode", False)),
@@ -125,6 +127,7 @@ def save_runtime_config(config: RuntimeConfig, base_dir: Path | None = None) -> 
         workspace=str(root),
         updated_at=_now(),
         extra_dirs=_normalize_extra_dirs(root, config.extra_dirs),
+        live_lookup=bool(config.live_lookup),
         fast_mode=bool(config.fast_mode),
         brief_mode=bool(config.brief_mode),
         compact_mode=bool(config.compact_mode),
@@ -215,6 +218,8 @@ def parse_runtime_config_update(key: str, value: str) -> dict[str, Any]:
     raw = value.strip()
     if normalized_key in {"effort", "reasoning_effort"}:
         return {"reasoning_effort": normalize_reasoning_effort(raw)}
+    if normalized_key in {"live", "lookup", "live_lookup", "search", "web_search"}:
+        return {"live_lookup": _coerce_bool(raw)}
     if normalized_key in {"compact", "compact_mode"}:
         return {"compact_mode": _coerce_bool(raw)}
     if normalized_key == "multiline":
@@ -234,7 +239,7 @@ def parse_runtime_config_update(key: str, value: str) -> dict[str, Any]:
             raise ValueError(f"privacy mode must be one of: {', '.join(sorted(_ALLOWED_PRIVACY_MODES))}")
         return {"privacy_mode": lowered}
     raise ValueError(
-        "Unknown setting. Use one of: effort, compact, multiline, brief, fast, permissions, privacy"
+        "Unknown setting. Use one of: effort, live_lookup, compact, multiline, brief, fast, permissions, privacy"
     )
 
 
@@ -261,6 +266,7 @@ def render_runtime_config_report(
     if provider or model:
         lines.append(f"  Model:     {provider or 'unknown'} · {model or 'unknown'}")
     lines.append(f"  Effort:    {effective_effort}")
+    lines.append(f"  Live:      {'on' if config.live_lookup else 'off'}")
     lines.append(f"  Compact:   {'on' if effective_compact else 'off'}")
     lines.append(f"  Multiline: {'on' if effective_multiline else 'off'}")
     lines.append(f"  Brief:     {'on' if effective_brief else 'off'}")

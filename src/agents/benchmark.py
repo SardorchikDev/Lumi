@@ -393,6 +393,68 @@ def render_benchmark_results(results: list[BenchmarkResult]) -> str:
     return "\n".join(lines)
 
 
+def benchmark_payload(summary: BenchmarkSuiteSummary, results: list[BenchmarkResult]) -> dict[str, object]:
+    pass_rate = (summary.passed / summary.total) if summary.total else 0.0
+    return {
+        "summary": {
+            "total": summary.total,
+            "passed": summary.passed,
+            "pass_rate": pass_rate,
+            "average_score": summary.average_score,
+            "verification_pass_rate": summary.verification_pass_rate,
+            "recovery_rate": summary.recovery_rate,
+            "rollback_rate": summary.rollback_rate,
+        },
+        "results": [
+            {
+                "scenario": result.scenario,
+                "success": result.success,
+                "score": result.score,
+                "summary": result.summary,
+                "verification_ok": result.verification_ok,
+                "recovery_used": result.recovery_used,
+                "rollback_used": result.rollback_used,
+                "changed_files": list(result.changed_files),
+                "verification_details": list(result.verification_details),
+            }
+            for result in results
+        ],
+    }
+
+
+def render_benchmark_markdown(
+    summary: BenchmarkSuiteSummary,
+    results: list[BenchmarkResult],
+    *,
+    title: str = "Lumi Benchmark Report",
+) -> str:
+    lines = [f"# {title}", "", "## Summary", ""]
+    lines.append("| Metric | Value |")
+    lines.append("| --- | --- |")
+    lines.append(f"| Total | {summary.total} |")
+    lines.append(f"| Passed | {summary.passed} |")
+    lines.append(f"| Average score | {summary.average_score:.2f} |")
+    lines.append(f"| Verification pass rate | {summary.verification_pass_rate:.0%} |")
+    lines.append(f"| Recovery rate | {summary.recovery_rate:.0%} |")
+    lines.append(f"| Rollback rate | {summary.rollback_rate:.0%} |")
+    lines.append("")
+    lines.append("## Scenarios")
+    lines.append("")
+    lines.append("| Scenario | Result | Score | Verify | Recovery | Changed files |")
+    lines.append("| --- | --- | ---: | --- | --- | ---: |")
+    for result in results:
+        lines.append(
+            "| "
+            + f"{result.scenario} | "
+            + f"{'pass' if result.success else 'fail'} | "
+            + f"{result.score:.2f} | "
+            + f"{'yes' if result.verification_ok else 'no'} | "
+            + f"{'yes' if result.recovery_used else 'no'} | "
+            + f"{len(result.changed_files)} |"
+        )
+    return "\n".join(lines)
+
+
 def run_benchmark_suite(
     scenarios: list[BenchmarkScenario],
     *,

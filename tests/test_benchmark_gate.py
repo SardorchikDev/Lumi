@@ -34,6 +34,32 @@ def test_benchmark_gate_passes_with_default_thresholds(tmp_path):
     assert "Benchmark gate passed." in result.stdout
 
 
+def test_benchmark_gate_can_write_markdown_report(tmp_path):
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "benchmark_gate.json"
+    output_md = tmp_path / "report.md"
+    script = Path(__file__).resolve().parents[1] / "scripts" / "benchmark_gate.py"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--config",
+            str(config_path),
+            "--workspace",
+            str(tmp_path),
+            "--output-markdown",
+            str(output_md),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert output_md.exists()
+    assert "# Lumi Benchmark Report" in output_md.read_text(encoding="utf-8")
+
+
 def test_benchmark_gate_fails_when_thresholds_are_too_strict(tmp_path):
     config_path = tmp_path / "strict_gate.json"
     config_path.write_text(

@@ -12,6 +12,7 @@ from src.tui.review_cards import file_review_card
 from src.tui.state import Msg
 from src.utils.git_tools import GIT_USAGE, run_git_subcommand
 from src.utils.hooks import render_hook_report
+from src.utils.ide import open_in_vscode, render_vscode_status
 from src.utils.skills import render_skill_detail, render_skill_inventory_report
 from src.utils.system_reports import build_onboarding_report
 from src.utils.workbench import WORKBENCH_TITLE, prepare_workbench_plan, render_workbench_plan, render_workbench_report
@@ -23,7 +24,7 @@ HELP_CATEGORIES = {
     "🔀 Git": ["/git", "/pr", "/changelog", "/standup", "/readme"],
     "🌐 Web": ["/search", "/web", "/image", "/imagine", "/data"],
     "🧠 Memory": ["/remember", "/memory", "/forget", "/save", "/load", "/resume", "/sessions", "/session", "/export", "/tokens", "/cost", "/context", "/skills"],
-    "🛠️ Tools": ["/shell", "/scaffold", "/lint", "/fmt", "/todo", "/note", "/draft", "/weather", "/timer", "/copy", "/paste", "/diff", "/pdf", "/jobs", "/hooks"],
+    "🛠️ Tools": ["/shell", "/scaffold", "/lint", "/fmt", "/todo", "/note", "/draft", "/weather", "/timer", "/copy", "/paste", "/diff", "/pdf", "/jobs", "/hooks", "/ide"],
     "⚙️ System": ["/status", "/doctor", "/onboard", "/rebirth", "/benchmark", "/permissions", "/config", "/model", "/brief", "/fast", "/effort", "/council", "/agents", "/tasks", "/mode", "/offline", "/godmode", "/pane", "/apply", "/index", "/rag", "/voice", "/persona", "/sys", "/plugins", "/plugin", "/reload-plugins", "/logs", "/compact", "/version", "/help", "/exit"],
 }
 
@@ -136,6 +137,18 @@ def register_command_groups(
             tui._err("Usage: /benchmark [list]")
             return
         tui._sys(render_benchmark_catalog(load_benchmark_scenarios()))
+
+    @registry.register("/ide", "Open the current workspace or a file in VS Code")
+    def cmd_ide(tui, arg: str):
+        sub = arg.strip()
+        if sub.lower() == "status":
+            tui._sys(render_vscode_status(base_dir=Path.cwd()))
+            return
+        ok, message = open_in_vscode(sub, base_dir=Path.cwd())
+        if ok:
+            tui._notify(message)
+        else:
+            tui._err(message)
 
     @registry.register("/comment", "Add inline comments to file")
     def cmd_comment(tui, arg: str):
@@ -498,8 +511,9 @@ def register_command_groups(
                 if not content:
                     return
                 msg = (
-                    "Thorough code review. Findings first. Cover: correctness, edge cases, performance, security, "
-                    f"readability, maintainability. Be specific with line numbers and variable names:\n\n{content}"
+                    "Code review. Findings first, ordered by severity. Focus on correctness, regressions, edge cases, "
+                    "security, performance, and missing tests. Use file paths, line numbers, function names, and variables "
+                    f"when possible. If there are no findings, say so explicitly and mention residual risk:\n\n{content}"
                 )
                 _run_memory_prompt(tui, msg, f"◆ {tui.name}  [review]", build_messages=build_messages, user_label="/review")
             finally:

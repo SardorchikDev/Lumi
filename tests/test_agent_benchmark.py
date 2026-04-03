@@ -5,8 +5,10 @@ from __future__ import annotations
 from src.agents.benchmark import (
     BenchmarkRunOutcome,
     BenchmarkScenario,
+    benchmark_payload,
     load_benchmark_scenarios,
     render_benchmark_catalog,
+    render_benchmark_markdown,
     render_benchmark_results,
     render_benchmark_summary,
     run_benchmark_suite,
@@ -142,7 +144,11 @@ def test_render_benchmark_outputs_are_scanable(tmp_path):
     )
     summary = render_benchmark_summary(summarize_benchmark_results(results))
     details = render_benchmark_results(results)
+    payload = benchmark_payload(summarize_benchmark_results(results), results)
+    markdown = render_benchmark_markdown(summarize_benchmark_results(results), results)
     assert "create-folder" in catalog
     assert "Total: 1" in catalog
     assert "Benchmark summary" in summary
     assert "changes=" in details
+    assert payload["summary"]["total"] == 1
+    assert "| Scenario | Result | Score |" in markdown

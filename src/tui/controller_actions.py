@@ -134,6 +134,79 @@ def _is_self_knowledge_followup_prompt(text: str) -> bool:
     return any(phrase in lowered for phrase in phrases)
 
 
+def _is_continuation_prompt(text: str) -> bool:
+    lowered = _normalized_prompt(text)
+    if not lowered:
+        return False
+    exact_matches = {
+        "continue",
+        "continue it",
+        "continue that",
+        "continue this",
+        "continue please",
+        "go on",
+        "keep going",
+        "finish it",
+        "finish that",
+        "finish this",
+        "finish please",
+        "complete it",
+        "complete that",
+        "complete this",
+        "resume",
+        "resume that",
+        "resume this",
+        "you did not finish it",
+        "you didnt finish it",
+        "you did not finish",
+        "you didnt finish",
+    }
+    if lowered in exact_matches:
+        return True
+    phrases = (
+        "finish what you started",
+        "complete what you started",
+        "pick up where you left off",
+        "continue where you left off",
+        "continue from where you stopped",
+        "continue your last answer",
+        "finish your last answer",
+        "complete the answer",
+        "finish the answer",
+        "you did not finish the answer",
+        "you didnt finish the answer",
+        "you cut off",
+        "that got cut off",
+        "that was cut off",
+    )
+    return any(phrase in lowered for phrase in phrases)
+
+
+def _build_continuation_prompt(
+    user_input: str,
+    *,
+    previous_request: str = "",
+    previous_reply: str = "",
+) -> str:
+    tail = (previous_reply or "").strip()
+    if len(tail) > 1200:
+        tail = tail[-1200:]
+    parts = [
+        "[Continuation request]",
+        "Continue your immediately previous answer from exactly where it stopped.",
+        "Do not restart from the beginning.",
+        "Do not apologize, explain the cutoff, or repeat sections you already completed.",
+        "Finish the incomplete answer directly.",
+        "If the previous answer ended inside a table, list, sentence, or code block, continue in that same structure.",
+    ]
+    if previous_request.strip():
+        parts.append(f"Original request:\n{previous_request.strip()}")
+    if tail:
+        parts.append(f"Previous answer ending:\n{tail}")
+    parts.append(f"User follow-up:\n{user_input.strip()}")
+    return "\n\n".join(parts)
+
+
 def _creator_profile(tui: Any) -> tuple[str, str, str]:
     creator = (
         getattr(tui, "persona_override", {}).get("creator")
@@ -554,7 +627,7 @@ def browser_select(tui: Any) -> None:
         return
 
     tui.browser_visible = False
-    tui._notify(f"󰈔 Loaded: {item_name}")
+    tui._notify(f"Loaded: {item_name}")
     tui._task_executor.submit(tui._execute_command, "/file", item_path)
 
 
@@ -723,12 +796,21 @@ def run_message(
 
     emotion = detect_emotion_fn(user_input)
     augmented = user_input
-    if emotion:
+    continuation_turn = _is_continuation_prompt(user_input) and bool(getattr(tui, "last_reply", ""))
+    if continuation_turn:
+        augmented = _build_continuation_prompt(
+            user_input,
+            previous_request=str(getattr(tui, "last_msg", "") or ""),
+            previous_reply=str(getattr(tui, "last_reply", "") or ""),
+        )
+    elif emotion:
         hint = emotion_hint_fn(emotion)
         if hint:
             augmented = hint + augmented
 
-    if tui.response_mode == "short":
+    if continuation_turn:
+        pass
+    elif tui.response_mode == "short":
         augmented += "\n\n[Reply concisely — 2-3 sentences max.]"
     elif tui.response_mode == "detailed":
         augmented += "\n\n[Reply in detail — be thorough and comprehensive.]"
@@ -738,7 +820,7 @@ def run_message(
         augmented += "\n\n[Reply concisely. Prefer dense, direct wording.]"
     tui.response_mode = None
 
-    if should_search_fn(user_input):
+    if (not continuation_turn) and should_search_fn(user_input):
         tui._sys("◆  searching the web…")
         tui.redraw()
         try:
@@ -1141,55 +1223,55 @@ def _provider_preview_lines(provider: str, *, provider_names: dict[str, str], he
 
 def _provider_icon(provider: str) -> str:
     return {
-        "claude": "󰋦",
-        "gemini": "󰋩",
-        "groq": "󰓅",
-        "huggingface": "󰏳",
-        "openrouter": "󰒍",
-        "mistral": "󰼩",
-        "cohere": "󰛩",
-        "github": "󰊤",
-        "bytez": "󰾆",
-        "cloudflare": "󰞒",
-        "vercel": "󰣓",
-        "vertex": "󰊄",
-        "ollama": "󰳆",
-        "council": "󰞋",
-    }.get(provider, "󰇥")
+        "claude": "CL",
+        "gemini": "GM",
+        "groq": "GQ",
+        "huggingface": "HF",
+        "openrouter": "OR",
+        "mistral": "MS",
+        "cohere": "CH",
+        "github": "GH",
+        "bytez": "BZ",
+        "cloudflare": "CF",
+        "vercel": "VC",
+        "vertex": "VX",
+        "ollama": "OL",
+        "council": "CO",
+    }.get(provider, "AI")
 
 
 def _model_icon(provider: str, model: str) -> str:
     tags = set(_model_tags(provider, model))
     if "image" in tags:
-        return "󰉏"
+        return "img"
     if "vision" in tags:
-        return "󰈈"
+        return "see"
     if "audio" in tags:
-        return "󰕾"
+        return "aud"
     if "best coding" in tags or "coding" in tags:
-        return "󰅩"
+        return "code"
     if "reasoning" in tags:
-        return "󰧑"
+        return "think"
     if "fast" in tags:
-        return "󰓅"
-    return "󰇥"
+        return "fast"
+    return "mdl"
 
 
 def _group_icon(group: str) -> str:
     return {
-        "Current": "󰄬",
-        "Favorites": "󰓎",
-        "Recent": "󰋚",
-        "Recommended": "󰚩",
-        "Image": "󰉏",
-        "Vision": "󰈈",
-        "Audio": "󰕾",
-        "Fast": "󰓅",
-        "Coding": "󰅩",
-        "Reasoning": "󰧑",
-        "Long context": "󰆼",
-        "All models": "󰇥",
-    }.get(group, "󰇥")
+        "Current": "cur",
+        "Favorites": "fav",
+        "Recent": "new",
+        "Recommended": "best",
+        "Image": "img",
+        "Vision": "see",
+        "Audio": "aud",
+        "Fast": "fast",
+        "Coding": "code",
+        "Reasoning": "think",
+        "Long context": "long",
+        "All models": "all",
+    }.get(group, "all")
 
 
 def _model_preview_lines(provider: str, model: str, *, provider_names: dict[str, str], recommended: bool, current: bool) -> list[str]:
@@ -1259,7 +1341,7 @@ def _rebuild_picker(
         return
 
     provider = tui.picker_provider_key or get_provider_fn()
-    items = [{"kind": "action", "value": "__back__", "label": "back", "meta": "", "icon": "󰁍"}]
+    items = [{"kind": "action", "value": "__back__", "label": "back", "meta": "", "icon": "<-"}]
     try:
         all_models = get_models_fn(provider)
         models, allowlist = filter_models_by_allowlist(provider, all_models)

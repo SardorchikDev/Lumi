@@ -101,13 +101,15 @@ from src.utils.git_tools import GIT_USAGE, run_git_subcommand
 from src.utils.history import save as history_save
 from src.utils.history import setup as history_setup
 from src.utils.hooks import render_hook_report, run_hooks
+from src.utils.ide import open_in_vscode, render_vscode_status
 from src.utils.intelligence import (
     classify_request,
     emotion_hint,
     is_complex_coding_task,
+    needs_live_lookup,
     needs_plan_first,
-    should_search,
 )
+from src.utils.live_lookup import run_live_lookup
 from src.utils.markdown import render as md_render
 from src.utils.notes import note_add, note_list, note_remove, note_search, notes_to_markdown
 from src.utils.plugins import (
@@ -148,15 +150,19 @@ from src.utils.web import fetch_url
 from src.utils.workbench import (
     WORKBENCH_NAME,
     WORKBENCH_VERSION,
+    create_workbench_job,
     execute_workbench,
     prepare_workbench_plan,
+    render_workbench_jobs_report,
     render_workbench_plan,
     render_workbench_result,
+    save_workbench_job,
+    update_workbench_job,
 )
 
 ensure_dirs()
 
-LUMI_VERSION = "2.1.0"
+LUMI_VERSION = "0.7.5"
 
 # ── System prompt builder ─────────────────────────────────────────────────────
 
@@ -304,6 +310,7 @@ def print_help() -> None:
     cmd("/hooks [inspect]",          "show lifecycle hooks and automation wiring")
     cmd("/rebirth [status|on|off]", "rebirth profile capability report and toggle")
     cmd("/benchmark [list]",         "show built-in benchmark scenarios")
+    cmd("/ide [path|status]",        "open workspace/file in VS Code or show CLI status")
     cmd("/redo [hint]",              "regenerate last answer, optionally with a hint")
     cmd("/help",                     "show this")
     cmd("/clear",                    "reset conversation")
@@ -318,6 +325,7 @@ def print_help() -> None:
     cmd("/learn [topic]",            "workbench: repo intelligence, architecture, and impact map")
     cmd("/fixci [goal]",             "workbench: repair CI, lint, type, or test failures")
     cmd("/ship [goal]",              "workbench: verify and generate release artifacts")
+    cmd("/jobs",                     "show durable workbench job history")
     cmd("/edit <path>",              "edit a file — AI rewrites, shows diff, confirms")
     cmd("/file <path>",              "load file as context")
     cmd("/files [task]",             "list changed files, hotspots, and active context")
@@ -553,6 +561,82 @@ def read_multiline() -> str:
             break
         lines.append(line)
     return "\n".join(lines)
+
+
+def _normalized_followup_prompt(text: str) -> str:
+    lowered = (text or "").strip().lower()
+    lowered = re.sub(r"[^a-z0-9\s]", " ", lowered)
+    return " ".join(lowered.split())
+
+
+def _is_continuation_followup(text: str) -> bool:
+    lowered = _normalized_followup_prompt(text)
+    if not lowered:
+        return False
+    exact_matches = {
+        "continue",
+        "continue it",
+        "continue that",
+        "continue this",
+        "go on",
+        "keep going",
+        "finish it",
+        "finish that",
+        "finish this",
+        "complete it",
+        "complete that",
+        "complete this",
+        "resume",
+        "resume that",
+        "resume this",
+        "you did not finish it",
+        "you didnt finish it",
+        "you did not finish",
+        "you didnt finish",
+    }
+    if lowered in exact_matches:
+        return True
+    phrases = (
+        "finish what you started",
+        "complete what you started",
+        "pick up where you left off",
+        "continue where you left off",
+        "continue from where you stopped",
+        "continue your last answer",
+        "finish your last answer",
+        "finish the answer",
+        "complete the answer",
+        "you did not finish the answer",
+        "you didnt finish the answer",
+        "that got cut off",
+        "that was cut off",
+    )
+    return any(phrase in lowered for phrase in phrases)
+
+
+def _build_continuation_followup(
+    user_input: str,
+    *,
+    previous_request: str = "",
+    previous_reply: str = "",
+) -> str:
+    tail = (previous_reply or "").strip()
+    if len(tail) > 1200:
+        tail = tail[-1200:]
+    parts = [
+        "[Continuation request]",
+        "Continue your immediately previous answer from exactly where it stopped.",
+        "Do not restart from the beginning.",
+        "Do not apologize, explain the cutoff, or repeat sections you already completed.",
+        "Finish the incomplete answer directly.",
+        "If the previous answer ended inside a table, list, sentence, or code block, continue in that same structure.",
+    ]
+    if previous_request.strip():
+        parts.append(f"Original request:\n{previous_request.strip()}")
+    if tail:
+        parts.append(f"Previous answer ending:\n{tail}")
+    parts.append(f"User follow-up:\n{user_input.strip()}")
+    return "\n\n".join(parts)
 
 
 # ── Stream + render ───────────────────────────────────────────────────────────
@@ -879,14 +963,13 @@ def cmd_review(
         return None
 
     memory.add("user", (
-        f"Please do a thorough code review of {subject}:\n\n{content}\n\n"
-        "Cover:\n"
-        "- Bugs or potential bugs\n"
-        "- Performance issues\n"
-        "- Security concerns\n"
-        "- Code style and readability\n"
-        "- What's done well\n"
-        "- Concrete suggestions for improvement with code examples"
+        f"Do a code review of {subject}.\n\n{content}\n\n"
+        "Requirements:\n"
+        "- Findings first, ordered by severity\n"
+        "- Focus on bugs, regressions, risky behavior, missing tests, performance issues, and security issues\n"
+        "- Use file paths, function names, variables, and line references whenever possible\n"
+        "- Keep the summary brief and only after the findings\n"
+        "- If there are no findings, say so explicitly and mention residual risks or test gaps"
     ))
     messages = build_messages(system_prompt, memory.get())
     print_you(f"review: {target or 'last reply'}")
@@ -1511,15 +1594,42 @@ def cmd_workbench(
     print("\n  " + render_workbench_plan(plan).replace("\n", "\n  ") + "\n")
     if plan_only:
         return ""
+    job = create_workbench_job(mode, objective, base_dir=pathlib.Path.cwd(), dry_run=dry_run)
+    save_workbench_job(job)
+    save_workbench_job(update_workbench_job(job, status="running", stage="executing"))
     real_model = get_models(get_provider())[0] if model == "council" else model
-    result = execute_workbench(
-        mode,
-        objective,
-        client=client,
-        model=real_model,
-        memory=memory,
-        system_prompt=system_prompt,
-        dry_run=dry_run,
+    try:
+        result = execute_workbench(
+            mode,
+            objective,
+            client=client,
+            model=real_model,
+            memory=memory,
+            system_prompt=system_prompt,
+            dry_run=dry_run,
+        )
+    except Exception as exc:
+        save_workbench_job(
+            update_workbench_job(
+                job,
+                status="failed",
+                stage="failed",
+                summary=str(exc),
+                log_excerpt=str(exc),
+            )
+        )
+        raise
+    save_workbench_job(
+        update_workbench_job(
+            job,
+            status="done",
+            stage="artifacts ready",
+            risk=result.risk_level,
+            summary=result.summary,
+            touched_files=result.touched_files,
+            failed_checks=result.failed_checks,
+            log_excerpt=result.execution_log,
+        )
     )
     print("  " + render_workbench_result(result).replace("\n", "\n  ") + "\n")
     return result.summary
@@ -2097,6 +2207,7 @@ def main() -> None:  # noqa: C901
     brief_mode         = bool(runtime_config.brief_mode)
     fast_mode          = bool(runtime_config.fast_mode)
     _compact_mode      = bool(runtime_config.compact_mode)
+    live_lookup_enabled = bool(runtime_config.live_lookup)
     reasoning_effort   = "low" if fast_mode else normalize_reasoning_effort(runtime_config.reasoning_effort)
     _cli_reasoning_effort = reasoning_effort
     AUTOSAVE_EVERY     = 5
@@ -2276,6 +2387,7 @@ def main() -> None:  # noqa: C901
                 brief_mode = bool(runtime_config.brief_mode)
                 fast_mode = bool(runtime_config.fast_mode)
                 reasoning_effort = "low" if fast_mode else normalize_reasoning_effort(runtime_config.reasoning_effort)
+                live_lookup_enabled = bool(runtime_config.live_lookup)
                 _cli_reasoning_effort = reasoning_effort
                 info("Config reset.")
                 continue
@@ -2292,6 +2404,7 @@ def main() -> None:  # noqa: C901
                 brief_mode = bool(runtime_config.brief_mode)
                 fast_mode = bool(runtime_config.fast_mode)
                 reasoning_effort = "low" if fast_mode else normalize_reasoning_effort(runtime_config.reasoning_effort)
+                live_lookup_enabled = bool(runtime_config.live_lookup)
                 _cli_reasoning_effort = reasoning_effort
                 info(f"Config updated: {parts[1]}")
                 continue
@@ -2309,6 +2422,7 @@ def main() -> None:  # noqa: C901
                     warn(str(exc))
                     continue
             brief_mode = bool(runtime_config.brief_mode)
+            live_lookup_enabled = bool(runtime_config.live_lookup)
             info(f"Brief {'on' if brief_mode else 'off'}")
             continue
 
@@ -2324,6 +2438,7 @@ def main() -> None:  # noqa: C901
                     continue
             fast_mode = bool(runtime_config.fast_mode)
             reasoning_effort = "low" if fast_mode else normalize_reasoning_effort(runtime_config.reasoning_effort)
+            live_lookup_enabled = bool(runtime_config.live_lookup)
             _cli_reasoning_effort = reasoning_effort
             info(f"Fast {'on' if fast_mode else 'off'}")
             continue
@@ -2339,6 +2454,7 @@ def main() -> None:  # noqa: C901
                 runtime_config = update_runtime_config(pathlib.Path.cwd(), reasoning_effort=next_value, fast_mode=False)
                 reasoning_effort = normalize_reasoning_effort(runtime_config.reasoning_effort)
                 fast_mode = False
+                live_lookup_enabled = bool(runtime_config.live_lookup)
                 _cli_reasoning_effort = reasoning_effort
                 info(f"Effort {display_reasoning_effort(reasoning_effort)}")
                 continue
@@ -2353,6 +2469,7 @@ def main() -> None:  # noqa: C901
             runtime_config = update_runtime_config(pathlib.Path.cwd(), reasoning_effort=normalized, fast_mode=False)
             reasoning_effort = normalize_reasoning_effort(runtime_config.reasoning_effort)
             fast_mode = False
+            live_lookup_enabled = bool(runtime_config.live_lookup)
             _cli_reasoning_effort = reasoning_effort
             info(f"Effort {display_reasoning_effort(reasoning_effort)}")
             continue
@@ -2394,6 +2511,10 @@ def main() -> None:  # noqa: C901
 
         if cmd == "/tasks":
             print("\n  " + render_tasks_report(pathlib.Path.cwd()).replace("\n", "\n  ") + "\n")
+            continue
+
+        if cmd == "/jobs":
+            print("\n  " + render_workbench_jobs_report(pathlib.Path.cwd()).replace("\n", "\n  ") + "\n")
             continue
 
         if cmd == "/agents":
@@ -2950,6 +3071,18 @@ def main() -> None:  # noqa: C901
             print("\n  " + render_benchmark_catalog(load_benchmark_scenarios()).replace("\n", "\n  ") + "\n")
             continue
 
+        if cmd == "/ide":
+            sub = (user_input.split(maxsplit=1)[1:] or [""])[0].strip()
+            if sub.lower() == "status":
+                print("\n  " + render_vscode_status(base_dir=pathlib.Path.cwd()).replace("\n", "\n  ") + "\n")
+                continue
+            ok_open, message = open_in_vscode(sub, base_dir=pathlib.Path.cwd())
+            if ok_open:
+                ok(message)
+            else:
+                warn(message)
+            continue
+
         if cmd in {"/lumi.md", "/claude.md"}:
             sub = (user_input.split(maxsplit=1)[1:] or [""])[0].strip()
             context_path = find_project_context_file(pathlib.Path.cwd())
@@ -3294,25 +3427,32 @@ def main() -> None:  # noqa: C901
             if mcp_ctx:
                 system_prompt += "\n\n" + mcp_ctx
 
+        continuation_turn = _is_continuation_followup(user_input) and bool(last_reply)
         augmented = user_input
-        if "search" in classification.get("tools", []) and should_search(user_input):
-            sp = Spinner("searching")
+        if continuation_turn:
+            augmented = _build_continuation_followup(
+                user_input,
+                previous_request=last_msg or "",
+                previous_reply=last_reply or "",
+            )
+        elif live_lookup_enabled and needs_live_lookup(user_input):
+            sp = Spinner("looking up live info")
             sp.start()
             try:
-                results_text = search(user_input, fetch_top=True)
+                results_text = run_live_lookup(user_input)
                 if results_text and not results_text.startswith("[No"):
                     augmented = (
-                        f"{user_input}\n\n[Web search results]:\n{results_text}\n"
-                        "[Use these results to inform your answer.]"
+                        f"{user_input}\n\n[Live lookup results]:\n{results_text}\n"
+                        "[Use these live results to inform your answer.]"
                     )
-                    print(f"\n  {CY}◆{R}  {GR}Found web results{R}")
+                    print(f"\n  {CY}◆{R}  {GR}Fetched live lookup results{R}")
             except Exception:
                 pass
             finally:
                 sp.stop()
 
         hint = emotion_hint(classification.get("emotion", "neutral"))
-        if hint:
+        if hint and not continuation_turn:
             augmented = hint + augmented
 
         log_mood(classification.get("emotion"), turns)
@@ -3433,7 +3573,9 @@ def main() -> None:  # noqa: C901
         memory.add("user", augmented)
         messages = build_messages(system_prompt, memory.get())
 
-        if response_mode == "short":
+        if continuation_turn:
+            pass
+        elif response_mode == "short":
             messages[-1]["content"] += "\n\n[Reply concisely — 2-3 sentences max.]"
         elif response_mode == "detailed":
             messages[-1]["content"] += "\n\n[Reply in detail — be thorough and comprehensive.]"

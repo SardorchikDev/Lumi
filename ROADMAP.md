@@ -10,17 +10,17 @@ Lumi's next program is not cosmetic polish. It is a Claude-parity push followed 
 - `v0.6.0: Mirror`
   - historical parity-mapping release
   - closed the highest-value command, workflow, and subsystem gaps against Claude Code
-- `v0.7.0: Operator`
+- `v0.7.5: Beacon`
   - current release
   - execution-focused Python release
   - closes the highest-value command, workflow, and subsystem gaps against Claude Code
 - `v1.0.0: Native`
   - Bun/TypeScript/Ink rewrite
-  - reimplements Lumi on a runtime shape closer to Claude Code once Operator behavior is stable
+  - reimplements Lumi on a runtime shape closer to Claude Code once Beacon behavior is stable
 
-## Operator Goal
+## Beacon Goal
 
-Operator should make Lumi feel close enough to Claude Code in real use that the later rewrite is mainly architectural, not a product redesign.
+Beacon should make Lumi feel close enough to Claude Code in real use that the later rewrite is mainly architectural, not a product redesign.
 
 That means closing gaps in:
 
@@ -36,7 +36,7 @@ That means closing gaps in:
 - TUI control density
 - measurable parity auditing
 
-## The 17 Operator Workstreams
+## The 17 Beacon Workstreams
 
 1. Wildcard tool permission engine
 2. Explicit tool registry
@@ -56,7 +56,7 @@ That means closing gaps in:
 16. Missing command parity cleanup
 17. Parity and regression audit
 
-Full spec: [LUMI_MIRROR_SPEC.md](/home/sardorchikdev/Lumi/LUMI_MIRROR_SPEC.md)
+Full spec: [LUMI_BEACON_SPEC.md](/home/sardorchikdev/Lumi/LUMI_BEACON_SPEC.md)
 
 ## Execution Order
 
@@ -74,7 +74,7 @@ Full spec: [LUMI_MIRROR_SPEC.md](/home/sardorchikdev/Lumi/LUMI_MIRROR_SPEC.md)
 - sub-agent orchestration
 - LSP repo intelligence
 
-### Phase 3: Operator Surfaces
+### Phase 3: Beacon Surfaces
 
 - IDE bridge
 - settings layer

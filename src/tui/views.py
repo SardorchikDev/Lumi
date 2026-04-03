@@ -293,7 +293,7 @@ class StarterView:
         lines: list[str] = []
         for item in source:
             label = str(item).strip()
-            icon = "󰄬" if not label.startswith("/") else "󰘳"
+            icon = "-" if not label.startswith("/") else "/"
             lines.extend(self._wrap_plain(f"{icon} {label}", content_w)[:2])
         return lines[:4]
 
@@ -302,7 +302,7 @@ class StarterView:
         left_col = min(52, max(38, total_w // 3 + 8))
         right_col = max(36, total_w - left_col - 5)
         top_fill = left_col + right_col + 5
-        title = f" Lumi v{APP_VERSION}: Operator "
+        title = f" Lumi v{APP_VERSION}: Beacon "
         title = title[: max(0, top_fill - 2)]
         left_rule = max(0, (top_fill - len(title)) // 2)
         right_rule = max(0, top_fill - len(title) - left_rule)
@@ -424,7 +424,7 @@ class StarterView:
             return left + prefix + self.style.fg_fn(tone) + text[:content_w] + self.style.reset
 
         return [
-            row("Lumi Operator", self.style.fg_hi, bold=True)
+            row("Lumi Beacon", self.style.fg_hi, bold=True)
             + self.style.fg_fn(self.style.muted)
             + f"  v{APP_VERSION}"
             + self.style.reset,
@@ -448,7 +448,7 @@ class StarterView:
     def _minimal_header(self, width: int, provider: str, model: str, cwd_short: str) -> list[str]:
         logo_width = max(len(line) for line in TUI_LOGO_LINES)
         text_width = max(18, width - logo_width - 6)
-        title = self._fit_plain(f"Lumi Operator v{APP_VERSION}", text_width)
+        title = self._fit_plain(f"Lumi Beacon v{APP_VERSION}", text_width)
         runtime = self._fit_plain(f"{provider} · {model}", text_width)
         cwd = self._fit_plain(cwd_short, text_width)
         logo_offsets = (2, 1, 3)
@@ -460,13 +460,16 @@ class StarterView:
             (cwd, self.style.muted, False),
         )
         lines: list[str] = [""]
-        for icon, offset, (text, tone, bold) in zip(TUI_LOGO_LINES, logo_offsets, meta_rows, strict=False):
+        for idx, icon in enumerate(TUI_LOGO_LINES):
+            offset = logo_offsets[idx]
             line = " " * offset
             line += self.style.fg_fn(self.style.fg_dim) + icon.ljust(logo_cell_width - offset) + self.style.reset
-            line += "  "
-            if bold:
-                line += self.style.bold()
-            line += self.style.fg_fn(tone) + text + self.style.reset
+            if idx < len(meta_rows):
+                text, tone, bold = meta_rows[idx]
+                line += "  "
+                if bold:
+                    line += self.style.bold()
+                line += self.style.fg_fn(tone) + text + self.style.reset
             lines.append(line)
         return lines
 
@@ -752,38 +755,6 @@ class OverlayView:
         self.move = move
         self.strip_ansi = strip_ansi
 
-    @staticmethod
-    def _command_icon(cmd: str) -> str:
-        return {
-            "/add-dir": "󰉓",
-            "/agents": "󰚩",
-            "/brief": "󰘙",
-            "/config": "󰒓",
-            "/files": "󰈔",
-            "/fast": "󰓅",
-            "/model": "󰒓",
-            "/mode": "󰆍",
-            "/browse": "󰉋",
-            "/file": "󰈔",
-            "/permissions": "󰌾",
-            "/hooks": "󰛢",
-            "/review": "󰦨",
-            "/image": "󰉏",
-            "/voice": "󰍬",
-            "/search": "󰍉",
-            "/agent": "󰚩",
-            "/git": "󰊢",
-            "/memory": "󰍛",
-            "/skills": "󰠮",
-            "/plugins": "󰏖",
-            "/plugin": "󰏖",
-            "/reload-plugins": "󰑐",
-            "/offline": "󰛳",
-            "/compact": "󰘕",
-            "/tasks": "󰄳",
-            "/version": "󰑔",
-        }.get(cmd, "󰘳")
-
     def _popup_anchor(self, rows: int, chat_w: int, total_lines: int) -> tuple[int, int, int]:
         renderer = getattr(self.tui, "renderer", None)
         prompt_top = int(getattr(self.tui, "_last_prompt_top", 0) or 0)
@@ -856,7 +827,7 @@ class OverlayView:
         for idx, item in enumerate(disp_items):
             itype, iname, _ = item
             is_sel = idx == local_sel
-            icon = "󰜄" if iname == ".." else ("󰉋" if itype == "dir" else "󰈔")
+            icon = "[..]" if iname == ".." else ("[D]" if itype == "dir" else "[F]")
             pointer = "› " if is_sel else "  "
             content = f"{icon} {pointer}{iname[: pop_w - 10]}"
             out.append(self.popup_line(row, left, pop_w, self.strip_ansi(content), self.style.fg_hi if is_sel else self.style.fg_dim, is_sel))
@@ -887,10 +858,9 @@ class OverlayView:
         for idx, (cmd, desc, _category, _example) in enumerate(hits[start : start + count], start=start):
             is_sel = idx == sel
             cmd_cell = f"{cmd[:13]:<13}"
-            desc_width = max(0, pop_w - 24)
+            desc_width = max(0, pop_w - 20)
             marker = "›" if is_sel else " "
-            icon = self._command_icon(cmd)
-            content = f"{marker} {icon} {cmd_cell}  {desc[:desc_width]}"
+            content = f"{marker} {cmd_cell}  {desc[:desc_width]}"
             out.append(
                 self.popup_line(
                     row,
@@ -934,17 +904,15 @@ class OverlayView:
             title += (" ↑" if has_above else "") + (" ↓" if has_below else "")
         out = [self.popup_frame(top, left, pop_w, title)]
         row = top + 1
-        out.append(self.popup_line(row, left, pop_w, f"󰱼 {query}" if query else "󰱼 type to search commands or prompts", self.style.muted, False))
+        out.append(self.popup_line(row, left, pop_w, f"> {query}" if query else "> type to search commands or prompts", self.style.muted, False))
         row += 1
         for idx, item in enumerate(hits[start : start + count], start=start):
             is_sel = idx == sel
-            kind = str(item.get("kind") or "command")
             label = str(item.get("label") or "")
             desc = str(item.get("desc") or "")
-            icon = "󰘳" if kind == "command" else "󰆍"
             marker = "›" if is_sel else " "
-            desc_width = max(8, pop_w - 22)
-            content = f"{marker} {icon} {label[:16]:<16}  {desc[:desc_width]}"
+            desc_width = max(8, pop_w - 20)
+            content = f"{marker} {label[:16]:<16}  {desc[:desc_width]}"
             out.append(self.popup_line(row, left, pop_w, content, self.style.fg_hi if is_sel else self.style.fg_dim, is_sel))
             row += 1
         while row < top + total_lines - 1:
@@ -1006,7 +974,7 @@ class OverlayView:
         out = [self.popup_frame(top, left, pop_w, title_base)]
         row = top + 1
         if query:
-            out.append(self.popup_line(row, left, pop_w, f"󰱼 {query}", self.style.muted, False))
+            out.append(self.popup_line(row, left, pop_w, f"> {query}", self.style.muted, False))
             row += 1
         start = 0
         if items:
@@ -1016,19 +984,16 @@ class OverlayView:
         for idx, item in enumerate(items[start : start + visible_limit], start=start):
             kind = item.get("kind")
             label = item.get("label", "")
-            icon = item.get("icon", "󰘳")
             if kind == "header":
-                out.append(self.popup_line(row, left, pop_w, f"  {icon} {label}"[: pop_w - 6], self.style.muted, False))
+                out.append(self.popup_line(row, left, pop_w, f"  {label}"[: pop_w - 6], self.style.muted, False))
             elif kind == "hint":
-                out.append(self.popup_line(row, left, pop_w, f"  󰞋 {label}"[: pop_w - 6], self.style.fg_dim, False))
+                out.append(self.popup_line(row, left, pop_w, f"  - {label}"[: pop_w - 6], self.style.fg_dim, False))
             else:
                 is_sel = idx == sel
                 marker = "›" if is_sel else " "
-                state_icon = "󰄬" if item.get("current") else "󰓎" if item.get("favorite") else "󰘳"
-                if item.get("disabled"):
-                    state_icon = "󰜺"
-                label_width = max(12, pop_w - 12)
-                content = f"{marker} {state_icon} {icon} {label[:label_width]}"
+                suffix = " (disabled)" if item.get("disabled") else ""
+                label_width = max(12, pop_w - 6)
+                content = f"{marker} {label[:label_width]}{suffix}"
                 out.append(self.popup_line(row, left, pop_w, content, self.style.fg_hi if is_sel else self.style.fg_dim, is_sel))
             row += 1
         hint = "Esc close · Enter select · PgUp/PgDn page"
@@ -1117,7 +1082,7 @@ class OverlayView:
     def _notification_meta(self, msg: str) -> tuple[str, str, str]:
         lower = msg.lower()
         if any(token in lower for token in ("warning", "guardian", "failed", "error", "missing", "denied", "cancelled")):
-            return "warning", "󰀦", self.style.red
+            return "", "", self.style.red
         if any(
             token in lower
             for token in (
@@ -1137,15 +1102,15 @@ class OverlayView:
                 "chat cleared",
             )
         ):
-            return "status", "󰄬", self.style.cyan
-        return "notice", "󰋽", self.style.fg_hi
+            return "", "", self.style.cyan
+        return "", "", self.style.fg_hi
 
     def notification_bar(self, rows: int, cols: int) -> str:
         msg = str(getattr(self.tui, "notification", "") or "").strip()
         if not msg:
             return ""
 
-        label, icon, tone = self._notification_meta(msg)
+        _label, _icon, tone = self._notification_meta(msg)
         max_w = min(72, max(30, cols - 4))
         inner_w = max(18, max_w - 2)
         content_w = max(16, inner_w - 4)
@@ -1157,41 +1122,30 @@ class OverlayView:
                 max(len(line) for line in wrapped) + 4,
             ),
         )
-        width = min(max_w, max(24, body_w + 2, len(label) + 6))
+        width = min(max_w, max(24, body_w + 2))
         inner_w = max(18, width - 2)
-        content_w = max(16, inner_w - 4)
+        content_w = max(16, inner_w - 2)
         wrapped = textwrap.wrap(msg, content_w, break_long_words=True, break_on_hyphens=False) or [msg]
-
-        title = f" {label} "
-        left_rule = max(0, (inner_w - len(title)) // 2)
-        right_rule = max(0, inner_w - len(title) - left_rule)
         top_line = (
             self.style.fg_fn(self.style.border)
             + "╭"
-            + "─" * left_rule
-            + self.style.reset
-            + self.style.fg_fn(self.style.muted)
-            + title
-            + self.style.reset
-            + self.style.fg_fn(self.style.border)
-            + "─" * right_rule
+            + "─" * inner_w
             + "╮"
             + self.style.reset
         )
 
         body_lines: list[str] = []
-        for idx, line in enumerate(wrapped[:3]):
-            prefix = f"{icon} " if idx == 0 else "  "
-            padded = f"{prefix}{line}"[: inner_w - 2]
+        for line in wrapped[:3]:
+            padded = f" {line[: max(0, inner_w - 1)]}".ljust(inner_w)
             body_lines.append(
                 self.style.fg_fn(self.style.border)
-                + "│ "
+                + "│"
                 + self.style.reset
-                + self.style.fg_fn(tone if idx == 0 else self.style.fg_dim)
-                + padded.ljust(inner_w - 2)
+                + self.style.fg_fn(tone)
+                + padded
                 + self.style.reset
                 + self.style.fg_fn(self.style.border)
-                + " │"
+                + "│"
                 + self.style.reset
             )
 

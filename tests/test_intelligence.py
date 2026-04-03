@@ -7,6 +7,7 @@ from src.utils.intelligence import (
     detect_topic,
     emotion_hint,
     is_complex_coding_task,
+    needs_live_lookup,
     needs_plan_first,
     should_search,
 )
@@ -81,6 +82,16 @@ class TestShouldSearch:
     def test_no_search(self):
         assert should_search("write a function") is False
         assert should_search("explain recursion") is False
+
+
+class TestNeedsLiveLookup:
+    def test_live_lookup_triggers_for_time_weather_and_latest(self):
+        assert needs_live_lookup("what time is it in Tokyo right now") is True
+        assert needs_live_lookup("weather in Tashkent today") is True
+        assert needs_live_lookup("latest python release") is True
+
+    def test_live_lookup_ignores_identity_questions(self):
+        assert needs_live_lookup("who are you") is False
 
 
 class TestIsComplexCodingTask:

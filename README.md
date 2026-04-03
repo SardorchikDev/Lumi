@@ -5,34 +5,31 @@
 </p>
 
 <p align="center">
-  <strong>Current release:</strong> <code>v0.7.0: Operator</code><br>
-  <strong>Rewrite target:</strong> <code>v1.0.0: Native</code>
+  <strong>Current release:</strong> <code>v0.7.5: Beacon</code>
 </p>
 
 <p align="center">
   <a href="#install">Install</a> ·
   <a href="#quick-start">Quick Start</a> ·
-  <a href="#whats-new-in-070">What's New</a> ·
-  <a href="#operator-workflow">Operator Workflow</a> ·
+  <a href="#whats-new-in-075">What's New</a> ·
+  <a href="#beacon-workflow">Beacon Workflow</a> ·
   <a href="#commands">Commands</a> ·
   <a href="#development">Development</a>
 </p>
 
 <p align="center">
   <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/SardorchikDev/Lumi/ci.yml?branch=main&style=flat-square&label=ci">
-  <img alt="Release" src="https://img.shields.io/badge/release-0.7.0%20Operator-16324f?style=flat-square">
+  <img alt="Release" src="https://img.shields.io/badge/release-0.7.5%20Beacon-16324f?style=flat-square">
   <img alt="License" src="https://img.shields.io/github/license/SardorchikDev/Lumi?style=flat-square">
   <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-10322c?style=flat-square">
 </p>
-<p align="center"><em>Operator is the current execution-focused release. Native is the later Bun/TypeScript/Ink rewrite.</em></p>
-
 > Lumi is for real repo work: inspect, plan, edit, test, review, and ship from the terminal without collapsing into a generic chat loop.
 
 <div align="center">
   <table>
     <tr>
     <td width="50%" valign="top">
-        <strong>Operator Workbench</strong><br>
+        <strong>Beacon Workbench</strong><br>
         <code>/build</code>, <code>/learn</code>, <code>/review</code>, <code>/fixci</code>, and <code>/ship</code> map requests to risk-aware repo runs.
       </td>
       <td width="50%" valign="top">
@@ -61,18 +58,21 @@
 - has both a full TUI and classic CLI mode
 - includes release gates for benchmark and capability audits
 
-## What's New In 0.7.0
+## What's New In 0.7.5
 
-`Operator` is the name because this release is where Lumi stops only mirroring another coding CLI's surface and starts acting like an operator inside the repo: it owns identity, tool execution, permissions, context pressure, and transcript flow more tightly.
+`Beacon` is the name because this release is about direction and visibility: Lumi is more grounded in its own identity, gives clearer runtime signals, and makes repo work easier to track through permissions, context, telemetry, and workbench execution.
 
 ### Added
 
-- operator release branding across the docs and release metadata
+- Beacon release branding across the docs and release metadata
 - real tool-permission management via `/permissions` with global and project rule files
 - session telemetry via `/tokens` and `/cost`
 - recent tool and shell log access via `/logs`
 - stronger project memory and dynamic prompt context assembly
 - hardened local self-knowledge so Lumi knows its own identity, creator, release line, and runtime
+- VS Code handoff with `/ide` for opening the current workspace or a file directly from Lumi
+- richer `/learn` surfaces for symbol search, references, and impact analysis
+- benchmark publishing output via Markdown reports from the benchmark gate
 
 ### Changed
 
@@ -89,21 +89,8 @@
 
 ### Operational
 
-- benchmark gate, rebirth audit, and Claude parity audit remain part of the release path
+- benchmark gate and rebirth audit remain part of the release path
 - CI is aligned with current GitHub Actions runtime expectations
-
-## Why Operator
-
-`Mirror` was the parity-mapping phase. `Operator` is the phase where Lumi starts behaving like an actual terminal operator.
-
-That means:
-
-- tighter control over tools and permissions
-- clearer runtime identity and creator knowledge
-- better transcript and prompt behavior under real chat usage
-- live session telemetry and logs
-- stronger repo memory and dynamic context building
-- a cleaner path from chat request to real repo action
 
 ## Install
 
@@ -160,7 +147,9 @@ Good first commands:
 /skills
 /hooks
 /learn architecture
+/learn refs run_app
 /build --plan add tests for parser errors
+/ide status
 /jobs
 ```
 
@@ -199,9 +188,9 @@ LUMI_STATE_DIR=~/.codex/memories/lumi/state
 LUMI_CACHE_DIR=~/.codex/memories/lumi/cache
 ```
 
-## Operator Workflow
+## Beacon Workflow
 
-Operator adds a tighter coding loop.
+Beacon tightens the coding loop.
 
 1. `/learn` maps the repo, conventions, hotspots, impact files, and suggested tests.
 2. `/build` turns a request into a risk-aware implementation run.
@@ -226,11 +215,14 @@ Use when you want Lumi to understand the repo before making changes.
 ```text
 /learn architecture
 /learn payment flow
+/learn symbol run_app
+/learn refs Engine
+/learn impact src/api/auth.py
 ```
 
 ### `/review`
 
-Existing file review stays in place. Empty-target or `workspace` review routes through Operator.
+Existing file review stays in place. Empty-target or `workspace` review routes through Beacon.
 
 ```text
 /review workspace
@@ -272,8 +264,10 @@ Current capabilities:
 - language and framework detection
 - entrypoint and config file discovery
 - symbol index for common coding languages
+- symbol search with `/learn symbol <name>`
+- reference lookup with `/learn refs <name>`
 - dependency hints from imports
-- impact file suggestions
+- impact file suggestions and `/learn impact <path|symbol>`
 - test target suggestions
 - verification command discovery
 - workspace warnings and context digests
@@ -339,7 +333,7 @@ Useful keys:
 | `/clear` | Clear the current conversation |
 | `/exit` | Exit Lumi |
 
-### Operator Workbench
+### Beacon Workbench
 
 | Command | Description |
 |---|---|
@@ -364,6 +358,7 @@ Useful keys:
 | `/web <url> [question]` | Ask questions about a webpage |
 | `/image <path> [question]` | Inspect an image |
 | `/voice [seconds]` | Record and transcribe voice into the prompt |
+| `/ide [path\|status]` | Open the workspace or a file in VS Code |
 
 ### Memory, Plugins, and Productivity
 
@@ -423,7 +418,7 @@ Example hook config:
 
 ## Rebirth Profile
 
-`Operator` is the release name. `Rebirth` is still a runtime profile.
+`Beacon` is the release name. `Rebirth` is still a runtime profile.
 
 Use `/rebirth` to view the capability matrix and readiness score for core coding-agent workflows.
 
@@ -440,7 +435,7 @@ Lumi includes two release gates:
 - `scripts/benchmark_gate.py`
 - `scripts/rebirth_audit.py`
 
-The CI workflow prints gate diagnostics directly into logs when a failure happens.
+The CI workflow prints gate diagnostics directly into logs when a failure happens. `scripts/benchmark_gate.py` can also emit machine-readable JSON and Markdown benchmark reports.
 
 ## Project Context
 
@@ -512,10 +507,6 @@ ruff check .
 python scripts/benchmark_gate.py --config configs/benchmark_gate.json
 python scripts/rebirth_audit.py --strict
 ```
-
-See also:
-
-- [LUMI_REBIRTH_SPEC.md](LUMI_REBIRTH_SPEC.md)
 
 ## License
 

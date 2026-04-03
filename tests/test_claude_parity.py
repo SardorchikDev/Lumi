@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from src.utils.claude_parity import (
     claude_parity_summary,
+    collect_beacon_workstreams,
     collect_command_parity,
-    collect_mirror_workstreams,
     extract_lumi_command_tokens,
     render_claude_parity_report,
 )
@@ -36,8 +36,8 @@ def test_collect_command_parity_includes_key_categories():
     assert "Diagnostics & Status" in names
 
 
-def test_collect_mirror_workstreams_has_17_items():
-    workstreams = collect_mirror_workstreams()
+def test_collect_beacon_workstreams_has_17_items():
+    workstreams = collect_beacon_workstreams()
 
     assert len(workstreams) == 17
     assert workstreams[0].key == "permissions"
@@ -48,6 +48,6 @@ def test_render_claude_parity_report_contains_release_path():
     report = render_claude_parity_report()
 
     assert "Claude parity audit" in report
-    assert "Operator workstreams" in report
-    assert "v0.7.0: Operator" in report
+    assert "Beacon workstreams" in report
+    assert "v0.7.5: Beacon" in report
     assert "v1.0.0: Native" in report

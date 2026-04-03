@@ -213,6 +213,7 @@ from src.utils.intelligence import (
     detect_emotion,
     emotion_hint,
     is_complex_coding_task,
+    needs_live_lookup,
     needs_plan_first,
     should_search,
 )
@@ -265,8 +266,15 @@ from src.utils.web import fetch_url
 from src.utils.workbench import (
     WORKBENCH_TITLE,
     WORKBENCH_VERSION,
+    coerce_workbench_job,
+    create_workbench_job,
     execute_workbench,
+    load_workbench_jobs,
+    render_workbench_jobs_report,
     render_workbench_result,
+    save_workbench_job,
+    update_workbench_job,
+    workbench_job_to_dict,
 )
 
 try:
@@ -703,7 +711,7 @@ class CommandRegistry:
             return "research"
         if name in {"/remember", "/memory", "/forget", "/save", "/load", "/resume", "/sessions", "/session", "/export", "/find", "/note", "/todo", "/skills"}:
             return "memory"
-        if name in {"/browse", "/fs", "/files", "/add-dir", "/file", "/project", "/shell", "/grep", "/tree", "/lint", "/fmt", "/run", "/apply", "/pane"}:
+        if name in {"/browse", "/fs", "/files", "/add-dir", "/file", "/project", "/shell", "/grep", "/tree", "/lint", "/fmt", "/run", "/apply", "/pane", "/ide"}:
             return "workspace"
         return "chat"
 
@@ -1246,10 +1254,8 @@ class Renderer:
         effort = normalize_reasoning_effort(getattr(tui, "reasoning_effort", "medium"))
         effort_label = display_reasoning_effort(effort, short=True)
         effort_icon = display_reasoning_indicator(effort)
-        project_name = Path.cwd().resolve().name or "~"
-        branch = self._branch_display()
-        footer_left = f"{project_name} ({branch})"
-        footer_right_plain = f"? for shortcuts   /effort {effort_icon} {effort_label}"
+        footer_left = "? for shortcuts"
+        footer_right_plain = f"{effort_icon} {effort_label} · /effort"
         gap = max(2, chat_w - len(footer_left) - len(footer_right_plain))
         footer_line = (
             _fg(MUTED)
@@ -1358,8 +1364,12 @@ class LumiTUI:
         self._startup_warm_thread: threading.Thread | None = None
         self._cached_project_context: tuple[Path | None, float | None, str] = (None, None, "")
         self._cached_project_memory: tuple[Path | None, float | None, str] = (None, None, "")
-        self.workbench_jobs: list[dict[str, object]] = []
+        self.workbench_jobs = [workbench_job_to_dict(job) for job in load_workbench_jobs(Path.cwd(), limit=12)]
         self._workbench_job_seq = 0
+        for item in self.workbench_jobs:
+            match = re.match(r"^wb-(\d+)$", str(item.get("id", "")))
+            if match:
+                self._workbench_job_seq = max(self._workbench_job_seq, int(match.group(1)))
 
         # Agent planning state (for /agent plans)
         self.agent_active_objective = None
@@ -1400,6 +1410,7 @@ class LumiTUI:
         self._compact = bool(config.compact_mode)
         self.brief_mode = bool(config.brief_mode)
         self.fast_mode = bool(config.fast_mode)
+        self.live_lookup_enabled = bool(getattr(config, "live_lookup", True))
         self.reasoning_effort = "low" if self.fast_mode else normalize_reasoning_effort(config.reasoning_effort)
 
     def _sync_runtime_config(self, **updates):
@@ -1461,26 +1472,9 @@ class LumiTUI:
         return pick_startup_model(provider, models) if models else self.current_model
 
     def _workbench_pane_lines(self) -> list[str]:
-        lines: list[str] = []
-        jobs = list(self.workbench_jobs[:6])
-        if not jobs:
-            return ["No workbench jobs yet.", "", "Run /build, /review, /ship, /learn, or /fixci."]
-        for job in jobs:
-            status = str(job.get("status", "queued"))
-            mode = str(job.get("mode", "job"))
-            objective = str(job.get("objective", ""))[:88]
-            stage = str(job.get("stage", "") or "").strip()
-            risk = str(job.get("risk", "") or "").strip()
-            lines.append(f"[{status}] {mode} · {objective}")
-            if stage:
-                lines.append(f"  stage: {stage}")
-            if risk:
-                lines.append(f"  risk: {risk}")
-            summary = str(job.get("summary", "") or "").strip()
-            if summary:
-                lines.append(f"  summary: {summary[:140]}")
-            lines.append("")
-        return lines[:-1] if lines and not lines[-1].strip() else lines
+        report = render_workbench_jobs_report(Path.cwd(), live_jobs=self.workbench_jobs, limit=8)
+        lines = report.splitlines()[1:]
+        return lines or ["No workbench jobs yet."]
 
     def _workbench_pane_visible(self) -> bool:
         pane = getattr(self, "pane", None)
@@ -1509,17 +1503,10 @@ class LumiTUI:
         model = self._workbench_model()
         system_prompt = self.system_prompt
         memory = self.memory
-        job = {
-            "id": job_id,
-            "mode": mode,
-            "objective": objective,
-            "dry_run": dry_run,
-            "status": "queued",
-            "stage": "queued",
-            "risk": "",
-            "summary": "",
-        }
+        job_record = create_workbench_job(mode, objective, base_dir=base_dir, dry_run=dry_run, job_id=job_id)
+        job = workbench_job_to_dict(job_record)
         self.workbench_jobs.insert(0, job)
+        save_workbench_job(job_record)
         self.agent_active_objective = f"{mode}: {objective}"
         self.agent_tasks = [{"text": "profiling workspace", "status": "queued"}]
         self._refresh_workbench_pane(force=show_pane)
@@ -1538,6 +1525,18 @@ class LumiTUI:
                         item["summary"] = summary
                     if risk is not None:
                         item["risk"] = risk
+                    current_record = coerce_workbench_job(item, base_dir=base_dir) or job_record
+                    record = update_workbench_job(
+                        current_record,
+                        status=str(item.get("status", "queued")),
+                        stage=str(item.get("stage", "queued")),
+                        summary=str(item.get("summary", "")),
+                        risk=str(item.get("risk", "")),
+                        touched_files=tuple(str(value) for value in item.get("touched_files", []) if str(value).strip()),
+                        failed_checks=tuple(str(value) for value in item.get("failed_checks", []) if str(value).strip()),
+                        log_excerpt=str(item.get("log_excerpt", "")),
+                    )
+                    save_workbench_job(record)
                     break
             self._refresh_workbench_pane()
 
@@ -1559,10 +1558,14 @@ class LumiTUI:
                     progress_cb=_progress,
                 )
             except Exception as exc:
+                job["log_excerpt"] = str(exc)
                 _update_job(status="failed", stage="failed", summary=str(exc))
                 self._err(f"{mode} failed: {exc}")
                 self._notify(f"{mode} failed")
             else:
+                job["touched_files"] = list(getattr(result, "touched_files", ()) or ())
+                job["failed_checks"] = list(getattr(result, "failed_checks", ()) or ())
+                job["log_excerpt"] = str(getattr(result, "execution_log", "") or "")
                 _update_job(
                     status="done",
                     stage="artifacts ready",
@@ -1637,7 +1640,7 @@ class LumiTUI:
             date=datetime.now().strftime("%Y-%m-%d"),
             cwd=str(Path.cwd().resolve()),
             git_branch=self._git_branch,
-            extra_rules=(build_agentic_system_hint(),),
+            extra_rules=(build_agentic_system_hint(live_lookup=self.live_lookup_enabled),),
         )
         return build_dynamic_system_prompt(
             {**self.persona, **self.persona_override},
@@ -1662,7 +1665,7 @@ class LumiTUI:
             active_files=tuple(active_files),
             recent_tool_results=tuple(str(item) for item in getattr(self, "tool_logs", [])[-5:]),
             todos=todos,
-            extra_rules=(build_agentic_system_hint(), self._project_memory_block()),
+            extra_rules=(build_agentic_system_hint(live_lookup=self.live_lookup_enabled), self._project_memory_block()),
         )
         return build_dynamic_system_prompt(
             {**self.persona, **self.persona_override},
@@ -1979,6 +1982,8 @@ class LumiTUI:
         event.set()
 
     def _resolve_tool_permission(self, request: PermissionRequest) -> PermissionDecision:
+        if request.tool_name in {"web_search", "weather_lookup", "time_lookup"}:
+            return PermissionDecision(True, "allowed read-only live lookup")
         decision = evaluate_tool_permission(
             request.tool_name,
             request.value,
@@ -2043,7 +2048,14 @@ class LumiTUI:
             " git ", " run ", " todo", "/build", "/fixci",
         )
         normalized_prompt = f" {last_user.lower().strip()} "
-        use_tool_loop = bool(provider and model != "council" and any(token in normalized_prompt for token in tool_loop_markers))
+        use_tool_loop = bool(
+            provider
+            and model != "council"
+            and (
+                any(token in normalized_prompt for token in tool_loop_markers)
+                or (self.live_lookup_enabled and needs_live_lookup(last_user))
+            )
+        )
         try:
             if use_tool_loop:
                 context = ToolContext(
@@ -2674,7 +2686,7 @@ def cmd_clear(tui: LumiTUI, arg: str):
     # Show a subtle toast but keep history visually empty so the splash header returns
     tui._notify("Chat cleared.")
 
-@registry.register("/browse", "󰉋 Visual file tree explorer — navigate & inject files")
+@registry.register("/browse", "Visual file tree explorer - navigate and inject files")
 def cmd_browse(tui: LumiTUI, arg: str):
     tui.browser_cwd = os.path.abspath(arg.strip()) if arg.strip() else os.getcwd()
     tui.browser_sel = 0
@@ -2722,7 +2734,7 @@ def cmd_fs(tui: LumiTUI, arg: str):
             return
         lines = [f"Directory: {target}"]
         for e in entries[:200]:
-            icon = "󰉋" if e.is_dir() else "󰈔"
+            icon = "[D]" if e.is_dir() else "[F]"
             suffix = "/" if e.is_dir() else ""
             lines.append(f"  {icon} {e.name}{suffix}")
         if len(entries) > 200:
@@ -2818,7 +2830,7 @@ def cmd_fs(tui: LumiTUI, arg: str):
 
     tui._err("Unknown /fs subcommand. Use /fs help.")
 
-@registry.register("/file", "󰈔 Load a file into AI context: /file path/to/file")
+@registry.register("/file", "Load a file into AI context: /file path/to/file")
 def cmd_file(tui: LumiTUI, arg: str):
     if not arg.strip():
         tui._sys("Usage: /file <path>  — e.g. /file src/main.py")
@@ -2834,7 +2846,7 @@ def cmd_file(tui: LumiTUI, arg: str):
         content = path.read_text(errors="replace")
         rel = str(path)
         line_count = content.count("\n") + 1
-        tui._sys(f"󰈔 Loaded `{rel}` ({line_count} lines) into context")
+        tui._sys(f"Loaded `{rel}` ({line_count} lines) into context")
         _context_cache.remember_file(rel, content)
         tui.memory.add("user", f"[loaded file: {rel}] Cached for retrieval.")
     except Exception as e:

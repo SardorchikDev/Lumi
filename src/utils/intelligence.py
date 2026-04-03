@@ -92,6 +92,17 @@ SEARCH_TRIGGERS = [
     "where is", "price of", "weather", "stock",
 ]
 SEARCH_BLOCKLIST = ["what is your", "who are you", "what is life"]
+LIVE_LOOKUP_QUERY_MARKERS = (
+    "right now",
+    "what time",
+    "time in",
+    "local time",
+    "timezone",
+    "time zone",
+    "date in",
+    "forecast",
+    "temperature",
+)
 
 
 def should_search(text: str) -> bool:
@@ -99,6 +110,13 @@ def should_search(text: str) -> bool:
     if any(b in t for b in SEARCH_BLOCKLIST):
         return False
     return any(tr in t for tr in SEARCH_TRIGGERS)
+
+
+def needs_live_lookup(text: str) -> bool:
+    t = text.lower().strip()
+    if any(b in t for b in SEARCH_BLOCKLIST):
+        return False
+    return should_search(text) or any(marker in t for marker in LIVE_LOOKUP_QUERY_MARKERS)
 
 
 COMPLEX_CODE_PATTERNS = [
@@ -151,7 +169,7 @@ def _fallback_classification(text: str) -> dict:
     intent = "general"
     if is_complex_coding_task(text):     intent = "coding"
     elif _is_debug_query(text):          intent = "debug"
-    elif should_search(text):            intent = "search"
+    elif needs_live_lookup(text):        intent = "search"
     elif detect_topic(text) == "creative": intent = "creative"
 
     return {
@@ -159,7 +177,7 @@ def _fallback_classification(text: str) -> dict:
         "emotion":            _detect_emotion_regex(text) or "neutral",
         "urgency":            "low",
         "needs_clarification": False,
-        "tools":              ["search"] if should_search(text) else [],
+        "tools":              ["search"] if needs_live_lookup(text) else [],
         "routing":            ["general"],
     }
 
@@ -191,7 +209,7 @@ def _is_high_confidence(text: str, fallback: dict) -> bool:
         return True
     if intent == "debug" and _is_debug_query(text):
         return True
-    if intent == "search" and should_search(text):
+    if intent == "search" and needs_live_lookup(text):
         return True
     return bool(intent == "chat" and len(text.split()) <= 5)
 

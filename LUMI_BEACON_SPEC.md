@@ -1,14 +1,12 @@
-# Lumi v0.7.0: Operator
+# Lumi v0.7.5: Beacon
 
-Operator is the Python-side Claude-parity release.
+Beacon is the Python-side Claude-parity release.
 
 It is not the language rewrite. It is the release that closes the highest-value workflow gaps first, makes parity measurable, and prepares Lumi for the Bun/TypeScript/Ink rewrite that will become `v1.0.0: Native`.
 
-The file name stays `LUMI_MIRROR_SPEC.md` to avoid churn in existing references, but the current release name is `Operator`.
-
 ## Release Naming
 
-- `v0.7.0: Operator`
+- `v0.7.5: Beacon`
   - Python release
   - focused on workflow parity, command parity, and subsystem parity
   - goal: make Lumi feel close enough to Claude Code that the remaining rewrite is mostly architectural, not product-definition work
@@ -18,7 +16,7 @@ The file name stays `LUMI_MIRROR_SPEC.md` to avoid churn in existing references,
 
 ## Success Criteria
 
-Operator is successful when:
+Beacon is successful when:
 
 - Lumi covers the high-value Claude command surface used in daily coding work
 - permissions are rule-based instead of ad hoc
@@ -258,7 +256,7 @@ Acceptance:
 
 ### 16. Missing Command Parity Backlog
 
-High-value commands to close during Operator:
+High-value commands to close during Beacon:
 
 - `/commit`
 - `/commit-push-pr`
@@ -327,7 +325,7 @@ Acceptance:
 - 7. sub-agent orchestration
 - 8. LSP repo intelligence
 
-### Phase 3: Operator Surfaces
+### Phase 3: Beacon Surfaces
 
 - 9. IDE bridge
 - 10. full settings layer
@@ -346,7 +344,7 @@ Acceptance:
 
 ## Rewrite Gate For v1.0.0: Native
 
-The language switch should happen only after Operator establishes:
+The language switch should happen only after Beacon establishes:
 
 - stable tool contracts
 - stable permission contracts
@@ -368,4 +366,4 @@ If those are not locked first, the rewrite becomes a moving target and wastes ti
 
 ## Operating Rule
 
-Operator is not allowed to claim Claude parity based on look-and-feel alone. It must close workflow, command, and subsystem gaps in measurable terms before the rewrite begins.
+Beacon is not allowed to claim Claude parity based on look-and-feel alone. It must close workflow, command, and subsystem gaps in measurable terms before the rewrite begins.

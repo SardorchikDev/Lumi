@@ -21,7 +21,7 @@ step() { echo -e "\n  ${B}${PU}$1${R}"; }
 
 usage() {
     cat <<'EOF'
-Lumi Operator installer
+Lumi Beacon installer
 
 Usage:
   ./install.sh [options]
@@ -102,7 +102,7 @@ banner() {
     echo -e "${PU}    ██║      ██║   ██║  ██║╚██╔╝██║  ██║${R}"
     echo -e "${PU}    ███████╗ ╚██████╔╝  ██║ ╚═╝ ██║  ██║${R}"
     echo -e "${PU}    ╚══════╝  ╚═════╝   ╚═╝     ╚═╝  ╚═╝${R}"
-    echo -e "${DG}         O P E R A T O R   I N S T A L L E R${R}"
+    echo -e "${DG}          B E A C O N   I N S T A L L E R${R}"
     echo ""
 }
 
@@ -438,7 +438,7 @@ fi
 
 echo ""
 echo -e "  ${PU}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}"
-echo -e "  ${GN}${B}Lumi v0.7.0: Operator installed successfully!${R}"
+echo -e "  ${GN}${B}Lumi v0.7.5: Beacon installed successfully!${R}"
 echo -e "  ${PU}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${R}"
 echo ""
 echo -e "  ${CY}Install summary:${R}"

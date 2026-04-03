@@ -90,7 +90,7 @@ class TestBuildSystemPrompt:
         )
         assert "Sardor Sodiqov" in prompt
         assert "SardorchikDev" in prompt
-        assert "Lumi v0.7.0: Operator" in prompt
+        assert "Lumi v0.7.5: Beacon" in prompt
 
 
 class TestIsCodingTask:

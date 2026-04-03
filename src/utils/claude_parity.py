@@ -11,7 +11,7 @@ from src.agents.task_memory import get_active_run, get_recent_runs
 from src.chat.providers import provider_label
 from src.utils.repo_profile import inspect_workspace, render_workspace_overview
 from src.utils.runtime_config import load_runtime_config
-from src.utils.workbench import build_repo_intelligence, load_project_memory
+from src.utils.workbench import build_repo_intelligence, load_project_memory, load_workbench_jobs
 
 
 @dataclass(frozen=True)
@@ -25,8 +25,8 @@ class CommandParityCategory:
 
 
 @dataclass(frozen=True)
-class MirrorWorkstream:
-    """Major parity workstream for Lumi v0.7.0: Operator."""
+class BeaconWorkstream:
+    """Major parity workstream for Lumi v0.7.5: Beacon."""
 
     key: str
     name: str
@@ -105,24 +105,24 @@ CLAUDE_COMMAND_CATEGORIES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-MIRROR_WORKSTREAMS: tuple[MirrorWorkstream, ...] = (
-    MirrorWorkstream("permissions", "Wildcard tool permission engine", "Claude-style tool approval rules, modes, logging, and plan-wide approvals.", "/permissions /sandbox-toggle", rewrite_relevant=True),
-    MirrorWorkstream("tools", "Explicit tool registry", "Schema-driven tools with read-only flags, concurrency safety, and permission checks.", "core tool runtime", rewrite_relevant=True),
-    MirrorWorkstream("git", "Git workflow suite", "Commit, branch, PR, rewind, and richer diff automation from the terminal.", "/commit /commit-push-pr /branch /pr_comments /rewind"),
-    MirrorWorkstream("quality", "Code-quality command suite", "Dedicated security, architecture, and bug-hunting commands with structured output.", "/security-review /advisor /bughunter"),
-    MirrorWorkstream("sessions", "Session and context parity", "Summary, share, tag, rename, compact, and stronger session lifecycle control.", "/summary /share /session /resume"),
-    MirrorWorkstream("tasks", "Background task engine", "Persistent task lifecycle, output retrieval, retry, stop, and history.", "/tasks", rewrite_relevant=True),
-    MirrorWorkstream("agents", "Sub-agent orchestration", "Spawned worker agents, plan mode, teams, and merge-back flows.", "/agents /plan /ultraplan", rewrite_relevant=True),
-    MirrorWorkstream("lsp", "LSP repo intelligence", "Definitions, references, renames, symbol search, and semantic impact analysis.", "repo navigation", rewrite_relevant=True),
-    MirrorWorkstream("bridge", "IDE bridge", "VS Code and JetBrains bridge with permission proxy, diff display, and session routing.", "/bridge /ide", rewrite_relevant=True),
-    MirrorWorkstream("settings", "Full settings layer", "Privacy, output style, keybindings, vim mode, statusline, env, and sandbox controls.", "/config /privacy-settings /output-style /keybindings /vim /statusline"),
-    MirrorWorkstream("usage", "Usage and telemetry surfaces", "Stats, usage, rate-limit views, and model/runtime accounting.", "/stats /usage /extra-usage /rate-limit-options"),
-    MirrorWorkstream("setup", "Install, init, and upgrade flows", "Project bootstrap, verifier setup, onboarding, and release-note surfaces.", "/init /init-verifiers /upgrade /release-notes /onboarding"),
-    MirrorWorkstream("plugins", "Plugin and skill lifecycle parity", "Install/update/remove marketplace flow, bundled skills, and safer hook boundaries.", "/plugin /reload-plugins /skills /hooks"),
-    MirrorWorkstream("remote", "Remote and device handoff layer", "Remote env/setup and replaceable desktop/mobile handoff surfaces.", "/remote-env /remote-setup /desktop /mobile /teleport", rewrite_relevant=True),
-    MirrorWorkstream("tui", "TUI control-density parity", "Statusline, keymaps, panes, permission prompts, and Claude-grade operator UX.", "terminal UI", rewrite_relevant=True),
-    MirrorWorkstream("diagnostics", "Parity and regression audits", "Track command, subsystem, and workflow parity with machine-readable audits.", "claude parity audit"),
-    MirrorWorkstream("rewrite", "1.0.0 native runtime rewrite", "Move Lumi to Bun/TypeScript/Ink after Operator lands enough parity in Python.", "v1.0.0 Native", rewrite_relevant=True),
+BEACON_WORKSTREAMS: tuple[BeaconWorkstream, ...] = (
+    BeaconWorkstream("permissions", "Wildcard tool permission engine", "Claude-style tool approval rules, modes, logging, and plan-wide approvals.", "/permissions /sandbox-toggle", rewrite_relevant=True),
+    BeaconWorkstream("tools", "Explicit tool registry", "Schema-driven tools with read-only flags, concurrency safety, and permission checks.", "core tool runtime", rewrite_relevant=True),
+    BeaconWorkstream("git", "Git workflow suite", "Commit, branch, PR, rewind, and richer diff automation from the terminal.", "/commit /commit-push-pr /branch /pr_comments /rewind"),
+    BeaconWorkstream("quality", "Code-quality command suite", "Dedicated security, architecture, and bug-hunting commands with structured output.", "/security-review /advisor /bughunter"),
+    BeaconWorkstream("sessions", "Session and context parity", "Summary, share, tag, rename, compact, and stronger session lifecycle control.", "/summary /share /session /resume"),
+    BeaconWorkstream("tasks", "Background task engine", "Persistent task lifecycle, output retrieval, retry, stop, and history.", "/tasks", rewrite_relevant=True),
+    BeaconWorkstream("agents", "Sub-agent orchestration", "Spawned worker agents, plan mode, teams, and merge-back flows.", "/agents /plan /ultraplan", rewrite_relevant=True),
+    BeaconWorkstream("lsp", "LSP repo intelligence", "Definitions, references, renames, symbol search, and semantic impact analysis.", "repo navigation", rewrite_relevant=True),
+    BeaconWorkstream("bridge", "IDE bridge", "VS Code and JetBrains bridge with permission proxy, diff display, and session routing.", "/bridge /ide", rewrite_relevant=True),
+    BeaconWorkstream("settings", "Full settings layer", "Privacy, output style, keybindings, vim mode, statusline, env, and sandbox controls.", "/config /privacy-settings /output-style /keybindings /vim /statusline"),
+    BeaconWorkstream("usage", "Usage and telemetry surfaces", "Stats, usage, rate-limit views, and model/runtime accounting.", "/stats /usage /extra-usage /rate-limit-options"),
+    BeaconWorkstream("setup", "Install, init, and upgrade flows", "Project bootstrap, verifier setup, onboarding, and release-note surfaces.", "/init /init-verifiers /upgrade /release-notes /onboarding"),
+    BeaconWorkstream("plugins", "Plugin and skill lifecycle parity", "Install/update/remove marketplace flow, bundled skills, and safer hook boundaries.", "/plugin /reload-plugins /skills /hooks"),
+    BeaconWorkstream("remote", "Remote and device handoff layer", "Remote env/setup and replaceable desktop/mobile handoff surfaces.", "/remote-env /remote-setup /desktop /mobile /teleport", rewrite_relevant=True),
+    BeaconWorkstream("tui", "TUI control-density parity", "Statusline, keymaps, panes, permission prompts, and Claude-grade operator UX.", "terminal UI", rewrite_relevant=True),
+    BeaconWorkstream("diagnostics", "Parity and regression audits", "Track command, subsystem, and workflow parity with machine-readable audits.", "claude parity audit"),
+    BeaconWorkstream("rewrite", "1.0.0 native runtime rewrite", "Move Lumi to Bun/TypeScript/Ink after Beacon lands enough parity in Python.", "v1.0.0 Native", rewrite_relevant=True),
 )
 
 
@@ -193,10 +193,10 @@ def claude_parity_summary(base_dir: Path | None = None) -> tuple[int, int, float
     return present, total, ratio
 
 
-def collect_mirror_workstreams() -> tuple[MirrorWorkstream, ...]:
-    """Return the authoritative Operator workstream list."""
+def collect_beacon_workstreams() -> tuple[BeaconWorkstream, ...]:
+    """Return the authoritative Beacon workstream list."""
 
-    return MIRROR_WORKSTREAMS
+    return BEACON_WORKSTREAMS
 
 
 def render_claude_parity_report(base_dir: Path | None = None) -> str:
@@ -204,7 +204,7 @@ def render_claude_parity_report(base_dir: Path | None = None) -> str:
 
     present, total, ratio = claude_parity_summary(base_dir)
     categories = collect_command_parity(base_dir)
-    workstreams = collect_mirror_workstreams()
+    workstreams = collect_beacon_workstreams()
 
     lines = [
         "Claude parity audit",
@@ -221,7 +221,7 @@ def render_claude_parity_report(base_dir: Path | None = None) -> str:
             if len(item.missing) > 6:
                 preview += ", ..."
             lines.append(f"      missing: {preview}")
-    lines.extend(["", "Operator workstreams"])
+    lines.extend(["", "Beacon workstreams"])
     for index, item in enumerate(workstreams, 1):
         rewrite_note = " [rewrite]" if item.rewrite_relevant else ""
         lines.append(f"  {index}. {item.name}{rewrite_note}")
@@ -231,8 +231,8 @@ def render_claude_parity_report(base_dir: Path | None = None) -> str:
         [
             "",
             "Release path",
-            "  - v0.7.0: Operator — Python execution release focused on the 17 workstreams.",
-            "  - v1.0.0: Native — Bun/TypeScript/Ink rewrite after Operator lands enough workflow parity.",
+            "  - v0.7.5: Beacon — Python execution release focused on the 17 workstreams.",
+            "  - v1.0.0: Native — Bun/TypeScript/Ink rewrite after Beacon lands enough workflow parity.",
         ]
     )
     return "\n".join(lines)
@@ -278,6 +278,7 @@ def render_tasks_report(base_dir: Path | None = None) -> str:
     active = get_active_run(root)
     recent = get_recent_runs(limit=6, base_dir=root)
     memory = load_project_memory(root)
+    jobs = load_workbench_jobs(root, limit=4)
 
     lines = ["Lumi tasks"]
     if active:
@@ -303,6 +304,13 @@ def render_tasks_report(base_dir: Path | None = None) -> str:
     if memory.recent_runs:
         for item in memory.recent_runs[:4]:
             lines.append(f"  - [{item.get('mode', '?')}] {item.get('objective', '')}")
+    else:
+        lines.append("  - none")
+    lines.append("")
+    lines.append("Recent workbench jobs")
+    if jobs:
+        for item in jobs:
+            lines.append(f"  - [{item.status}] {item.mode} · {item.objective}")
     else:
         lines.append("  - none")
     return "\n".join(lines)
@@ -345,6 +353,6 @@ def render_version_report(*, version: str, provider: str = "", model: str = "") 
     if provider or model:
         lines.append(f"  Runtime: {label} · {model or 'unknown'}")
     lines.append(f"  CWD:     {Path.cwd().resolve()}")
-    lines.append("  Workbench: Operator")
+    lines.append("  Workbench: Beacon")
     lines.append("  Parity layer: Claude-style config, tasks, agents, files, and sessions")
     return "\n".join(lines)

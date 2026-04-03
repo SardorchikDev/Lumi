@@ -56,3 +56,9 @@ def test_render_runtime_config_report_includes_flags_and_context_dirs(tmp_path, 
     assert str(extra.resolve()) in report
     assert "Brief:     on" in report
     assert "Fast:      on" in report
+    assert "Live:      on" in report
+
+
+def test_parse_runtime_config_update_accepts_live_lookup_aliases():
+    assert runtime_config.parse_runtime_config_update("live_lookup", "off") == {"live_lookup": False}
+    assert runtime_config.parse_runtime_config_update("search", "on") == {"live_lookup": True}

@@ -6,9 +6,11 @@ import re
 from types import SimpleNamespace
 
 from src.memory.conversation_store import load_repo_autosave, save_repo_autosave
+from src.tools.agentic_runtime import ToolLoopResult
 from src.tui.app import LumiTUI, _strip_ansi, registry
 from src.tui.notes import LittleNotesStore
 from src.tui.state import Msg
+from src.utils import workbench
 
 
 def _make_tui(tmp_path, monkeypatch) -> LumiTUI:
@@ -18,6 +20,9 @@ def _make_tui(tmp_path, monkeypatch) -> LumiTUI:
     monkeypatch.setattr("src.memory.longterm.MEMORY_FILE", tmp_path / "longterm.json")
     monkeypatch.setattr("src.utils.skills.LUMI_HOME", tmp_path / "lumi-home")
     monkeypatch.setattr("src.utils.hooks.LUMI_HOME", tmp_path / "lumi-home")
+    monkeypatch.setattr("src.utils.workbench.WORKBENCH_STATE_DIR", tmp_path / ".wb-state")
+    monkeypatch.setattr("src.utils.workbench.WORKBENCH_CACHE_DIR", tmp_path / ".wb-cache")
+    monkeypatch.setattr("src.utils.workbench.PROJECT_MEMORY_PATH", tmp_path / ".wb-state" / "project_memory.json")
     tui = LumiTUI()
     notes_path = tmp_path / "little_notes.json"
     tui.little_notes = LittleNotesStore(notes_path)
@@ -52,11 +57,12 @@ def test_starter_panel_renders_minimal_header(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
 
-    assert "Operator" in joined
+    assert "Beacon" in joined
     assert "HuggingFace" in joined
     assert "Llama-3.3" in joined
     assert "▐▛███▜▌" in joined
     assert "▝▜█████▛▘" in joined
+    assert "▘▘ ▝▝" in joined
     assert "Tips for getting started" not in joined
     assert not any(line.startswith("╭") for line in lines)
     assert lines[0] == ""
@@ -76,7 +82,7 @@ def test_starter_panel_stays_minimal_even_with_tip(tmp_path, monkeypatch):
 
     assert "/imagine <prompt>" not in joined
     assert "Tips for getting started" not in joined
-    assert "Lumi Operator" in joined
+    assert "Lumi Beacon" in joined
     tui._task_executor.shutdown(wait=False)
 
 
@@ -92,7 +98,7 @@ def test_chat_layout_keeps_prompt_and_transcript_separate(tmp_path, monkeypatch)
     transcript_top = tui.renderer._transcript_top(len(starter), len(chat))
     prompt_top = tui.renderer._prompt_top(36, transcript_top, len(prompt_lines), len(chat))
 
-    assert any("Lumi Operator" in line for line in starter)
+    assert any("Lumi Beacon" in line for line in starter)
     assert any("›" in line for line in prompt)
     assert any("› hi" in line for line in chat)
     assert any("hello back" in line for line in chat)
@@ -159,10 +165,10 @@ def test_starter_header_aligns_with_transcript_markers(tmp_path, monkeypatch):
 
     starter = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     chat = [_strip_ansi(line) for line in tui.renderer._build_chat_lines(110)]
-    header_line = next(line for line in starter if "Lumi Operator" in line)
+    header_line = next(line for line in starter if "Lumi Beacon" in line)
     user_line = next(line for line in chat if line.strip().startswith("›"))
 
-    assert "Lumi Operator" in header_line
+    assert "Lumi Beacon" in header_line
     assert user_line.startswith("  ›")
     tui._task_executor.shutdown(wait=False)
 
@@ -180,7 +186,7 @@ def test_prompt_line_stays_flush_when_header_is_visible(tmp_path, monkeypatch):
     prompt = [_strip_ansi(line) for line in prompt_lines]
     prompt_line = next(line for line in prompt if line.strip().startswith("›"))
 
-    assert any("Lumi Operator" in line for line in starter)
+    assert any("Lumi Beacon" in line for line in starter)
     assert prompt[0].strip().startswith("─")
     assert "shortcuts" in prompt[-1]
     assert prompt_line.startswith("›")
@@ -192,12 +198,20 @@ def test_notification_bar_renders_boxed_status_toast(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.notification = "Model → gemini-2.5-flash"
 
-    rendered = _strip_ansi(tui.renderer._notification_bar(30, 100))
+    rendered_raw = tui.renderer._notification_bar(30, 100)
+    rendered = _strip_ansi(rendered_raw)
+    rendered_lines = [
+        _strip_ansi(segment)
+        for segment in re.split(r"\x1b\[\d+;\d+H", rendered_raw)
+        if segment
+    ]
 
     assert "╭" in rendered
     assert "╰" in rendered
-    assert "status" in rendered
+    assert "status" not in rendered
+    assert "=" not in rendered
     assert "Model → gemini-2.5-flash" in rendered
+    assert len({len(line) for line in rendered_lines}) == 1
     tui._task_executor.shutdown(wait=False)
 
 
@@ -352,6 +366,35 @@ def test_identity_followup_reaffirms_lumi_without_model_fallback(tmp_path, monke
     tui._task_executor.shutdown(wait=False)
 
 
+def test_continuation_followup_continues_instead_of_restarting(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui.last_msg = "compare codex cli with claude code and gemini cli in a table"
+    tui.last_reply = "| Feature | Value |\n| --- | --- |\n| Codex CLI | strong terminal integration |\n| Claude Code |"
+    tui.memory.add("user", tui.last_msg)
+    tui.memory.add("assistant", tui.last_reply)
+    tui.turns = 1
+    captured: dict[str, object] = {}
+
+    def _fake_stream(messages, _model, *_args, **_kwargs):
+        captured["messages"] = messages
+        return " hypothetical comparison column completed"
+
+    tui._tui_stream = _fake_stream
+
+    tui._run_message("you did not finish it")
+
+    sent = str(captured["messages"][-1]["content"])
+    assert "Continue your immediately previous answer from exactly where it stopped." in sent
+    assert "Do not restart from the beginning." in sent
+    assert "Original request:\ncompare codex cli with claude code and gemini cli in a table" in sent
+    assert "Previous answer ending:" in sent
+    assert "User follow-up:\nyou did not finish it" in sent
+    assert tui.memory.get()[-2]["content"] == "you did not finish it"
+    assert tui.last_reply == " hypothetical comparison column completed"
+    tui._task_executor.shutdown(wait=False)
+
+
 def test_first_casual_turn_uses_bootstrap_prompt_before_warmup_finishes(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.redraw = lambda: None
@@ -403,7 +446,7 @@ def test_capability_questions_answer_with_lumi_self_profile(tmp_path, monkeypatc
     messages = tui.store.snapshot()
     assert any(
         msg.role == "assistant"
-        and "In Operator" in msg.text
+        and "In Beacon" in msg.text
         and "edit" in msg.text
         and "search the web" in msg.text
         and "/build" in msg.text
@@ -425,7 +468,7 @@ def test_runtime_questions_answer_with_provider_and_model(tmp_path, monkeypatch)
         and "HuggingFace" in msg.text
         and "Llama-3.3-70B-Instruct" in msg.text
         and "effort=" in msg.text
-        and "0.7.0 Operator" in msg.text
+        and "0.7.5 Beacon" in msg.text
         for msg in messages
     )
     tui._task_executor.shutdown(wait=False)
@@ -479,7 +522,7 @@ def test_empty_state_keeps_prompt_under_starter_card(tmp_path, monkeypatch):
     )
     resolved_cursor_row = tui.renderer._prompt_cursor_row(36, len(prompt_lines), prompt_top, cursor_row)
 
-    assert any("Lumi Operator" in line for line in starter)
+    assert any("Lumi Beacon" in line for line in starter)
     assert prompt_top == 1 + len(starter)
     assert resolved_cursor_row == prompt_top + 1
     assert len(prompt_lines) == 4
@@ -514,7 +557,7 @@ def test_starter_panel_stays_visible_after_chat_begins(tmp_path, monkeypatch):
 
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
 
-    assert any("Lumi Operator" in line for line in lines)
+    assert any("Lumi Beacon" in line for line in lines)
     tui._task_executor.shutdown(wait=False)
 
 
@@ -532,7 +575,7 @@ def test_ctrl_g_toggles_starter_panel_during_active_chat(tmp_path, monkeypatch):
     tui._handle_key("CTRL_G")
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
 
-    assert any("Lumi Operator" in line for line in lines)
+    assert any("Lumi Beacon" in line for line in lines)
     assert tui.show_starter_panel is True
     assert tui.starter_panel_pinned is True
     tui._task_executor.shutdown(wait=False)
@@ -550,7 +593,7 @@ def test_prompt_bar_renders_claude_style_rail(tmp_path, monkeypatch):
     assert prompt[2].strip().startswith("─")
     assert "inspect this repo" in prompt[1]
     assert "shortcuts" in prompt[3]
-    assert "/effort ◐ medium" in prompt[3]
+    assert "◐ medium · /effort" in prompt[3]
     assert len(prompt[0]) == 90
     tui._task_executor.shutdown(wait=False)
 
@@ -645,7 +688,7 @@ def test_recent_commands_clear_between_tui_sessions(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in second.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
     assert "/clear" not in joined
-    assert "Operator" in joined
+    assert "Beacon" in joined
 
     first._task_executor.shutdown(wait=False)
     second._task_executor.shutdown(wait=False)
@@ -1037,6 +1080,33 @@ def test_effort_command_accepts_ehigh_and_updates_request_profile(tmp_path, monk
     tui._task_executor.shutdown(wait=False)
 
 
+def test_live_lookup_queries_use_tool_loop_in_tui(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui.client = object()
+    captured: dict[str, object] = {}
+
+    def fake_run_tool_loop_sync(client, provider, model, messages, context, *, effort_options=None, registry=None):
+        captured["client"] = client
+        captured["provider"] = provider
+        captured["model"] = model
+        captured["messages"] = messages
+        return ToolLoopResult(text="Tokyo: 2026-04-03 12:00", rounds=1, input_tokens=12, output_tokens=8)
+
+    monkeypatch.setattr("src.tui.app.run_tool_loop_sync", fake_run_tool_loop_sync)
+
+    reply = tui._tui_stream(
+        [{"role": "system", "content": "You are Lumi."}, {"role": "user", "content": "what time is it in Tokyo right now"}],
+        "demo-model",
+    )
+
+    assert reply == "Tokyo: 2026-04-03 12:00"
+    assert captured["client"] is tui.client
+    assert captured["provider"] == "huggingface"
+    assert captured["model"] == "demo-model"
+    tui._task_executor.shutdown(wait=False)
+
+
 def test_footer_shows_effort_max_after_ehigh_selection(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
 
@@ -1045,7 +1115,7 @@ def test_footer_shows_effort_max_after_ehigh_selection(tmp_path, monkeypatch):
     prompt = [_strip_ansi(line) for line in prompt_lines]
 
     assert tui.reasoning_effort == "ehigh"
-    assert "/effort ◉ max" in prompt[3]
+    assert "◉ max · /effort" in prompt[3]
     tui._task_executor.shutdown(wait=False)
 
 
@@ -1422,7 +1492,7 @@ def test_model_picker_uses_icons_without_preview_documentation(tmp_path, monkeyp
     image_item = next(item for item in tui.picker_items if item.get("value") == "gemini-2.5-flash-image")
     popup = _strip_ansi(tui.renderer._picker_popup(30, 90))
 
-    assert image_item["icon"] == "󰉏"
+    assert image_item["icon"] == "img"
     assert tui.picker_preview_lines == []
     assert "Tags:" not in popup
     tui._task_executor.shutdown(wait=False)
@@ -1431,19 +1501,19 @@ def test_model_picker_uses_icons_without_preview_documentation(tmp_path, monkeyp
 def test_build_plan_command_opens_workbench_plan_pane(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     monkeypatch.setattr("src.tui.command_groups.prepare_workbench_plan", lambda *args, **kwargs: SimpleNamespace())
-    monkeypatch.setattr("src.tui.command_groups.render_workbench_plan", lambda _plan: "Operator\nbuild plan")
+    monkeypatch.setattr("src.tui.command_groups.render_workbench_plan", lambda _plan: "Beacon\nbuild plan")
 
     registry.commands["/build"]["func"](tui, "--plan add search")
 
     assert tui.pane_active is True
     assert tui.pane.title == "build plan"
-    assert "Operator" in "\n".join(tui.pane.content())
+    assert "Beacon" in "\n".join(tui.pane.content())
     tui._task_executor.shutdown(wait=False)
 
 
 def test_learn_command_opens_workbench_report_pane(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
-    monkeypatch.setattr("src.tui.command_groups.render_workbench_report", lambda *_args, **_kwargs: "Operator\nrepo map")
+    monkeypatch.setattr("src.tui.command_groups.render_workbench_report", lambda *_args, **_kwargs: "Beacon\nrepo map")
 
     registry.commands["/learn"]["func"](tui, "architecture")
 
@@ -1492,6 +1562,34 @@ def test_launch_workbench_refreshes_jobs_pane_when_visible(tmp_path, monkeypatch
     assert tui.pane.title == "workbench jobs"
     assert any("[done] build" in line for line in tui.pane.lines)
     assert any("summary: created game" in line for line in tui.pane.lines)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_jobs_command_shows_persisted_workbench_history(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.utils.workbench.WORKBENCH_STATE_DIR", tmp_path / ".wb-state")
+    monkeypatch.setattr("src.utils.workbench.WORKBENCH_CACHE_DIR", tmp_path / ".wb-cache")
+    monkeypatch.setattr("src.utils.workbench.PROJECT_MEMORY_PATH", tmp_path / ".wb-state" / "project_memory.json")
+    job = workbench.create_workbench_job("build", "a simple number guessing python game", base_dir=tmp_path, job_id="wb-9")
+    job = workbench.update_workbench_job(
+        job,
+        status="done",
+        stage="artifacts ready",
+        risk="low",
+        summary="created game",
+        touched_files=("src/game.py",),
+        log_excerpt="tests: rc=0 · all green",
+    )
+    workbench.save_workbench_job(job)
+
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    registry.commands["/jobs"]["func"](tui, "")
+
+    assert tui.pane_active is True
+    assert tui.pane.title == "workbench jobs"
+    assert any("[done] build" in line for line in tui.pane.lines)
+    assert any("summary: created game" in line for line in tui.pane.lines)
+    assert any("src/game.py" in line for line in tui.pane.lines)
     tui._task_executor.shutdown(wait=False)
 
 
@@ -1724,12 +1822,12 @@ def test_skill_command_executes_through_chat_runtime(tmp_path, monkeypatch):
 
     tui._tui_stream = fake_stream
 
-    tui._execute_command("/release", "v0.7.0")
+    tui._execute_command("/release", "v0.7.5")
 
     messages = tui.store.snapshot()
-    assert any(msg.role == "user" and msg.text == "/release v0.7.0" for msg in messages)
+    assert any(msg.role == "user" and msg.text == "/release v0.7.5" for msg in messages)
     assert tui.last_reply == "Release notes ready."
-    assert "Draft release notes for v0.7.0." in captured["messages"][-1]["content"]
+    assert "Draft release notes for v0.7.5." in captured["messages"][-1]["content"]
     tui._task_executor.shutdown(wait=False)
 
 
