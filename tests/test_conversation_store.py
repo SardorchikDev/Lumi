@@ -10,7 +10,10 @@ from src.memory.conversation_store import (
     list_sessions,
     load_by_name,
     load_latest,
+    load_repo_autosave,
+    load_resume,
     save,
+    save_repo_autosave,
 )
 
 
@@ -49,8 +52,11 @@ class TestConversationStore:
 
     def teardown_method(self):
         self._patcher.stop()
-        for f in self._tmp_dir.glob("*.json"):
-            f.unlink()
+        for f in sorted(self._tmp_dir.rglob("*"), reverse=True):
+            if f.is_file():
+                f.unlink()
+            elif f.is_dir():
+                f.rmdir()
         if self._tmp_dir.exists():
             self._tmp_dir.rmdir()
 
@@ -122,3 +128,47 @@ class TestConversationStore:
         assert "date" in data
         assert "messages" in data
         assert data["messages"] == history
+
+    def test_repo_autosave_round_trip(self, tmp_path):
+        workspace = tmp_path / "repo"
+        workspace.mkdir()
+        (workspace / ".git").mkdir()
+        history = [{"role": "user", "content": "repo chat"}]
+
+        path = save_repo_autosave(history, base_dir=workspace)
+
+        assert path.exists()
+        assert load_repo_autosave(workspace) == history
+
+    def test_repo_autosave_uses_repo_root_for_nested_paths(self, tmp_path):
+        workspace = tmp_path / "repo"
+        nested = workspace / "src" / "pkg"
+        nested.mkdir(parents=True)
+        (workspace / ".git").mkdir()
+        history = [{"role": "assistant", "content": "same repo"}]
+
+        save_repo_autosave(history, base_dir=nested)
+
+        assert load_repo_autosave(workspace) == history
+        assert load_repo_autosave(nested) == history
+
+    def test_load_resume_prefers_repo_autosave(self, tmp_path):
+        workspace = tmp_path / "repo"
+        workspace.mkdir()
+        (workspace / ".git").mkdir()
+        repo_history = [{"role": "user", "content": "repo autosave"}]
+        global_history = [{"role": "user", "content": "global latest"}]
+
+        save(global_history, name="other-session")
+        save_repo_autosave(repo_history, base_dir=workspace)
+
+        assert load_resume(base_dir=workspace) == repo_history
+
+    def test_load_resume_falls_back_to_latest_snapshot(self, tmp_path):
+        workspace = tmp_path / "repo"
+        workspace.mkdir()
+        latest_history = [{"role": "user", "content": "latest snapshot"}]
+
+        save(latest_history, name="fallback-session")
+
+        assert load_resume(base_dir=workspace) == latest_history

@@ -1,8 +1,9 @@
-"""Workbench orchestration for Lumi v0.6.0: Mirror."""
+"""Workbench orchestration for Lumi v0.7.0: Operator."""
 
 from __future__ import annotations
 
 import hashlib
+import inspect
 import io
 import json
 import re
@@ -21,8 +22,8 @@ from src.utils.project_context import find_project_context_file
 from src.utils.repo_profile import find_relevant_paths, inspect_workspace, render_workspace_overview
 from src.utils.runtime_config import display_context_path, iter_context_roots
 
-WORKBENCH_NAME = "Mirror"
-WORKBENCH_VERSION = "0.6.0"
+WORKBENCH_NAME = "Operator"
+WORKBENCH_VERSION = "0.7.0"
 WORKBENCH_TITLE = f"Lumi v{WORKBENCH_VERSION}: {WORKBENCH_NAME}"
 WORKBENCH_STATE_DIR = DATA_DIR / "workbench"
 WORKBENCH_CACHE_DIR = CACHE_ROOT / "workbench"
@@ -831,6 +832,13 @@ def execute_workbench(
         if progress_cb:
             progress_cb(f"running {normalized_mode} agent")
         buf = io.StringIO()
+        agent_kwargs: dict[str, Any] = {}
+        try:
+            params = inspect.signature(run_agent_fn).parameters
+        except (TypeError, ValueError):
+            params = {}
+        if "base_dir" in params:
+            agent_kwargs["base_dir"] = root
         with redirect_stdout(buf):
             summary = run_agent_fn(
                 objective_prefix,
@@ -840,6 +848,7 @@ def execute_workbench(
                 system_prompt,
                 True,
                 dry_run or normalized_mode == "review",
+                **agent_kwargs,
             )
         execution_log = buf.getvalue().strip()
         post_profile = inspect_workspace(root)

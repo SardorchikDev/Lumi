@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 EFFORT_LEVELS = ("low", "medium", "high", "ehigh")
 EFFORT_ALIASES = {
@@ -19,31 +20,39 @@ EFFORT_ALIASES = {
 @dataclass(frozen=True)
 class EffortProfile:
     effort: str
-    token_scale: float
-    temperature_cap: float
+    temperature: float
+    max_tokens: int
+    thinking_enabled: bool
+    thinking_budget: int | None
     system_hint: str
 
 
 EFFORT_PROFILES: dict[str, EffortProfile] = {
     "low": EffortProfile(
         effort="low",
-        token_scale=0.7,
-        temperature_cap=0.45,
+        temperature=1.0,
+        max_tokens=2048,
+        thinking_enabled=False,
+        thinking_budget=None,
         system_hint=(
             "Reasoning effort: low. Solve directly. Prefer the shortest correct path. "
-            "Avoid exhaustive branch exploration unless the task is clearly ambiguous or risky."
+            "Avoid broad exploration unless the task is clearly ambiguous."
         ),
     ),
     "medium": EffortProfile(
         effort="medium",
-        token_scale=1.0,
-        temperature_cap=0.7,
+        temperature=0.7,
+        max_tokens=4096,
+        thinking_enabled=False,
+        thinking_budget=None,
         system_hint="",
     ),
     "high": EffortProfile(
         effort="high",
-        token_scale=1.25,
-        temperature_cap=0.35,
+        temperature=0.3,
+        max_tokens=8192,
+        thinking_enabled=True,
+        thinking_budget=5000,
         system_hint=(
             "Reasoning effort: high. Work carefully through assumptions, edge cases, and tradeoffs "
             "before answering. Prefer correctness over speed."
@@ -51,8 +60,10 @@ EFFORT_PROFILES: dict[str, EffortProfile] = {
     ),
     "ehigh": EffortProfile(
         effort="ehigh",
-        token_scale=1.5,
-        temperature_cap=0.2,
+        temperature=0.1,
+        max_tokens=16384,
+        thinking_enabled=True,
+        thinking_budget=15000,
         system_hint=(
             "Reasoning effort: extra high. Use a deliberate multi-step internal plan, verify key assumptions, "
             "consider strong alternatives, and only then produce the final answer."
@@ -69,9 +80,12 @@ def normalize_reasoning_effort(value: str | None) -> str:
     return normalized if normalized in EFFORT_PROFILES else "medium"
 
 
+def get_effort_profile(effort: str | None) -> EffortProfile:
+    return EFFORT_PROFILES[normalize_reasoning_effort(effort)]
+
+
 def apply_reasoning_effort(messages: list[dict[str, object]], effort: str | None) -> list[dict[str, object]]:
-    normalized = normalize_reasoning_effort(effort)
-    profile = EFFORT_PROFILES[normalized]
+    profile = get_effort_profile(effort)
     if not profile.system_hint:
         return [dict(message) for message in messages]
 
@@ -85,8 +99,26 @@ def apply_reasoning_effort(messages: list[dict[str, object]], effort: str | None
 
 
 def tune_inference_request(max_tokens: int, temperature: float, effort: str | None) -> tuple[int, float]:
-    normalized = normalize_reasoning_effort(effort)
-    profile = EFFORT_PROFILES[normalized]
-    tuned_tokens = max(64, int(max_tokens * profile.token_scale))
-    tuned_temperature = min(float(temperature), profile.temperature_cap)
-    return tuned_tokens, max(0.0, tuned_temperature)
+    profile = get_effort_profile(effort)
+    _ = max_tokens, temperature
+    return profile.max_tokens, profile.temperature
+
+
+def provider_effort_options(
+    provider: str,
+    effort: str | None,
+    *,
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+) -> dict[str, Any]:
+    profile = get_effort_profile(effort)
+    payload: dict[str, Any] = {
+        "max_tokens": min(profile.max_tokens, max_tokens) if max_tokens is not None else profile.max_tokens,
+        "temperature": profile.temperature,
+    }
+    lowered_provider = str(provider or "").strip().lower()
+    if lowered_provider == "claude" and profile.thinking_enabled:
+        payload["thinking"] = {"type": "enabled", "budget_tokens": profile.thinking_budget}
+    elif lowered_provider == "gemini" and profile.thinking_enabled:
+        payload["thinking_config"] = {"mode": "enabled", "budget_tokens": profile.thinking_budget}
+    return payload

@@ -43,7 +43,9 @@ TUI_LOGO_LINES: tuple[str, ...] = (
 SHORTCUT_ROWS: tuple[tuple[str, str], ...] = (
     ("?", "show or hide shortcuts"),
     ("/", "open the command menu"),
+    ("Ctrl+P", "open the command palette"),
     ("Ctrl+N", "open the model picker"),
+    ("Ctrl+T", "toggle the TODO pane"),
     ("Tab", "accept a command or path suggestion"),
     ("Esc", "close menus and pending UI"),
     ("Ctrl+L", "clear the current chat"),
@@ -72,6 +74,7 @@ class ViewStyle:
     cyan: str
     red: str
     teal: str
+    orange: str
 
 
 @dataclass(frozen=True)
@@ -299,7 +302,7 @@ class StarterView:
         left_col = min(52, max(38, total_w // 3 + 8))
         right_col = max(36, total_w - left_col - 5)
         top_fill = left_col + right_col + 5
-        title = f" Lumi v{APP_VERSION}: Mirror "
+        title = f" Lumi v{APP_VERSION}: Operator "
         title = title[: max(0, top_fill - 2)]
         left_rule = max(0, (top_fill - len(title)) // 2)
         right_rule = max(0, top_fill - len(title) - left_rule)
@@ -421,7 +424,7 @@ class StarterView:
             return left + prefix + self.style.fg_fn(tone) + text[:content_w] + self.style.reset
 
         return [
-            row("Lumi Mirror", self.style.fg_hi, bold=True)
+            row("Lumi Operator", self.style.fg_hi, bold=True)
             + self.style.fg_fn(self.style.muted)
             + f"  v{APP_VERSION}"
             + self.style.reset,
@@ -442,6 +445,31 @@ class StarterView:
             trailing_lines=[],
         )
 
+    def _minimal_header(self, width: int, provider: str, model: str, cwd_short: str) -> list[str]:
+        logo_width = max(len(line) for line in TUI_LOGO_LINES)
+        text_width = max(18, width - logo_width - 6)
+        title = self._fit_plain(f"Lumi Operator v{APP_VERSION}", text_width)
+        runtime = self._fit_plain(f"{provider} · {model}", text_width)
+        cwd = self._fit_plain(cwd_short, text_width)
+        logo_offsets = (2, 1, 3)
+        logo_cell_width = logo_width + 2
+
+        meta_rows = (
+            (title, self.style.fg_hi, True),
+            (runtime, self.style.fg_dim, False),
+            (cwd, self.style.muted, False),
+        )
+        lines: list[str] = []
+        for icon, offset, (text, tone, bold) in zip(TUI_LOGO_LINES, logo_offsets, meta_rows, strict=False):
+            line = " " * offset
+            line += self.style.fg_fn(self.style.fg_dim) + icon.ljust(logo_cell_width - offset) + self.style.reset
+            line += "  "
+            if bold:
+                line += self.style.bold()
+            line += self.style.fg_fn(tone) + text + self.style.reset
+            lines.append(line)
+        return lines
+
     def build(self, width: int) -> IntroRender:
         provider_key = self.provider_resolver()
         provider = self.provider_label(provider_key)
@@ -449,8 +477,6 @@ class StarterView:
         cwd = Path.cwd().resolve()
         cwd_short = self._display_path(cwd)
         review_lines = self._build_review_lines(width)
-        has_messages = bool(self.tui.store.snapshot())
-        starter_pinned = bool(getattr(self.tui, "starter_panel_pinned", False))
         if review_lines:
             return IntroRender(
                 header_lines=review_lines,
@@ -463,17 +489,8 @@ class StarterView:
                 prompt=PromptRender(lines=[], cursor_row=0, cursor_col=0),
                 trailing_lines=[],
             )
-        if has_messages and not starter_pinned:
-            return IntroRender(
-                header_lines=[],
-                prompt=PromptRender(lines=[], cursor_row=0, cursor_col=0),
-                trailing_lines=[],
-            )
-        if width < 88:
-            return self._compact_build(width, provider, model, cwd_short)
-        lines = self._welcome_card(width, provider, model, cwd_short)
         return IntroRender(
-            header_lines=lines,
+            header_lines=self._minimal_header(width, provider, model, cwd_short),
             prompt=PromptRender(lines=[], cursor_row=0, cursor_col=0),
             trailing_lines=[],
         )
@@ -500,46 +517,25 @@ class TranscriptView:
         msgs = self.tui.store.snapshot()
         lines: list[str] = []
         inner = max(30, width - 4)
-        header_prefix = "  "
         body_prefix = "    "
         if not msgs:
             return lines
 
-        def append_message(role: str, text: str, *, ts: str = "", tone: str | None = None, label_tone: str | None = None, bold_label: bool = False) -> None:
-            role_tone = label_tone or self.style.muted
-            role_text = (role or "").strip() or "message"
-            header = header_prefix
-            if bold_label:
-                header += self.style.bold()
-            header += self.style.fg_fn(role_tone) + role_text + self.style.reset
-            if ts:
-                header += self.style.fg_fn(self.style.comment) + f"  {ts}" + self.style.reset
-            plain_header = self.strip_ansi(header)
-            inline_prefix = header + self.style.fg_fn(self.style.comment) + "  " + self.style.reset
-            inline_prefix_plain = plain_header + "  "
-            body_tone = tone or self.style.fg
-            remaining = text.split("\n") or [""]
-            first_line = True
-            for chunk in remaining:
-                if first_line:
-                    wrap_width = max(12, inner - len(inline_prefix_plain))
-                    wrapped_chunks = textwrap.wrap(chunk, wrap_width) if chunk.strip() else [""]
-                    if wrapped_chunks:
-                        lines.append(inline_prefix + self.style.fg_fn(body_tone) + wrapped_chunks[0] + self.style.reset)
-                        for wrapped in wrapped_chunks[1:]:
-                            lines.append(body_prefix + self.style.fg_fn(body_tone) + wrapped + self.style.reset)
-                    else:
-                        lines.append(inline_prefix + self.style.fg_fn(body_tone) + self.style.reset)
-                    first_line = False
-                    continue
-                wrap_width = max(12, inner - len(body_prefix))
-                wrapped_chunks = textwrap.wrap(chunk, wrap_width) if chunk.strip() else [""]
-                for wrapped in wrapped_chunks or [""]:
-                    lines.append(body_prefix + self.style.fg_fn(body_tone) + wrapped + self.style.reset)
+        def append_prefixed(marker: str, text: str, *, marker_tone: str, tone: str) -> None:
+            raw_lines = text.split("\n") or [""]
+            first_prefix = "  " + self.style.fg_fn(marker_tone) + marker + self.style.reset + " "
+            first_prefix_plain = self.strip_ansi(first_prefix)
+            cont_prefix = "    "
+            for index, chunk in enumerate(raw_lines):
+                wrap_width = max(12, inner - (len(first_prefix_plain) if index == 0 else len(cont_prefix)))
+                wrapped = textwrap.wrap(chunk, wrap_width, break_long_words=True, break_on_hyphens=False) if chunk.strip() else [""]
+                for wrap_index, piece in enumerate(wrapped or [""]):
+                    prefix = first_prefix if index == 0 and wrap_index == 0 else cont_prefix
+                    lines.append(prefix + self.style.fg_fn(tone) + piece + self.style.reset)
             lines.append("")
 
         if getattr(self.tui, "agent_active_objective", None) and getattr(self.tui, "agent_tasks", None):
-            lines.append(header_prefix + self.style.fg_fn(self.style.muted) + "objective" + self.style.reset)
+            lines.append("  " + self.style.fg_fn(self.style.muted) + "objective" + self.style.reset)
             for task in self.tui.agent_tasks:
                 bullet = "·"
                 label = task.get("text", "")
@@ -550,12 +546,38 @@ class TranscriptView:
 
         for msg in msgs:
             if msg.role == "user":
-                append_message("you", msg.text, ts=msg.ts, tone=self.style.fg_hi, label_tone=self.style.muted)
+                append_prefixed("›", msg.text, marker_tone=self.style.fg_dim, tone=self.style.fg_hi)
+                continue
+
+            if msg.role == "tool":
+                meta = msg.meta or {}
+                status = str(meta.get("status") or "running")
+                ok = bool(meta.get("ok", status == "done"))
+                duration_ms = int(meta.get("duration_ms") or 0)
+                icon = "▶"
+                tone = self.style.cyan
+                if status == "done":
+                    icon = "✓" if ok else "✗"
+                    tone = self.style.fg_hi if ok else self.style.red
+                elif status == "failed":
+                    icon = "✗"
+                    tone = self.style.red
+                label = (msg.label or "tool").strip()
+                suffix = msg.text.strip()
+                parts = [f"{icon} {label}"]
+                if suffix:
+                    parts.append(suffix)
+                elif duration_ms:
+                    parts.append(f"{duration_ms}ms")
+                rendered = "  ".join(part for part in parts if part).strip()
+                wrap_width = max(12, inner - 2)
+                for chunk in textwrap.wrap(rendered, wrap_width, break_long_words=False) or [rendered]:
+                    lines.append("  " + self.style.fg_fn(tone) + chunk + self.style.reset)
+                lines.append("")
                 continue
 
             if msg.role in ("assistant", "streaming"):
                 is_stream = msg.role == "streaming"
-                label = (msg.label or "lumi").replace("◆", "").strip() or "lumi"
                 if is_stream:
                     blink_on = int(time.time() * 4) % 2 == 0
                     cursor = " " + self.style.fg_fn(self.style.cyan) + ("▋" if blink_on else " ") + self.style.reset
@@ -563,19 +585,13 @@ class TranscriptView:
                     cursor = ""
 
                 if self.tui.vessel_mode and self.tui.active_vessel:
-                    hdr = self.style.fg_fn(self.style.red) + self.style.bold()
-                    if "vessel" not in label:
-                        label = f"vessel [{self.tui.active_vessel}]"
+                    marker_tone = self.style.red
                 else:
-                    hdr = self.style.fg_fn(self.style.fg_hi) + self.style.bold()
+                    marker_tone = self.style.fg_dim
 
                 prefix = body_prefix
-                header = header_prefix + hdr + label + self.style.reset
-                if msg.ts:
-                    header += self.style.fg_fn(self.style.comment) + f"  {msg.ts}" + self.style.reset
-                header_plain = self.strip_ansi(header)
-                inline_prefix = header + self.style.fg_fn(self.style.comment) + "  " + self.style.reset
-                lines.append(header)
+                inline_prefix = "  " + self.style.fg_fn(marker_tone) + "•" + self.style.reset + " "
+                inline_prefix_plain = self.strip_ansi(inline_prefix)
                 raw_lines = msg.text.split("\n") if msg.text else [""]
                 in_code = False
                 code_w = min(max(18, inner - len(body_prefix)), 88)
@@ -639,13 +655,13 @@ class TranscriptView:
                             lines.append("")
                     else:
                         rendered = self.inline_renderer(ln)
-                        wrap_width = max(12, inner - (len(header_plain) + 2 if not used_inline_prefix else len(prefix)))
+                        wrap_width = max(12, inner - (len(inline_prefix_plain) if not used_inline_prefix else len(prefix)))
                         if not used_inline_prefix and len(self.strip_ansi(ln)) <= wrap_width:
-                            lines[-1] = inline_prefix + rendered + self.style.reset
+                            lines.append(inline_prefix + rendered + self.style.reset)
                             used_inline_prefix = True
                         elif not used_inline_prefix:
                             wrapped = textwrap.wrap(self.strip_ansi(ln), wrap_width) or [ln]
-                            lines[-1] = inline_prefix + self.style.fg_fn(self.style.fg) + wrapped[0] + self.style.reset
+                            lines.append(inline_prefix + self.style.fg_fn(self.style.fg) + wrapped[0] + self.style.reset)
                             for extra in wrapped[1:]:
                                 lines.append(prefix + self.style.fg_fn(self.style.fg) + extra + self.style.reset)
                             used_inline_prefix = True
@@ -661,11 +677,11 @@ class TranscriptView:
                 continue
 
             if msg.role == "system":
-                append_message("note", msg.text, tone=self.style.fg_dim, label_tone=self.style.muted)
+                append_prefixed("⎿", msg.text, marker_tone=self.style.muted, tone=self.style.fg_dim)
                 continue
 
             if msg.role == "error":
-                append_message("warning", msg.text, tone=self.style.fg_hi, label_tone=self.style.red, bold_label=True)
+                append_prefixed("!", msg.text, marker_tone=self.style.red, tone=self.style.fg_hi)
 
         return lines
 
@@ -774,8 +790,14 @@ class OverlayView:
         prompt_height = int(getattr(self.tui, "_last_prompt_height", 0) or 0)
         if renderer is not None and (prompt_top <= 1 or prompt_height <= 1):
             starter_rows = len(renderer._build_starter_lines(chat_w))
+            chat_line_count = len(renderer._build_chat_lines(chat_w))
             prompt_lines, _cursor_row, _cursor_col = renderer._prompt_bar(rows, chat_w, chat_w)
-            prompt_top = renderer._prompt_top(rows, 1 + starter_rows, len(prompt_lines), 0)
+            prompt_top = renderer._prompt_top(
+                rows,
+                renderer._transcript_top(starter_rows, chat_line_count),
+                len(prompt_lines),
+                chat_line_count,
+            )
             prompt_height = len(prompt_lines)
         prompt_top = max(1, prompt_top or 1)
         prompt_height = max(1, prompt_height or 1)
@@ -896,6 +918,74 @@ class OverlayView:
             out.append(self.popup_line(row, left, pop_w, content, self.style.fg_dim, False))
             row += 1
         out.append(self.popup_line(row, left, pop_w, "  Enter or Esc to close", self.style.muted, False))
+        return "".join(out)
+
+    def command_palette_popup(self, rows: int, chat_w: int) -> str:
+        hits = list(getattr(self.tui, "command_palette_hits", []) or [])
+        sel = int(getattr(self.tui, "command_palette_sel", 0) or 0)
+        query = str(getattr(self.tui, "command_palette_query", "") or "")
+        pop_w = min(78, max(42, chat_w - 6))
+        visible_limit = min(len(hits), max(5, min(10, rows - 6)))
+        total_lines = visible_limit + 3
+        top, left, _usable_width = self._popup_anchor(rows, chat_w, total_lines)
+        start, count, has_above, has_below = self._windowed_items(len(hits), sel, visible_limit)
+        title = "palette"
+        if has_above or has_below:
+            title += (" ↑" if has_above else "") + (" ↓" if has_below else "")
+        out = [self.popup_frame(top, left, pop_w, title)]
+        row = top + 1
+        out.append(self.popup_line(row, left, pop_w, f"󰱼 {query}" if query else "󰱼 type to search commands or prompts", self.style.muted, False))
+        row += 1
+        for idx, item in enumerate(hits[start : start + count], start=start):
+            is_sel = idx == sel
+            kind = str(item.get("kind") or "command")
+            label = str(item.get("label") or "")
+            desc = str(item.get("desc") or "")
+            icon = "󰘳" if kind == "command" else "󰆍"
+            marker = "›" if is_sel else " "
+            desc_width = max(8, pop_w - 22)
+            content = f"{marker} {icon} {label[:16]:<16}  {desc[:desc_width]}"
+            out.append(self.popup_line(row, left, pop_w, content, self.style.fg_hi if is_sel else self.style.fg_dim, is_sel))
+            row += 1
+        while row < top + total_lines - 1:
+            out.append(self.popup_line(row, left, pop_w, "", self.style.fg_dim, False))
+            row += 1
+        out.append(self.popup_line(row, left, pop_w, "Esc close · Enter run/fill · PgUp/PgDn", self.style.muted, False))
+        return "".join(out)
+
+    def permission_popup(self, rows: int, cols: int) -> str:
+        prompt = getattr(self.tui, "permission_prompt", None)
+        if prompt is None or not getattr(prompt, "active", False):
+            return ""
+        options = ("Allow Once", "Allow Always", "Deny")
+        selected = int(getattr(prompt, "selected", 0) or 0)
+        body_w = min(max(54, cols - 18), 88)
+        left = max(2, (cols - body_w) // 2)
+        lines = [
+            "┌─ Permission required " + "─" * max(0, body_w - 24) + "┐",
+            f"│  {str(getattr(prompt, 'tool_name', '') or '')[: body_w - 4]:<{body_w - 4}}│",
+        ]
+        detail_lines = textwrap.wrap(str(getattr(prompt, "display", "") or ""), max(16, body_w - 6), break_long_words=False) or [""]
+        for detail in detail_lines[:2]:
+            lines.append(f"│  {detail[: body_w - 4]:<{body_w - 4}}│")
+        rule_hint = str(getattr(prompt, "rule_hint", "") or "")
+        if rule_hint and rule_hint != getattr(prompt, "display", ""):
+            for detail in textwrap.wrap(rule_hint, max(16, body_w - 6), break_long_words=False)[:1]:
+                lines.append(f"│  {detail[: body_w - 4]:<{body_w - 4}}│")
+        lines.append(f"│  {'':<{body_w - 4}}│")
+        option_cells: list[str] = []
+        for idx, label in enumerate(options):
+            if idx == selected:
+                option_cells.append(f"[{label}]")
+            else:
+                option_cells.append(label)
+        option_line = "  ".join(option_cells)
+        lines.append(f"│  {option_line[: body_w - 4]:<{body_w - 4}}│")
+        lines.append("└" + "─" * (body_w - 2) + "┘")
+        top = max(2, (rows - len(lines)) // 2)
+        out: list[str] = []
+        for offset, line in enumerate(lines):
+            out.append(self.move(top + offset, left) + self.style.fg_fn(self.style.fg_hi if offset in {0, len(lines) - 1} else self.style.fg_dim) + line + self.style.reset)
         return "".join(out)
 
     def picker_popup(self, rows: int, chat_w: int) -> str:

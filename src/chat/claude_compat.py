@@ -55,11 +55,68 @@ def _convert_content(content) -> list[dict[str, object]]:
     return blocks or [{"type": "text", "text": ""}]
 
 
+def _convert_tools(tools: list[dict[str, object]] | None) -> list[dict[str, object]]:
+    converted: list[dict[str, object]] = []
+    for item in tools or []:
+        if not isinstance(item, dict):
+            continue
+        function = item.get("function") if item.get("type") == "function" else item
+        if not isinstance(function, dict):
+            continue
+        name = str(function.get("name") or "").strip()
+        if not name:
+            continue
+        converted.append(
+            {
+                "name": name,
+                "description": str(function.get("description") or ""),
+                "input_schema": function.get("parameters") if isinstance(function.get("parameters"), dict) else {"type": "object", "properties": {}},
+            }
+        )
+    return converted
+
+
+def _tool_use_block(call: dict[str, object]) -> dict[str, object] | None:
+    function = call.get("function")
+    if not isinstance(function, dict):
+        return None
+    name = str(function.get("name") or "").strip()
+    if not name:
+        return None
+    arguments_text = str(function.get("arguments") or "{}")
+    try:
+        arguments = json.loads(arguments_text or "{}")
+    except json.JSONDecodeError:
+        arguments = {}
+    if not isinstance(arguments, dict):
+        arguments = {}
+    return {
+        "type": "tool_use",
+        "id": str(call.get("id") or f"tool_{name}"),
+        "name": name,
+        "input": arguments,
+    }
+
+
 def convert_messages(messages: list[dict[str, object]]) -> tuple[str, list[dict[str, object]]]:
     system_parts: list[str] = []
     converted: list[dict[str, object]] = []
     for message in messages:
         role = str(message.get("role") or "user").strip().lower()
+        if role == "tool":
+            converted.append(
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": str(message.get("tool_call_id") or message.get("name") or "tool"),
+                            "content": str(message.get("content") or ""),
+                        }
+                    ],
+                }
+            )
+            continue
         content = _convert_content(message.get("content", ""))
         if role == "system":
             system_parts.extend(
@@ -69,6 +126,11 @@ def convert_messages(messages: list[dict[str, object]]) -> tuple[str, list[dict[
             )
             continue
         anthropic_role = "assistant" if role == "assistant" else "user"
+        if role == "assistant":
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list) and tool_calls:
+                tool_blocks = [_tool_use_block(call) for call in tool_calls if isinstance(call, dict)]
+                content = [*content, *[block for block in tool_blocks if block is not None]]
         converted.append({"role": anthropic_role, "content": content})
     return "\n\n".join(system_parts).strip(), converted
 
@@ -101,9 +163,30 @@ def _extract_text_blocks(payload: dict[str, object]) -> str:
     return "".join(parts).strip()
 
 
-def _build_response(text: str, *, output_tokens: int = 0):
+def _extract_tool_calls(payload: dict[str, object]) -> list[SimpleNamespace]:
+    blocks = payload.get("content") if isinstance(payload, dict) else []
+    if not isinstance(blocks, list):
+        return []
+    tool_calls: list[SimpleNamespace] = []
+    for index, block in enumerate(blocks, start=1):
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        arguments = json.dumps(block.get("input") or {}, ensure_ascii=False)
+        tool_calls.append(
+            SimpleNamespace(
+                id=str(block.get("id") or f"tool_{index}"),
+                function=SimpleNamespace(
+                    name=str(block.get("name") or ""),
+                    arguments=arguments,
+                ),
+            )
+        )
+    return tool_calls
+
+
+def _build_response(text: str, *, output_tokens: int = 0, tool_calls: list[SimpleNamespace] | None = None):
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=text))],
+        choices=[SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=tool_calls or []))],
         usage=SimpleNamespace(completion_tokens=output_tokens),
     )
 
@@ -148,6 +231,9 @@ class AnthropicChatCompletions:
         max_tokens: int,
         temperature: float,
         stream: bool = False,
+        tools: list[dict[str, object]] | None = None,
+        tool_choice: str | None = None,
+        thinking: dict[str, object] | None = None,
     ):
         system, anthropic_messages = convert_messages(messages)
         payload: dict[str, object] = {
@@ -159,6 +245,11 @@ class AnthropicChatCompletions:
         }
         if system:
             payload["system"] = system
+        converted_tools = _convert_tools(tools)
+        if converted_tools:
+            payload["tools"] = converted_tools
+        if isinstance(thinking, dict) and thinking:
+            payload["thinking"] = thinking
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": ANTHROPIC_VERSION,
@@ -176,7 +267,11 @@ class AnthropicChatCompletions:
             data = response.json()
             usage = data.get("usage", {}) if isinstance(data, dict) else {}
             output_tokens = int(usage.get("output_tokens") or 0)
-            return _build_response(_extract_text_blocks(data), output_tokens=output_tokens)
+            return _build_response(
+                _extract_text_blocks(data),
+                output_tokens=output_tokens,
+                tool_calls=_extract_tool_calls(data),
+            )
         return self._stream_chunks(response)
 
     def _stream_chunks(self, response: requests.Response):

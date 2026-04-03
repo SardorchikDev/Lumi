@@ -176,6 +176,10 @@ def read_key(fd: int) -> str | tuple[str, str]:
                 return "CTRL_U"
             if ch == b"\x12":
                 return "CTRL_R"
+            if ch == b"\x10":
+                return "CTRL_P"
+            if ch == b"\x14":
+                return "CTRL_T"
             if ch == b"\x04":
                 return "CTRL_D"
 

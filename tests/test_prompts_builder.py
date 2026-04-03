@@ -1,6 +1,8 @@
 """Tests for src.prompts.builder — system prompt construction."""
 
 from src.prompts.builder import (
+    PromptContext,
+    build_dynamic_system_prompt,
     build_messages,
     build_system_prompt,
     is_coding_task,
@@ -79,6 +81,16 @@ class TestBuildSystemPrompt:
         prompt = build_system_prompt(persona)
         assert "If the user asks who you are" in prompt
         assert "Never claim to be Claude Code" in prompt
+
+    def test_dynamic_prompt_includes_creator_and_release_identity(self):
+        persona = {"name": "Lumi", "creator": "Sardor Sodiqov (SardorchikDev)", "tone": "calm", "traits": ["precise"]}
+        prompt = build_dynamic_system_prompt(
+            persona,
+            context=PromptContext(date="2026-04-03", cwd="/repo", git_branch="main"),
+        )
+        assert "Sardor Sodiqov" in prompt
+        assert "SardorchikDev" in prompt
+        assert "Lumi v0.7.0: Operator" in prompt
 
 
 class TestIsCodingTask:

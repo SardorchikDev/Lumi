@@ -1,12 +1,14 @@
-# Lumi v0.6.0: Mirror
+# Lumi v0.7.0: Operator
 
-Mirror is the Python-side Claude-parity release.
+Operator is the Python-side Claude-parity release.
 
 It is not the language rewrite. It is the release that closes the highest-value workflow gaps first, makes parity measurable, and prepares Lumi for the Bun/TypeScript/Ink rewrite that will become `v1.0.0: Native`.
 
+The file name stays `LUMI_MIRROR_SPEC.md` to avoid churn in existing references, but the current release name is `Operator`.
+
 ## Release Naming
 
-- `v0.6.0: Mirror`
+- `v0.7.0: Operator`
   - Python release
   - focused on workflow parity, command parity, and subsystem parity
   - goal: make Lumi feel close enough to Claude Code that the remaining rewrite is mostly architectural, not product-definition work
@@ -16,7 +18,7 @@ It is not the language rewrite. It is the release that closes the highest-value 
 
 ## Success Criteria
 
-Mirror is successful when:
+Operator is successful when:
 
 - Lumi covers the high-value Claude command surface used in daily coding work
 - permissions are rule-based instead of ad hoc
@@ -256,7 +258,7 @@ Acceptance:
 
 ### 16. Missing Command Parity Backlog
 
-High-value commands to close during Mirror:
+High-value commands to close during Operator:
 
 - `/commit`
 - `/commit-push-pr`
@@ -344,7 +346,7 @@ Acceptance:
 
 ## Rewrite Gate For v1.0.0: Native
 
-The language switch should happen only after Mirror establishes:
+The language switch should happen only after Operator establishes:
 
 - stable tool contracts
 - stable permission contracts
@@ -366,4 +368,4 @@ If those are not locked first, the rewrite becomes a moving target and wastes ti
 
 ## Operating Rule
 
-Mirror is not allowed to claim Claude parity based on look-and-feel alone. It must close workflow, command, and subsystem gaps in measurable terms before the rewrite begins.
+Operator is not allowed to claim Claude parity based on look-and-feel alone. It must close workflow, command, and subsystem gaps in measurable terms before the rewrite begins.

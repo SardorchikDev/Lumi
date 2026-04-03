@@ -1527,11 +1527,13 @@ def run_agent(
     system_prompt: str,
     yolo: bool = False,
     review_only: bool = False,
+    *,
+    base_dir: Path | None = None,
 ) -> str:
     """Full agent loop: grounded plan → grouped approval → execute → optional rollback."""
     from src.utils.markdown import render as md_render
 
-    base_dir = Path.cwd().resolve()
+    base_dir = (base_dir or Path.cwd()).resolve()
     workspace_profile = inspect_workspace(base_dir)
     journal = ChangeJournal()
     start_active_run(task, base_dir=base_dir, branch=workspace_profile.git_branch)

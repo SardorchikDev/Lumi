@@ -26,7 +26,7 @@ class CommandParityCategory:
 
 @dataclass(frozen=True)
 class MirrorWorkstream:
-    """Major parity workstream for Lumi v0.6.0: Mirror."""
+    """Major parity workstream for Lumi v0.7.0: Operator."""
 
     key: str
     name: str
@@ -122,7 +122,7 @@ MIRROR_WORKSTREAMS: tuple[MirrorWorkstream, ...] = (
     MirrorWorkstream("remote", "Remote and device handoff layer", "Remote env/setup and replaceable desktop/mobile handoff surfaces.", "/remote-env /remote-setup /desktop /mobile /teleport", rewrite_relevant=True),
     MirrorWorkstream("tui", "TUI control-density parity", "Statusline, keymaps, panes, permission prompts, and Claude-grade operator UX.", "terminal UI", rewrite_relevant=True),
     MirrorWorkstream("diagnostics", "Parity and regression audits", "Track command, subsystem, and workflow parity with machine-readable audits.", "claude parity audit"),
-    MirrorWorkstream("rewrite", "1.0.0 native runtime rewrite", "Move Lumi to Bun/TypeScript/Ink after Mirror lands enough parity in Python.", "v1.0.0 Native", rewrite_relevant=True),
+    MirrorWorkstream("rewrite", "1.0.0 native runtime rewrite", "Move Lumi to Bun/TypeScript/Ink after Operator lands enough parity in Python.", "v1.0.0 Native", rewrite_relevant=True),
 )
 
 
@@ -194,7 +194,7 @@ def claude_parity_summary(base_dir: Path | None = None) -> tuple[int, int, float
 
 
 def collect_mirror_workstreams() -> tuple[MirrorWorkstream, ...]:
-    """Return the authoritative Mirror workstream list."""
+    """Return the authoritative Operator workstream list."""
 
     return MIRROR_WORKSTREAMS
 
@@ -221,7 +221,7 @@ def render_claude_parity_report(base_dir: Path | None = None) -> str:
             if len(item.missing) > 6:
                 preview += ", ..."
             lines.append(f"      missing: {preview}")
-    lines.extend(["", "Mirror workstreams"])
+    lines.extend(["", "Operator workstreams"])
     for index, item in enumerate(workstreams, 1):
         rewrite_note = " [rewrite]" if item.rewrite_relevant else ""
         lines.append(f"  {index}. {item.name}{rewrite_note}")
@@ -231,8 +231,8 @@ def render_claude_parity_report(base_dir: Path | None = None) -> str:
         [
             "",
             "Release path",
-            "  - v0.6.0: Mirror — Python parity release focused on the 17 workstreams.",
-            "  - v1.0.0: Native — Bun/TypeScript/Ink rewrite after Mirror lands enough workflow parity.",
+            "  - v0.7.0: Operator — Python execution release focused on the 17 workstreams.",
+            "  - v1.0.0: Native — Bun/TypeScript/Ink rewrite after Operator lands enough workflow parity.",
         ]
     )
     return "\n".join(lines)
@@ -345,6 +345,6 @@ def render_version_report(*, version: str, provider: str = "", model: str = "") 
     if provider or model:
         lines.append(f"  Runtime: {label} · {model or 'unknown'}")
     lines.append(f"  CWD:     {Path.cwd().resolve()}")
-    lines.append("  Workbench: Mirror")
+    lines.append("  Workbench: Operator")
     lines.append("  Parity layer: Claude-style config, tasks, agents, files, and sessions")
     return "\n".join(lines)

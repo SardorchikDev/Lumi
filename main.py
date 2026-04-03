@@ -50,7 +50,12 @@ from src.chat.runtime import build_runtime_messages
 from src.chat.runtime import route_helper_model as _shared_route_helper_model
 from src.cli.args import parse_cli_args, print_cli_help
 from src.config import PLUGINS_DIR, SESSIONS_DIR, ensure_dirs
-from src.memory.conversation_store import list_sessions, load_by_name, load_latest, save
+from src.memory.conversation_store import (
+    list_sessions,
+    load_resume,
+    save,
+    save_repo_autosave,
+)
 from src.memory.longterm import (
     add_fact,
     auto_summarize_and_save,
@@ -376,7 +381,7 @@ def print_help() -> None:
 
     section("SESSIONS")
     cmd("/save [name]",              "save conversation with optional name")
-    cmd("/load [name]",              "load session by name or latest")
+    cmd("/load [name]",              "load repo autosave or named session")
     cmd("/resume [name]",            "alias for /load")
     cmd("/sessions",                 "list all saved sessions")
     cmd("/session",                  "alias for /sessions")
@@ -2113,9 +2118,10 @@ def main() -> None:  # noqa: C901
 
     if _load_session:
         try:
-            h = load_latest() if _load_session == "latest" else load_by_name(_load_session)
+            h = load_resume(_load_session, base_dir=pathlib.Path.cwd())
             if h:
                 memory.set_history(h)
+                save_repo_autosave(h, base_dir=pathlib.Path.cwd())
                 info(f"Resumed session: {_load_session}  ({len(h)} messages)")
         except Exception:
             pass
@@ -2188,6 +2194,10 @@ def main() -> None:  # noqa: C901
                 )
         except (KeyboardInterrupt, EOFError):
             history_save()
+            try:
+                save_repo_autosave(memory.get(), base_dir=pathlib.Path.cwd())
+            except Exception:
+                pass
             ok(f"Saved → {save(memory.get())}")
             if client and memory.get():
                 auto_summarize_and_save(memory.get(), client, current_model)
@@ -2218,6 +2228,10 @@ def main() -> None:  # noqa: C901
 
         if cmd in ("/quit", "/exit"):
             history_save()
+            try:
+                save_repo_autosave(memory.get(), base_dir=pathlib.Path.cwd())
+            except Exception:
+                pass
             ok(f"Saved → {save(memory.get())}")
             if client and memory.get():
                 auto_summarize_and_save(memory.get(), client, current_model)
@@ -2394,6 +2408,10 @@ def main() -> None:  # noqa: C901
             memory.clear()
             last_msg = last_reply = prev_reply = None
             turns    = 0
+            try:
+                save_repo_autosave([], base_dir=pathlib.Path.cwd())
+            except Exception:
+                pass
             draw_header(
                 current_model, 0,
                 "council" if current_model == "council" else get_provider(),
@@ -2405,16 +2423,18 @@ def main() -> None:  # noqa: C901
             parts = user_input.split(maxsplit=1)
             sname = parts[1].strip() if len(parts) > 1 else ""
             p = save(memory.get(), sname)
+            save_repo_autosave(memory.get(), base_dir=pathlib.Path.cwd())
             ok(f"Saved → {p.name}")
             continue
 
         if cmd == "/load":
             parts = user_input.split(maxsplit=1)
             sname = parts[1].strip() if len(parts) > 1 else ""
-            h     = load_by_name(sname) if sname else load_latest()
+            h     = load_resume(sname, base_dir=pathlib.Path.cwd())
             if h:
                 memory.set_history(h)
                 turns = len(h) // 2
+                save_repo_autosave(h, base_dir=pathlib.Path.cwd())
                 draw_header(
                     current_model, turns,
                     "council" if current_model == "council" else get_provider(),
@@ -3464,10 +3484,18 @@ def main() -> None:  # noqa: C901
         if max_turns and turns >= max_turns:
             ok(f"Reached --max-turns {max_turns} — exiting")
             history_save()
+            try:
+                save_repo_autosave(memory.get(), base_dir=pathlib.Path.cwd())
+            except Exception:
+                pass
             save(memory.get())
             sys.exit(0)
 
         # Auto-save
+        try:
+            save_repo_autosave(memory.get(), base_dir=pathlib.Path.cwd())
+        except Exception:
+            pass
         if turns % AUTOSAVE_EVERY == 0:
             try:
                 save(memory.get())

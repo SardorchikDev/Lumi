@@ -57,17 +57,20 @@ from src.chat.inference_controls import (
     EFFORT_LEVELS,
     apply_reasoning_effort,
     normalize_reasoning_effort,
+    provider_effort_options,
     tune_inference_request,
 )
 from src.chat.optimizer import (
+    estimate_message_tokens,
+    estimate_tokens,
     get_global_context_cache,
     get_global_telemetry,
     optimize_messages,
     route_model,
 )
 from src.chat.runtime import build_runtime_messages
-from src.chat.streaming import stream_once
-from src.memory.conversation_store import load_by_name, load_latest
+from src.chat.streaming import StreamCancelledError, stream_once
+from src.memory.conversation_store import load_resume, save_repo_autosave
 from src.memory.conversation_store import (
     save as session_save,
 )
@@ -81,11 +84,14 @@ from src.memory.longterm import (
 )
 from src.memory.short_term import ShortTermMemory
 from src.prompts.builder import (
-    build_system_prompt,
+    PromptContext,
+    build_dynamic_system_prompt,
     is_coding_task,
     is_file_generation_task,
     load_persona,
 )
+from src.tools.agentic_runtime import build_agentic_system_hint, run_tool_loop_sync
+from src.tools.base import ToolContext, ToolEvent
 from src.tools.search import search, search_display
 from src.tui.command_groups import register_command_groups
 from src.tui.controller_actions import (
@@ -176,7 +182,7 @@ from src.tui.mode_sessions import (
 from src.tui.notes import LittleNotesStore
 from src.tui.review_cards import file_review_card
 from src.tui.session import initialize_ui_state
-from src.tui.state import AgentState, Msg, PaneState, ReviewCard, Store
+from src.tui.state import AgentState, Msg, PaneState, PermissionPromptState, ReviewCard, Store
 from src.tui.views import OverlayView, PaneView, StarterView, TranscriptView, ViewStyle
 from src.utils.autoremember import auto_extract_facts
 from src.utils.claude_parity import (
@@ -200,12 +206,32 @@ from src.utils.filesystem import (
     suggest_paths,
     undo_operation,
 )
+from src.utils.git_tools import summarize_git_state
 from src.utils.intelligence import (
     detect_emotion,
     emotion_hint,
     is_complex_coding_task,
     needs_plan_first,
     should_search,
+)
+from src.utils.permissions import (
+    PermissionDecision,
+    PermissionRequest,
+)
+from src.utils.permissions import (
+    add_permission_rule as add_tool_permission_rule,
+)
+from src.utils.permissions import (
+    evaluate_permission as evaluate_tool_permission,
+)
+from src.utils.permissions import (
+    remove_permission_rule as remove_tool_permission_rule,
+)
+from src.utils.permissions import (
+    render_permission_report as render_tool_permission_report,
+)
+from src.utils.permissions import (
+    set_permission_mode as set_tool_permission_mode,
 )
 from src.utils.plugins import (
     approve_plugin,
@@ -218,6 +244,9 @@ from src.utils.plugins import (
 )
 from src.utils.plugins import dispatch as plugin_dispatch
 from src.utils.project_context import load_project_context
+from src.utils.project_memory import memory_path as project_memory_path
+from src.utils.project_memory import remember_decision as remember_project_decision
+from src.utils.project_memory import render_memory_block
 from src.utils.rebirth import load_rebirth_profile, rebirth_status_summary, render_rebirth_report
 from src.utils.repo_profile import inspect_workspace
 from src.utils.runtime_config import (
@@ -491,7 +520,7 @@ BLUE = "#a5b8d1"
 CYAN = "#aabed5"
 GREEN = "#a8c2a1"
 YELLOW = "#d6c6a1"
-ORANGE = "#d4b08d"
+ORANGE = "#b4bcc8"
 RED = "#d1a2a2"
 PURPLE = "#b8bfd6"
 TEAL = "#9cbeb7"
@@ -621,6 +650,7 @@ class CommandRegistry:
             "/onboard": "/onboard",
             "/pane": "/pane pytest -q",
             "/permissions": "/permissions all",
+            "/logs": "/logs",
             "/project": "/project .",
             "/rag": "/rag how does the agent patch files?",
             "/review": "/review src/chat/hf_client.py",
@@ -663,7 +693,7 @@ class CommandRegistry:
         return score
 
     def _infer_category(self, name):
-        if name in {"/model", "/theme", "/persona", "/mode", "/offline", "/plugins", "/plugin", "/permissions", "/config", "/status", "/doctor", "/onboard", "/benchmark", "/hooks", "/brief", "/fast", "/effort", "/version", "/quit", "/exit"}:
+        if name in {"/model", "/theme", "/persona", "/mode", "/offline", "/plugins", "/plugin", "/permissions", "/config", "/status", "/doctor", "/onboard", "/benchmark", "/hooks", "/brief", "/fast", "/effort", "/version", "/logs", "/quit", "/exit"}:
             return "settings"
         if name in {"/agent", "/agents", "/tasks", "/jobs", "/build", "/learn", "/ship", "/fixci", "/scaffold", "/edit", "/review", "/fix", "/debug", "/improve", "/optimize", "/security", "/refactor", "/test", "/explain"}:
             return "code"
@@ -722,6 +752,10 @@ class Renderer:
     def __init__(self, tui):
         self.tui = tui
         self._lock = threading.Lock()
+        self._starter_cache_key = None
+        self._starter_cache_lines: list[str] = []
+        self._chat_cache_key = None
+        self._chat_cache_lines: list[str] = []
         style = ViewStyle(
             fg_fn=_fg,
             bg_fn=_bg,
@@ -740,6 +774,7 @@ class Renderer:
             cyan=CYAN,
             red=RED,
             teal=TEAL,
+            orange=ORANGE,
         )
         self._starter_view = StarterView(
             tui,
@@ -799,9 +834,9 @@ class Renderer:
         prompt_lines, prompt_cursor_row, prompt_cursor_col = self._prompt_bar(rows, cols, chat_w)
         starter_rows = len(starter_lines)
         prompt_height = len(prompt_lines)
-        transcript_top = 1 + starter_rows
         chat_lines = self._build_chat_lines(chat_w)
         total = len(chat_lines)
+        transcript_top = self._transcript_top(starter_rows, total)
         prompt_top = self._prompt_top(rows, transcript_top, prompt_height, total)
         self.tui._last_prompt_top = prompt_top
         self.tui._last_prompt_height = prompt_height
@@ -826,16 +861,13 @@ class Renderer:
             else:
                 w(_bg(BG) + _erase_line() + line + _bg(BG))
 
-        transcript_bottom = max(transcript_top - 1, prompt_top - 1)
+        transcript_bottom = min(rows, prompt_top - 1)
         chat_rows = max(0, transcript_bottom - transcript_top + 1)
 
         offset = max(0, min(self.tui.scroll_offset, max(0, total - chat_rows)))
         end = total - offset
         start = max(0, end - chat_rows)
         chat_lines = chat_lines[start:end]
-
-        while len(chat_lines) < chat_rows:
-            chat_lines.insert(0, "")
 
         pane_lines = self._build_pane_lines(pane_w, chat_rows) if pane_active else []
 
@@ -858,8 +890,10 @@ class Renderer:
         if self.tui.slash_visible and self.tui.slash_hits: w(self._slash_popup(rows, chat_w))
         if self.tui.path_visible and self.tui.path_hits: w(self._path_popup(rows, chat_w))
         if self.tui.picker_visible and self.tui.picker_items: w(self._picker_popup(rows, chat_w))
+        if getattr(self.tui, "command_palette_visible", False): w(self._command_palette_popup(rows, chat_w))
         if getattr(self.tui, "shortcuts_visible", False): w(self._shortcuts_popup(rows, chat_w))
         if getattr(self.tui, "workspace_trust_visible", False): w(self._workspace_trust_popup(rows, cols))
+        if getattr(self.tui, "permission_prompt_active", False): w(self._permission_popup(rows, cols))
         if self.tui.notification: w(self._notification_bar(rows, cols))
 
         cur_col = prompt_cursor_col
@@ -871,14 +905,61 @@ class Renderer:
         sys.stdout.flush()
 
     def _build_starter_lines(self, width):
+        review_card = getattr(self.tui, "review_card", None)
+        pending_plan = getattr(self.tui, "_pending_file_plan", None)
+        cache_key = (
+            width,
+            bool(getattr(self.tui, "show_starter_panel", True)),
+            bool(getattr(self.tui, "starter_panel_pinned", False)),
+            str(getattr(self.tui, "current_model", "")),
+            self._active_provider_key(),
+            str(Path.cwd().resolve()),
+            str(getattr(self.tui, "session_tip", "") or ""),
+            tuple(getattr(self.tui, "recent_actions", []) or []),
+            tuple(getattr(self.tui, "recent_commands", []) or []),
+            bool(getattr(review_card, "active", False)),
+            str(getattr(review_card, "title", "") or ""),
+            repr(pending_plan) if pending_plan else "",
+        )
+        if cache_key == self._starter_cache_key:
+            return list(self._starter_cache_lines)
         intro = self._starter_view.build(width)
-        return intro.header_lines + intro.trailing_lines
+        lines = intro.header_lines + intro.trailing_lines
+        self._starter_cache_key = cache_key
+        self._starter_cache_lines = list(lines)
+        return list(lines)
 
     def _build_chat_lines(self, width):
-        return self._transcript_view.build(width)
+        snapshot = self.tui.store.snapshot()
+        streaming = any(msg.role == "streaming" for msg in snapshot)
+        agent_tasks = tuple(
+            (str(item.get("text", "")), bool(item.get("done", False)), str(item.get("status", "")))
+            for item in (getattr(self.tui, "agent_tasks", None) or [])
+        )
+        cache_key = (
+            width,
+            int(getattr(self.tui.store, "version", 0)),
+            bool(getattr(self.tui, "vessel_mode", False)),
+            str(getattr(self.tui, "active_vessel", "") or ""),
+            str(getattr(self.tui, "agent_active_objective", "") or ""),
+            agent_tasks,
+        )
+        if not streaming and cache_key == self._chat_cache_key:
+            return list(self._chat_cache_lines)
+        lines = self._transcript_view.build(width)
+        if not streaming:
+            self._chat_cache_key = cache_key
+            self._chat_cache_lines = list(lines)
+        return list(lines)
+
+    def _transcript_top(self, starter_rows, chat_line_count):
+        return 1 + max(0, starter_rows) + (1 if starter_rows > 0 and chat_line_count > 0 else 0)
 
     def _prompt_top(self, rows, transcript_top, prompt_height, chat_line_count):
-        return max(1, rows - prompt_height + 1)
+        min_top = max(1, transcript_top)
+        max_top = max(min_top, rows - prompt_height + 1)
+        ideal_top = min_top + max(0, chat_line_count)
+        return min(max_top, ideal_top)
 
     def _prompt_cursor_row(self, rows, prompt_height, prompt_top, prompt_cursor_row):
         return prompt_top + max(0, prompt_cursor_row - 1)
@@ -930,6 +1011,12 @@ class Renderer:
             return display
         return "..." + display[-(max_len - 3) :]
 
+    def _branch_display(self) -> str:
+        profile = getattr(self.tui, "workspace_profile", None)
+        branch = getattr(profile, "git_branch", "") if profile is not None else ""
+        branch = branch or getattr(self.tui, "_git_branch", "") or ""
+        return branch or "-"
+
     def _stat_info(self, chat_w):
         """Compute status string (plain + colored) for top bar."""
         tui = self.tui
@@ -967,6 +1054,141 @@ class Renderer:
 
     def _top_bar(self, rows, cols, chat_w):
         return _move(1, 1) + _bg(BG) + _erase_line() + _move(2, 1) + _bg(BG) + _erase_line()
+
+    def _prompt_placeholder(self, chat_w: int) -> str:
+        profile = getattr(self.tui, "workspace_profile", None)
+        if int(getattr(self.tui, "turns", 0) or 0) == 0 and profile is None:
+            placeholder = "inspect this repo and tell me how it works"
+        else:
+            practical: list[str] = []
+            serious: list[str] = []
+            funny: list[str] = []
+            if profile is None:
+                practical.extend(
+                    [
+                        "inspect this repo and tell me how it works",
+                        "find the main entrypoint and explain it",
+                        "map the architecture and point out the risky parts",
+                        "show me where the real logic starts",
+                    ]
+                )
+                serious.extend(
+                    [
+                        "show me the subsystem I need to understand before editing",
+                        "trace the startup path and explain the handoffs",
+                        "identify the most fragile part of this repo",
+                    ]
+                )
+                funny.extend(
+                    [
+                        "tell me which file looks innocent but definitely is not",
+                        "find the part of this repo that is quietly cursed",
+                        "show me the file most likely to waste my afternoon",
+                    ]
+                )
+            elif getattr(profile, "changed_files", ()):
+                practical.extend(
+                    [
+                        "review the current changes and find issues",
+                        "summarize what changed and what looks risky",
+                        "trace the changed files and explain the impact",
+                    ]
+                )
+                serious.extend(
+                    [
+                        "check the diff for regressions and edge cases",
+                        "identify the highest-risk change before we merge anything",
+                        "show me which edit is most likely to break prod",
+                    ]
+                )
+                funny.extend(
+                    [
+                        "find the bug hiding in the latest changes",
+                        "tell me which edit is acting confident for no reason",
+                        "show me the diff line that is about to start drama",
+                    ]
+                )
+            elif getattr(profile, "verification_commands", {}):
+                practical.extend(
+                    [
+                        "run the tests and fix the failures",
+                        "add tests for the riskiest edge cases",
+                        "trace the failing path and patch it cleanly",
+                    ]
+                )
+                serious.extend(
+                    [
+                        "find the brittle path before we edit anything",
+                        "tell me what will break first if we touch auth",
+                        "pin down the failure before we change code",
+                    ]
+                )
+                funny.extend(
+                    [
+                        "find the test that is about to ruin my day",
+                        "show me which failure is screaming the loudest",
+                        "tell me which test file woke up angry today",
+                    ]
+                )
+            elif getattr(profile, "frameworks", ()):
+                framework = str(profile.frameworks[0])
+                practical.extend(
+                    [
+                        f"explain the {framework} architecture in this repo",
+                        f"show me the core {framework} flow from entrypoint to output",
+                        "map the important files before we change anything",
+                    ]
+                )
+                serious.extend(
+                    [
+                        "tell me where the complexity is hiding",
+                        "find the hottest path in this codebase",
+                        "show me the subsystem with the most coupling",
+                    ]
+                )
+                funny.extend(
+                    [
+                        "show me the part of this stack I will regret touching",
+                        "tell me which layer is pretending to be simple",
+                        "find the file that thinks it is the whole framework",
+                    ]
+                )
+            else:
+                practical.extend(
+                    [
+                        "find where this symbol is used",
+                        "trace the startup path and explain it",
+                        "show me the fastest way to understand this project",
+                    ]
+                )
+                serious.extend(
+                    [
+                        "show me the highest-risk part of this repo",
+                        "identify the subsystem most likely to cause regressions",
+                        "find dead code or weird leftovers",
+                    ]
+                )
+                funny.extend(
+                    [
+                        "tell me what this codebase is pretending to be organized about",
+                        "show me the file that definitely needs an explanation",
+                        "find the weirdest thing still surviving in this repo",
+                    ]
+                )
+            seed = (
+                int(getattr(self.tui, "turns", 0) or 0) * 7
+                + len(getattr(self.tui, "recent_commands", []) or [])
+                + len(getattr(self.tui, "recent_actions", []) or [])
+                + len(str(Path.cwd().resolve()))
+            )
+            tone_pools = [pool for pool in (practical, serious, funny) if pool]
+            chosen_pool = tone_pools[seed % len(tone_pools)]
+            item_index = (seed // max(1, len(tone_pools))) % len(chosen_pool)
+            placeholder = chosen_pool[item_index]
+        max_len = max(12, chat_w - 4)
+        if len(placeholder) > max_len:
+            placeholder = placeholder[: max_len - 1].rstrip() + "…"
+        return placeholder
 
     def _prompt_bar(self, rows, cols, chat_w):
         tui = self.tui
@@ -1007,7 +1229,7 @@ class Renderer:
         content_rows: list[tuple[str, str, str]] = []
         if text:
             for idx, segment in enumerate(visible):
-                marker = "❯ " if idx == 0 else "  "
+                marker = "› " if idx == 0 else "  "
                 tone = FG_HI if idx == 0 else FG
                 content_rows.append((marker, tone, segment))
         elif tui.busy:
@@ -1017,11 +1239,13 @@ class Renderer:
             pending_text = pending_label + (f" · {pending_hint}" if pending_hint else "")
             content_rows.append(("? ", CYAN, pending_text[:text_w]))
         else:
-            content_rows.append(("❯ ", FG_HI, ""))
+            content_rows.append(("› ", MUTED, self._prompt_placeholder(chat_w)[:text_w]))
 
-        footer_left = "? for shortcuts"
         effort = normalize_reasoning_effort(getattr(tui, "reasoning_effort", "medium"))
-        footer_right_plain = f"◐ {effort} · /effort"
+        project_name = Path.cwd().resolve().name or "~"
+        branch = self._branch_display()
+        footer_left = f"{project_name} ({branch})"
+        footer_right_plain = f"? for shortcuts   ◐ {effort}"
         gap = max(2, chat_w - len(footer_left) - len(footer_right_plain))
         footer_line = (
             _fg(MUTED)
@@ -1029,10 +1253,7 @@ class Renderer:
             + R
             + " " * gap
             + _fg(COMMENT)
-            + f"◐ {effort}"
-            + R
-            + _fg(MUTED)
-            + " · /effort"
+            + footer_right_plain
             + R
         )
 
@@ -1058,8 +1279,16 @@ class Renderer:
     # kept for any external callers; delegates to the two new methods
     def _input_area(self, rows, cols, chat_w):
         prompt_lines, _cursor_row, _cursor_col = self._prompt_bar(rows, cols, chat_w)
+        starter_rows = len(self._build_starter_lines(chat_w))
+        chat_lines = self._build_chat_lines(chat_w)
+        prompt_top = self._prompt_top(
+            rows,
+            self._transcript_top(starter_rows, len(chat_lines)),
+            len(prompt_lines),
+            len(chat_lines),
+        )
         return self._top_bar(rows, cols, chat_w) + "".join(
-            _move(rows - len(prompt_lines) + idx + 1, 1) + line
+            _move(prompt_top + idx, 1) + line
             for idx, line in enumerate(prompt_lines)
         )
 
@@ -1078,11 +1307,17 @@ class Renderer:
     def _shortcuts_popup(self, rows, chat_w):
         return self._overlay_view.shortcuts_popup(rows, chat_w)
 
+    def _command_palette_popup(self, rows, chat_w):
+        return self._overlay_view.command_palette_popup(rows, chat_w)
+
     def _notification_bar(self, rows, cols):
         return self._overlay_view.notification_bar(rows, cols)
 
     def _workspace_trust_popup(self, rows, cols):
         return self._overlay_view.workspace_trust_popup(rows, cols)
+
+    def _permission_popup(self, rows, cols):
+        return self._overlay_view.permission_popup(rows, cols)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1113,6 +1348,12 @@ class LumiTUI:
         self.reasoning_effort = "medium"
         self._last_prompt_top = 1
         self._last_prompt_height = 1
+        self._stop_requested = threading.Event()
+        self._git_branch = self._read_git_branch(Path.cwd())
+        self._startup_warmed = False
+        self._startup_warm_thread: threading.Thread | None = None
+        self._cached_project_context: tuple[Path | None, float | None, str] = (None, None, "")
+        self._cached_project_memory: tuple[Path | None, float | None, str] = (None, None, "")
         self.workbench_jobs: list[dict[str, object]] = []
         self._workbench_job_seq = 0
 
@@ -1135,8 +1376,19 @@ class LumiTUI:
         self.runtime_config = load_runtime_config(Path.cwd())
         self._apply_runtime_config(self.runtime_config)
         self.browser_cwd = os.getcwd()
-        self.workspace_profile = inspect_workspace(Path.cwd())
+        self.workspace_profile = None
         self.workspace_trust_visible = self._should_prompt_workspace_trust()
+
+    @staticmethod
+    def _read_git_branch(base_dir: Path) -> str:
+        head_file = base_dir / ".git" / "HEAD"
+        try:
+            raw = head_file.read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return ""
+        if raw.startswith("ref: "):
+            return raw.rsplit("/", 1)[-1].strip()
+        return raw[:7]
 
     def _apply_runtime_config(self, config) -> None:
         self.runtime_config = config
@@ -1150,6 +1402,7 @@ class LumiTUI:
         config = update_runtime_config(Path.cwd(), **updates)
         self._apply_runtime_config(config)
         self.workspace_profile = inspect_workspace(Path.cwd())
+        self._git_branch = getattr(self.workspace_profile, "git_branch", "") or self._git_branch
         return config
 
     def set_pane(
@@ -1225,7 +1478,16 @@ class LumiTUI:
             lines.append("")
         return lines[:-1] if lines and not lines[-1].strip() else lines
 
-    def _refresh_workbench_pane(self) -> None:
+    def _workbench_pane_visible(self) -> bool:
+        pane = getattr(self, "pane", None)
+        if not self.pane_active or pane is None:
+            return False
+        return bool(getattr(pane, "active", False) and getattr(pane, "title", "") == "workbench jobs")
+
+    def _refresh_workbench_pane(self, *, force: bool = False) -> None:
+        if not force and not self._workbench_pane_visible():
+            self.redraw()
+            return
         self.set_pane(
             title="workbench jobs",
             subtitle=WORKBENCH_TITLE,
@@ -1235,9 +1497,14 @@ class LumiTUI:
         )
         self.redraw()
 
-    def launch_workbench(self, mode: str, objective: str, *, dry_run: bool = False) -> str:
+    def launch_workbench(self, mode: str, objective: str, *, dry_run: bool = False, show_pane: bool = False) -> str:
         self._workbench_job_seq += 1
         job_id = f"wb-{self._workbench_job_seq}"
+        base_dir = Path.cwd().resolve()
+        client = self.client
+        model = self._workbench_model()
+        system_prompt = self.system_prompt
+        memory = self.memory
         job = {
             "id": job_id,
             "mode": mode,
@@ -1251,7 +1518,7 @@ class LumiTUI:
         self.workbench_jobs.insert(0, job)
         self.agent_active_objective = f"{mode}: {objective}"
         self.agent_tasks = [{"text": "profiling workspace", "status": "queued"}]
-        self._refresh_workbench_pane()
+        self._refresh_workbench_pane(force=show_pane)
 
         def _update_job(*, status: str | None = None, stage: str | None = None, summary: str | None = None, risk: str | None = None) -> None:
             with self._state_lock:
@@ -1279,10 +1546,11 @@ class LumiTUI:
                 result = execute_workbench(
                     mode,
                     objective,
-                    client=self.client,
-                    model=self._workbench_model(),
-                    memory=self.memory,
-                    system_prompt=self.system_prompt,
+                    client=client,
+                    model=model,
+                    memory=memory,
+                    system_prompt=system_prompt,
+                    base_dir=base_dir,
                     dry_run=dry_run,
                     progress_cb=_progress,
                 )
@@ -1331,8 +1599,116 @@ class LumiTUI:
         with self._state_lock:
             self._running = False
 
+    def _project_context_block(self) -> str:
+        path, cached_mtime, cached_text = self._cached_project_context
+        context_path, context_text = load_project_context(Path.cwd())
+        current_mtime = None
+        if context_path is not None:
+            try:
+                current_mtime = context_path.stat().st_mtime
+            except OSError:
+                current_mtime = None
+        if path == context_path and cached_mtime == current_mtime:
+            return cached_text
+        self._cached_project_context = (context_path, current_mtime, context_text)
+        return context_text
+
+    def _project_memory_block(self) -> str:
+        path = project_memory_path(Path.cwd())
+        current_mtime = None
+        if path.exists():
+            try:
+                current_mtime = path.stat().st_mtime
+            except OSError:
+                current_mtime = None
+        cached_path, cached_mtime, cached_text = self._cached_project_memory
+        if cached_path == path and cached_mtime == current_mtime and cached_text:
+            return cached_text
+        block = render_memory_block(Path.cwd())
+        self._cached_project_memory = (path, current_mtime, block)
+        return block
+
+    def _bootstrap_system_prompt(self) -> str:
+        prompt_context = PromptContext(
+            date=datetime.now().strftime("%Y-%m-%d"),
+            cwd=str(Path.cwd().resolve()),
+            git_branch=self._git_branch,
+            extra_rules=(build_agentic_system_hint(),),
+        )
+        return build_dynamic_system_prompt(
+            {**self.persona, **self.persona_override},
+            context=prompt_context,
+        )
+
     def _make_system_prompt(self, coding_mode=False, file_mode=False):
-        return build_system_prompt({**self.persona, **self.persona_override}, build_memory_block(), coding_mode, file_mode)
+        project_context = self._project_context_block()
+        active_files: list[tuple[str, str]] = []
+        for doc in _context_cache.recent_documents(limit=5):
+            if doc.kind not in {"file", "project-file"}:
+                continue
+            active_files.append((doc.label, doc.content[:1800]))
+        todos = tuple(getattr(self, "agent_todos", []) or [])
+        prompt_context = PromptContext(
+            date=datetime.now().strftime("%Y-%m-%d"),
+            cwd=str(Path.cwd().resolve()),
+            git_branch=str(getattr(self.workspace_profile, "git_branch", "") or self._git_branch or ""),
+            project_context=project_context,
+            git_status=summarize_git_state(Path.cwd()),
+            memory_block=build_memory_block(),
+            active_files=tuple(active_files),
+            recent_tool_results=tuple(str(item) for item in getattr(self, "tool_logs", [])[-5:]),
+            todos=todos,
+            extra_rules=(build_agentic_system_hint(), self._project_memory_block()),
+        )
+        return build_dynamic_system_prompt(
+            {**self.persona, **self.persona_override},
+            context=prompt_context,
+            coding_mode=coding_mode,
+            file_mode=file_mode,
+        )
+
+    def _system_prompt_for_turn(self, *, user_input: str, coding_mode: bool = False, file_mode: bool = False) -> str:
+        early_turn = int(getattr(self, "turns", 0) or 0) == 0
+        lightweight_ok = (
+            early_turn
+            and not getattr(self, "_startup_warmed", False)
+            and not coding_mode
+            and not file_mode
+            and not str(user_input or "").lstrip().startswith("/")
+        )
+        if lightweight_ok:
+            return self.system_prompt or self._bootstrap_system_prompt()
+        return self._make_system_prompt(coding_mode=coding_mode, file_mode=file_mode)
+
+    def _warm_start_background(self) -> None:
+        if self._startup_warm_thread and self._startup_warm_thread.is_alive():
+            return
+
+        def _go() -> None:
+            try:
+                self.workspace_profile = inspect_workspace(Path.cwd())
+                self._git_branch = getattr(self.workspace_profile, "git_branch", "") or self._git_branch
+            except Exception:
+                log.exception("Failed to inspect workspace during warm startup")
+            try:
+                self.system_prompt = self._make_system_prompt()
+            except Exception:
+                log.exception("Failed to rebuild system prompt during warm startup")
+            finally:
+                self._startup_warmed = True
+                self.redraw()
+            try:
+                self._loaded_plugins = load_plugins()
+            except Exception:
+                log.exception("Failed to load plugins during warm startup")
+            try:
+                for record in list_mode_conversations(limit=40):
+                    _index_mode_record(record)
+            except Exception:
+                log.exception("Failed to index saved mode conversations during warm startup")
+
+        self._startup_warm_thread = threading.Thread(target=_go, daemon=True)
+        self._startup_warm_thread.start()
 
     def _sys(self, text): self.store.add(Msg("system", text))
     def _err(self, text): self.store.add(Msg("error", str(text)))
@@ -1362,6 +1738,253 @@ class LumiTUI:
         t = threading.Timer(duration, _clear); t.daemon = True; t.start()
         self._notif_timer = t
 
+    def request_stop(self) -> None:
+        if not self.busy:
+            return
+        if not self._stop_requested.is_set():
+            self._stop_requested.set()
+            self._notify("Stopping…", duration=1.2)
+
+    def stop_requested(self) -> bool:
+        return self._stop_requested.is_set()
+
+    def _refresh_command_palette(self) -> None:
+        query = str(getattr(self, "command_palette_query", "") or "").strip().lower()
+        seen_values: set[str] = set()
+        prompt_hits: list[dict[str, str]] = []
+        for entry in reversed(self.history.entries[-12:]):
+            if query and query not in entry.lower():
+                continue
+            value = entry.strip()
+            if not value or value in seen_values:
+                continue
+            prompt_hits.append(
+                {
+                    "kind": "prompt",
+                    "label": value[:18],
+                    "desc": value[:56],
+                    "value": value,
+                    "example": value,
+                }
+            )
+            seen_values.add(value)
+            if len(prompt_hits) >= 4:
+                break
+
+        command_hits: list[dict[str, str]] = []
+        command_limit = max(4, 12 - len(prompt_hits))
+        for cmd, desc, _category, example in registry.get_hits(query):
+            value = cmd
+            if value in seen_values:
+                continue
+            command_hits.append(
+                {
+                    "kind": "command",
+                    "label": cmd,
+                    "desc": desc,
+                    "value": value,
+                    "example": example,
+                }
+            )
+            seen_values.add(value)
+            if len(command_hits) >= command_limit:
+                break
+
+        hits = [*command_hits, *prompt_hits][:12]
+
+        self.command_palette_hits = hits[:12]
+        if self.command_palette_hits:
+            self.command_palette_sel = max(0, min(self.command_palette_sel, len(self.command_palette_hits) - 1))
+        else:
+            self.command_palette_sel = 0
+
+    def _toggle_command_palette(self) -> None:
+        self.command_palette_visible = not bool(getattr(self, "command_palette_visible", False))
+        if self.command_palette_visible:
+            self.command_palette_query = ""
+            self.command_palette_sel = 0
+            self._refresh_command_palette()
+        else:
+            self.command_palette_query = ""
+            self.command_palette_hits = []
+            self.command_palette_sel = 0
+        self.redraw()
+
+    def _submit_prompt_text(self, text: str) -> None:
+        clean = str(text or "").strip()
+        if self._pending_file_plan is not None and not self.busy and not clean:
+            self._consume_pending_file_plan("")
+            return
+        if not clean or self.busy:
+            return
+        if self._consume_pending_file_plan(clean):
+            return
+        self.history.append(clean)
+        if clean.startswith("/"):
+            parts = clean.split(None, 1)
+            self._execute_command(parts[0].lower(), parts[1] if len(parts) > 1 else "")
+            return
+        if self._active_task and not self._active_task.done():
+            self._err("Still busy — wait for the current reply.")
+            return
+        self._active_task = self._task_executor.submit(self._run_message, clean)
+
+    def _run_command_palette_selection(self) -> None:
+        if not self.command_palette_hits:
+            return
+        item = self.command_palette_hits[self.command_palette_sel]
+        value = str(item.get("value") or "").strip()
+        kind = str(item.get("kind") or "command")
+        self.command_palette_visible = False
+        self.command_palette_query = ""
+        self.command_palette_hits = []
+        self.command_palette_sel = 0
+        if not value:
+            self.redraw()
+            return
+        if kind == "command":
+            example = str(item.get("example") or "")
+            if "<" in example or "[" in example:
+                self.buf = f"{value} "
+                self.cur_pos = len(self.buf)
+                self.redraw()
+                return
+            self._submit_prompt_text(value)
+            return
+        self._submit_prompt_text(value)
+
+    def _set_agent_todos(self, todos: list[dict[str, str]]) -> None:
+        self.agent_todos = list(todos)
+        if self.todo_pane_visible:
+            self._refresh_todo_pane()
+
+    def _refresh_todo_pane(self) -> None:
+        if not self.todo_pane_visible:
+            return
+        lines = ["No active TODOs."]
+        if self.agent_todos:
+            icon_map = {
+                "pending": "○",
+                "in progress": "●",
+                "in_progress": "●",
+                "done": "✓",
+                "failed": "✗",
+            }
+            lines = []
+            for item in self.agent_todos:
+                status = str(item.get("status") or "pending").lower()
+                icon = icon_map.get(status, "○")
+                priority = str(item.get("priority") or "medium")
+                lines.append(f"{icon} {item.get('task', '')} [{priority}]")
+        self.set_pane(
+            title="todo",
+            subtitle=WORKBENCH_TITLE,
+            lines=lines,
+            footer="Esc close  ·  Ctrl+T hide",
+            close_on_escape=True,
+        )
+
+    def _toggle_todo_pane(self) -> None:
+        self.todo_pane_visible = not bool(getattr(self, "todo_pane_visible", False))
+        if self.todo_pane_visible:
+            self._refresh_todo_pane()
+        elif getattr(self, "pane_active", False) and getattr(getattr(self, "pane", None), "title", "") == "todo":
+            self.clear_pane()
+
+    def _tool_event(self, event: ToolEvent) -> None:
+        payload = dict(event.input_data or {})
+        summary_target = str(
+            payload.get("path")
+            or payload.get("command")
+            or payload.get("pattern")
+            or payload.get("message")
+            or ""
+        ).strip()
+        label = f"{event.name}  {summary_target[:42]}".strip()
+        row_key = f"{event.name}:{summary_target}"
+        if event.status == "running":
+            row_index = self.store.add(Msg("tool", "", label=label, meta={"status": "running"}))
+            self.tool_row_index[row_key] = row_index
+            self.tool_logs.append(f"{event.name}: running {summary_target}".strip())
+        else:
+            status = "✓" if event.ok else "✗"
+            text = f"{status} {event.duration_ms}ms"
+            row_index = self.tool_row_index.pop(row_key, None)
+            meta = {
+                "status": event.status,
+                "ok": event.ok,
+                "duration_ms": event.duration_ms,
+                "result": event.result,
+            }
+            if row_index is not None:
+                self.store.update(row_index, role="tool", text=text, label=label, meta=meta)
+            else:
+                self.store.add(Msg("tool", text, label=label, meta=meta))
+            self.tool_logs.append(f"{event.name}: {status} {summary_target} {text}".strip())
+            self.tool_logs = self.tool_logs[-20:]
+        self.redraw()
+
+    def _shell_output(self, chunk: str) -> None:
+        text = chunk[:160]
+        self.shell_logs.append(text)
+        self.shell_logs = self.shell_logs[-120:]
+        if getattr(self, "pane_active", False) and getattr(getattr(self, "pane", None), "title", "") == "workbench jobs":
+            if self.pane.lines is None:
+                self.pane.lines = []
+            self.pane.lines.append(text)
+            self.pane.lines = self.pane.lines[-120:]
+            self.pane_lines_output = self.pane.content()
+            self.redraw()
+
+    def _request_tool_permission(self, request: PermissionRequest) -> PermissionDecision:
+        prompt = PermissionPromptState(
+            active=True,
+            tool_name=request.tool_name,
+            display=request.display,
+            rule_hint=request.value,
+            selected=0,
+        )
+        event = threading.Event()
+        self.permission_prompt = prompt
+        self.permission_prompt_active = True
+        self.permission_prompt_event = {"event": event, "decision": None, "request": request}
+        self.redraw()
+        event.wait()
+        payload = self.permission_prompt_event or {}
+        decision = payload.get("decision")
+        self.permission_prompt = PermissionPromptState()
+        self.permission_prompt_active = False
+        self.permission_prompt_event = None
+        self.redraw()
+        return decision or PermissionDecision(False, "requires approval")
+
+    def _approve_pending_permission(self, mode: str) -> None:
+        payload = self.permission_prompt_event or {}
+        request = payload.get("request")
+        event = payload.get("event")
+        if request is None or event is None:
+            return
+        if mode == "allow_always":
+            add_tool_permission_rule("allow", f"{request.tool_name}:{request.value}", base_dir=Path.cwd())
+            decision = PermissionDecision(True, "allowed by user", matched_rule=f"{request.tool_name}:{request.value}")
+        elif mode == "allow_once":
+            decision = PermissionDecision(True, "allowed by user")
+        else:
+            decision = PermissionDecision(False, "denied by user")
+        payload["decision"] = decision
+        event.set()
+
+    def _resolve_tool_permission(self, request: PermissionRequest) -> PermissionDecision:
+        decision = evaluate_tool_permission(
+            request.tool_name,
+            request.value,
+            base_dir=Path.cwd(),
+            display=request.display,
+        )
+        if decision.allowed or decision.reason != "requires approval":
+            return decision
+        return self._request_tool_permission(request)
+
     def _refresh_browser(self):
         controller_refresh_browser(self)
 
@@ -1378,10 +2001,21 @@ class LumiTUI:
         return result
 
     def set_busy(self, status):
-        with self._state_lock: self.busy = status
+        with self._state_lock:
+            self.busy = status
+            if status:
+                self._stop_requested.clear()
         self.redraw()
 
     def redraw(self): self.renderer.draw()
+
+    def _chat_stream_with_stop(self, **kwargs):
+        try:
+            return chat_stream(**kwargs, should_stop=self.stop_requested)
+        except TypeError as exc:
+            if "should_stop" not in str(exc):
+                raise
+            return chat_stream(**kwargs)
 
     # ── Inference / Generators  ─────────────────────────────────────────────
     def _tui_stream(self, messages, model, label="lumi"):
@@ -1391,27 +2025,89 @@ class LumiTUI:
         chunks: list[str] = []
         effort = normalize_reasoning_effort(getattr(self, "reasoning_effort", "medium"))
         tuned_messages = apply_reasoning_effort(messages, effort)
-        tuned_max_tokens, tuned_temperature = tune_inference_request(2048, 0.45, effort)
         try:
+            provider = get_provider()
+        except Exception:
+            provider = ""
+        request_options = provider_effort_options(provider, effort)
+        tuned_max_tokens = int(request_options.get("max_tokens", 2048))
+        tuned_temperature = float(request_options.get("temperature", 0.45))
+        last_user = next((str(item.get("content") or "") for item in reversed(tuned_messages) if str(item.get("role")) == "user"), "")
+        tool_loop_markers = (
+            " edit ", " fix ", " refactor ", " grep ", " diff ", " commit ", " tests", " pytest",
+            " shell", " directory", " folder", " file ", ".py", ".ts", ".js", ".rs", ".go",
+            " git ", " run ", " todo", "/build", "/fixci",
+        )
+        normalized_prompt = f" {last_user.lower().strip()} "
+        use_tool_loop = bool(provider and model != "council" and any(token in normalized_prompt for token in tool_loop_markers))
+        try:
+            if use_tool_loop:
+                context = ToolContext(
+                    base_dir=Path.cwd(),
+                    permission_resolver=lambda request: self._resolve_tool_permission(request),
+                    event_sink=self._tool_event,
+                    todo_getter=lambda: list(getattr(self, "agent_todos", [])),
+                    todo_setter=self._set_agent_todos,
+                    shell_output_sink=self._shell_output,
+                    stop_checker=self.stop_requested,
+                )
+                result = run_tool_loop_sync(
+                    self.client,
+                    provider,
+                    model,
+                    tuned_messages,
+                    context,
+                    effort_options=request_options,
+                )
+                self.store.set_text(idx, result.text)
+                self.store.finalize(idx)
+                _session_telemetry.record_response(result.text, actual_tokens=result.output_tokens)
+                self.session_cost.record(
+                    provider=provider,
+                    model=model,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                )
+                if self.agent_todos and self.todo_pane_visible:
+                    self._refresh_todo_pane()
+                return result.text
+
             def _on_delta(delta: str) -> None:
+                if self.stop_requested():
+                    raise StreamCancelledError("Stopped by user.")
                 chunks.append(delta)
                 self.store.append(idx, delta)
                 self.redraw()
 
-            full = chat_stream(
-                self.client,
-                tuned_messages,
+            full = self._chat_stream_with_stop(
+                client=self.client,
+                messages=tuned_messages,
                 model=model,
                 max_tokens=tuned_max_tokens,
                 temperature=tuned_temperature,
                 on_delta=_on_delta,
                 on_status=lambda status: self._notify(status, duration=2.0),
             )
+        except StreamCancelledError:
+            full = "".join(chunks).strip()
+            if full:
+                self.store.set_text(idx, full)
+                self.store.finalize(idx)
+            else:
+                self.store.update(idx, role="system", text="Stopped.")
+            self._notify("Stopped", duration=1.2)
+            return full
         except Exception as ex: return self._handle_stream_error(idx, ex, messages)
         self.store.finalize(idx)
         if not full:
             full = "".join(chunks)
         _session_telemetry.record_response(full)
+        self.session_cost.record(
+            provider=provider,
+            model=model,
+            input_tokens=estimate_message_tokens(tuned_messages),
+            output_tokens=estimate_tokens(full),
+        )
         return full
 
     def _run_council_stream(self, idx, messages):
@@ -1463,12 +2159,14 @@ class LumiTUI:
                     tuned_messages = apply_reasoning_effort(messages, effort)
                     tuned_max_tokens, tuned_temperature = tune_inference_request(2048, 0.45, effort)
                     def _on_delta(delta: str) -> None:
+                        if self.stop_requested():
+                            raise StreamCancelledError("Stopped by user.")
                         chunks.append(delta)
                         self.store.append(idx, delta)
                         self.redraw()
-                    full = chat_stream(
-                        self.client,
-                        tuned_messages,
+                    full = self._chat_stream_with_stop(
+                        client=self.client,
+                        messages=tuned_messages,
                         model=self.current_model,
                         max_tokens=tuned_max_tokens,
                         temperature=tuned_temperature,
@@ -1478,6 +2176,15 @@ class LumiTUI:
                     if not full:
                         full = "".join(chunks)
                     self.store.finalize(idx); return full
+                except StreamCancelledError:
+                    full = "".join(chunks).strip()
+                    if full:
+                        self.store.set_text(idx, full)
+                        self.store.finalize(idx)
+                    else:
+                        self.store.update(idx, role="system", text="Stopped.")
+                    self._notify("Stopped", duration=1.2)
+                    return full
                 except Exception as ex2: self.store.set_text(idx, f"⚠  {ex2}")
             else: self.store.set_text(idx, f"⚠  {ex}")
         else: self.store.set_text(idx, f"⚠  {ex}")
@@ -1497,18 +2204,27 @@ class LumiTUI:
             )
             effort = normalize_reasoning_effort(getattr(self, "reasoning_effort", "medium"))
             tuned_messages = apply_reasoning_effort(messages, effort)
-            tuned_max_tokens, tuned_temperature = tune_inference_request(max_tokens, 0.3, effort)
+            request_options = provider_effort_options(provider, effort, max_tokens=max_tokens, temperature=0.3)
+            tuned_max_tokens = int(request_options.pop("max_tokens"))
+            tuned_temperature = float(request_options.pop("temperature"))
             reply = self.client.chat.completions.create(
                 model=routed,
                 messages=tuned_messages,
                 max_tokens=tuned_max_tokens,
                 temperature=tuned_temperature,
                 stream=False,
+                **request_options,
             )
             usage = getattr(reply, "usage", None)
             completion_tokens = getattr(usage, "completion_tokens", None) if usage is not None else None
             reply = reply.choices[0].message.content.strip()
             _session_telemetry.record_response(reply, actual_tokens=completion_tokens)
+            self.session_cost.record(
+                provider=provider,
+                model=routed,
+                input_tokens=estimate_message_tokens(tuned_messages),
+                output_tokens=int(completion_tokens or estimate_tokens(reply)),
+            )
             return reply
         except Exception:
             log.exception("Silent call failed")
@@ -1738,7 +2454,7 @@ class LumiTUI:
 
     def run(self):
         self.persona = load_persona(); self.persona_override = get_persona_override()
-        self.system_prompt = self._make_system_prompt()
+        self.system_prompt = self._bootstrap_system_prompt()
         self.name = self.persona_override.get("name") or self.persona.get("name", "Lumi")
 
         try:
@@ -1747,17 +2463,6 @@ class LumiTUI:
         except Exception:
             log.exception("Failed to load provider/model")
             self.current_model = "unknown"; self.client = None
-
-        try:
-            for record in list_mode_conversations(limit=40):
-                _index_mode_record(record)
-        except Exception:
-            log.exception("Failed to index saved mode conversations on startup")
-
-        self._loaded_plugins = load_plugins()
-        context_path, context_text = load_project_context(Path.cwd())
-        if context_path is not None and context_text:
-            self.system_prompt += f"\n\n--- Project context ({context_path.name}) ---\n{context_text}"
 
         fd = sys.stdin.fileno(); old = termios.tcgetattr(fd)
         self.original_termios = old
@@ -1777,6 +2482,7 @@ class LumiTUI:
             with self._state_lock: self._running = True
             threading.Thread(target=self._guardian_loop, daemon=True).start()
             self.redraw()
+            self._warm_start_background()
             while self._running:
                 # ── Consume a pending /mode handoff on the main thread ────────
                 # Must happen here — main thread owns stdin and termios.
@@ -1789,7 +2495,9 @@ class LumiTUI:
                 self.redraw()
         except KeyboardInterrupt: pass
         finally:
-            try: session_save(self.memory.get())
+            try:
+                save_repo_autosave(self.memory.get(), base_dir=Path.cwd())
+                session_save(self.memory.get())
             except Exception:
                 log.exception("Session save failed")
             try:
@@ -1832,6 +2540,11 @@ class LumiTUI:
         )
 
     # ── Master LLM Task Query Send Operation Routing  ───────────────────────
+    def _autosave_history(self, history):
+        save_repo_autosave(history, base_dir=Path.cwd())
+        if self.turns and self.turns % 5 == 0:
+            session_save(history)
+
     def _run_message(self, user_input):
         controller_run_message(
             self,
@@ -1848,7 +2561,7 @@ class LumiTUI:
             plugin_dispatch_fn=plugin_dispatch,
             get_provider_fn=get_provider,
             get_models_fn=get_models,
-            session_save_fn=session_save,
+            session_save_fn=self._autosave_history,
             auto_extract_facts_fn=auto_extract_facts,
             build_messages_fn=build_messages,
             log=log,
@@ -1929,7 +2642,7 @@ class LumiTUI:
             registry=registry,
             plugin_dispatch_fn=plugin_dispatch,
             build_messages_fn=build_messages,
-            session_save_fn=session_save,
+            session_save_fn=self._autosave_history,
             auto_extract_facts_fn=auto_extract_facts,
             log=log,
         )
@@ -1950,6 +2663,10 @@ def cmd_clear(tui: LumiTUI, arg: str):
     tui.last_msg = tui.last_reply = tui.prev_reply = None
     tui.turns = 0
     tui.set_busy(False)
+    try:
+        save_repo_autosave([], base_dir=Path.cwd())
+    except Exception:
+        log.exception("Repo autosave clear failed")
     # Show a subtle toast but keep history visually empty so the splash header returns
     tui._notify("Chat cleared.")
 
@@ -2137,11 +2854,15 @@ def cmd_save(tui: LumiTUI, arg: str):
     try: p = session_save(tui.memory.get(), arg.strip() if arg else ""); tui._notify(f"Saved → {Path(p).name}" if p else "Saved")
     except Exception as e: tui._err(str(e))
 
-@registry.register("/load", "Load memory save string", aliases=["/resume"])
+@registry.register("/load", "Load repo autosave or named session", aliases=["/resume"])
 def cmd_load(tui: LumiTUI, arg: str):
     try:
-        h = load_by_name(arg.strip()) if arg.strip() else load_latest()
-        if h: tui.memory.set_history(h); tui.turns = len(h) // 2; tui._sys(f"Loaded {len(h)} messages")
+        h = load_resume(arg.strip(), base_dir=Path.cwd())
+        if h:
+            tui.memory.set_history(h)
+            tui.turns = len(h) // 2
+            save_repo_autosave(h, base_dir=Path.cwd())
+            tui._sys(f"Loaded {len(h)} messages")
         else: tui._err("No saved session found.")
     except Exception as e: tui._err(str(e))
 
@@ -2294,7 +3015,9 @@ def cmd_multi(tui: LumiTUI, arg: str):
 def cmd_rem(tui: LumiTUI, arg: str):
     if not arg: tui._err("Usage: /remember <fact>"); return
     fact = " ".join(arg.strip().split())
-    n = add_fact(fact); tui.system_prompt = tui._make_system_prompt()
+    n = add_fact(fact)
+    remember_project_decision(fact, base_dir=Path.cwd())
+    tui.system_prompt = tui._make_system_prompt()
     tui._sys(f"Remembered fact #{n}: {fact}")
 
 @registry.register("/memory", "Show all stored long-term facts")
@@ -2527,9 +3250,9 @@ def cmd_agents(tui: LumiTUI, arg: str):
 def cmd_version(tui: LumiTUI, arg: str):
     tui._sys(render_version_report(version=WORKBENCH_VERSION, provider=get_provider(), model=tui.current_model))
 
-@registry.register("/tokens", "Show estimated token usage", aliases=["/cost"])
+@registry.register("/tokens", "Show token usage and session cost", aliases=["/cost"])
 def cmd_tokens(tui: LumiTUI, arg: str):
-    tui._sys(_session_telemetry.render_usage_report())
+    tui._sys(_session_telemetry.render_usage_report() + "\n\n" + tui.session_cost.render_report())
 
 @registry.register("/context", "Show context window breakdown")
 def cmd_context(tui: LumiTUI, arg: str):
@@ -2944,13 +3667,69 @@ def cmd_reload_plugins(tui: LumiTUI, arg: str):
     tui._execute_command("/plugins", "reload")
 
 
-@registry.register("/permissions", "Show plugin permissions: /permissions [all|plugins]")
+@registry.register("/logs", "Show recent tool and shell logs")
+def cmd_logs(tui: LumiTUI, arg: str):
+    lines = ["Recent tool logs"]
+    if tui.tool_logs:
+        lines.extend(f"  - {item}" for item in tui.tool_logs[-12:])
+    else:
+        lines.append("  - none")
+    lines.append("")
+    lines.append("Recent shell output")
+    if tui.shell_logs:
+        lines.extend(f"  {item}" for item in tui.shell_logs[-20:])
+    else:
+        lines.append("  - none")
+    tui.set_pane(
+        title="logs",
+        subtitle=WORKBENCH_TITLE,
+        lines=lines,
+        footer="Esc close  ·  /logs",
+        close_on_escape=True,
+    )
+    tui.redraw()
+
+
+@registry.register("/permissions", "Show or update tool permissions")
 def cmd_permissions(tui: LumiTUI, arg: str):
-    scope = arg.strip().lower() or "summary"
-    if scope not in {"summary", "all", "plugins"}:
-        tui._err("Usage: /permissions [all|plugins]")
+    raw = arg.strip()
+    if not raw or raw.lower() in {"show", "summary"}:
+        tui._sys(render_tool_permission_report(base_dir=Path.cwd()))
         return
-    tui._sys(render_permission_report(scope))
+    parts = raw.split(maxsplit=2)
+    sub = parts[0].lower()
+    if sub == "plugins":
+        tui._sys(render_permission_report("plugins"))
+        return
+    if sub == "all":
+        tui._sys(render_tool_permission_report(base_dir=Path.cwd()) + "\n\n" + render_permission_report("all"))
+        return
+    if sub == "mode" and len(parts) >= 2:
+        mode = parts[1].lower()
+        if mode not in {"ask", "auto", "strict"}:
+            tui._err("Usage: /permissions mode <ask|auto|strict>")
+            return
+        set_tool_permission_mode(mode, base_dir=Path.cwd())
+        tui._notify(f"Permissions mode → {mode}")
+        return
+    if sub in {"add", "rm"} and len(parts) >= 3:
+        kind_and_rule = parts[1:]
+        if len(kind_and_rule) != 2:
+            tui._err(f"Usage: /permissions {sub} <allow|deny> \"tool:pattern\"")
+            return
+        kind = kind_and_rule[0].lower()
+        rule = kind_and_rule[1].strip()
+        try:
+            if sub == "add":
+                add_tool_permission_rule(kind, rule, base_dir=Path.cwd())
+                tui._notify(f"Permission added: {kind}")
+            else:
+                remove_tool_permission_rule(kind, rule, base_dir=Path.cwd())
+                tui._notify(f"Permission removed: {kind}")
+        except ValueError as exc:
+            tui._err(str(exc))
+        return
+    tui._err("Usage: /permissions [all|plugins|mode <ask|auto|strict>|add <allow|deny> \"tool:pattern\"|rm <allow|deny> \"tool:pattern\"]")
 
 
 @registry.register("/status", "Show Lumi session and workspace status")

@@ -340,6 +340,11 @@ class ContextCache:
             )
         return trimmed
 
+    def recent_documents(self, *, limit: int = 5) -> list[CachedContext]:
+        with self._lock:
+            docs = list(self._docs.values())
+        return docs[-limit:]
+
 
 def _extract_failed_checks(history: list[dict[str, str]]) -> list[str]:
     failures: list[str] = []
@@ -401,6 +406,7 @@ def structured_history_summary(history: list[dict[str, str]]) -> str:
 
 @dataclass(frozen=True)
 class BudgetSnapshot:
+    provider: str
     model: str
     mode: str
     context_limit: int
@@ -480,6 +486,7 @@ class SessionTelemetry:
             return "No request telemetry yet."
         return (
             "Context breakdown\n"
+            f"  Provider:   {budget.provider or 'unknown'}\n"
             f"  Model:      {budget.model}\n"
             f"  Mode:       {budget.mode}\n"
             f"  Limit:      ~{budget.context_limit:,}tk\n"
@@ -648,6 +655,7 @@ def optimize_messages(
     total_prompt_tokens = estimate_message_tokens(optimized)
     snapshot = BudgetSnapshot(
         model=model,
+        provider=provider,
         mode=mode,
         context_limit=limit,
         response_budget=response_budget,

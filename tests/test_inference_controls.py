@@ -33,6 +33,5 @@ def test_tune_inference_request_changes_request_profile():
     medium_tokens, medium_temp = tune_inference_request(1000, 0.7, "medium")
     ehigh_tokens, ehigh_temp = tune_inference_request(1000, 0.7, "ehigh")
 
-    assert low_tokens < medium_tokens < ehigh_tokens
-    assert ehigh_temp < medium_temp
-    assert low_temp < medium_temp
+    assert (low_tokens, medium_tokens, ehigh_tokens) == (2048, 4096, 16384)
+    assert low_temp > medium_temp > ehigh_temp

@@ -5,7 +5,8 @@ from __future__ import annotations
 import random
 from typing import Any
 
-from src.tui.state import PaneState, ReviewCard
+from src.chat.cost import SessionCostTracker
+from src.tui.state import PaneState, PermissionPromptState, ReviewCard
 
 LUMI_SESSION_TIPS = [
     "Tip: Use /model to switch providers or open the picker with Ctrl+N.",
@@ -42,6 +43,19 @@ def initialize_ui_state(
     tui.shortcuts_visible = False
     tui.workspace_trust_visible = False
     tui.workspace_trust_sel = 0
+    tui.permission_prompt = PermissionPromptState()
+    tui.permission_prompt_active = False
+    tui.permission_prompt_event = None
+    tui.command_palette_visible = False
+    tui.command_palette_query = ""
+    tui.command_palette_hits = []
+    tui.command_palette_sel = 0
+    tui.todo_pane_visible = False
+    tui.agent_todos = []
+    tui.tool_logs = []
+    tui.shell_logs = []
+    tui.tool_row_index = {}
+    tui.session_cost = SessionCostTracker()
 
     tui.little_notes = notes_store
     tui.recent_commands = tui.little_notes.recent_commands

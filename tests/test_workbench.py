@@ -1,4 +1,4 @@
-"""Tests for the Lumi Mirror Workbench subsystem."""
+"""Tests for the Lumi Operator Workbench subsystem."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def test_build_repo_intelligence_indexes_symbols_and_tests(tmp_path, monkeypatch
     assert "tests/test_app.py" in intelligence.suggested_tests
     assert cached is not None
     assert cached.symbol_count == intelligence.symbol_count
-    assert "Mirror" in workbench.workbench_status_summary(tmp_path)
+    assert "Operator" in workbench.workbench_status_summary(tmp_path)
 
 
 def test_project_memory_persists_conventions_and_decisions(tmp_path, monkeypatch):
@@ -111,3 +111,29 @@ def test_execute_workbench_build_uses_agent_runner_and_captures_log(tmp_path, mo
     assert "planned safe edits" in result.execution_log
     assert result.project_memory.recent_runs[0]["mode"] == "build"
     assert result.artifacts.commit_title.startswith("build:")
+
+
+def test_execute_workbench_passes_base_dir_to_agent_runner_when_supported(tmp_path, monkeypatch):
+    _seed_workspace(tmp_path, monkeypatch)
+
+    captured: dict[str, object] = {}
+
+    def fake_run_agent(task, client, model, memory, system_prompt, yolo, review_only, *, base_dir=None):
+        captured["task"] = task
+        captured["base_dir"] = base_dir
+        return "Agent completed 1/1 steps"
+
+    result = workbench.execute_workbench(
+        "build",
+        "Implement parser support",
+        client=object(),
+        model="gemini-2.5-flash",
+        memory=ShortTermMemory(max_turns=4),
+        system_prompt="You are Lumi.",
+        base_dir=tmp_path,
+        run_agent_fn=fake_run_agent,
+    )
+
+    assert result.summary == "Agent completed 1/1 steps"
+    assert captured["task"] == "Implement parser support"
+    assert captured["base_dir"] == tmp_path

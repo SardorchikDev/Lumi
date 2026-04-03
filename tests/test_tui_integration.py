@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from types import SimpleNamespace
 
+from src.memory.conversation_store import load_repo_autosave, save_repo_autosave
 from src.tui.app import LumiTUI, _strip_ansi, registry
 from src.tui.notes import LittleNotesStore
 from src.tui.state import Msg
@@ -26,7 +27,21 @@ def _make_tui(tmp_path, monkeypatch) -> LumiTUI:
     return tui
 
 
-def test_starter_panel_renders_single_top_box(tmp_path, monkeypatch):
+def _patch_inline_thread(monkeypatch) -> None:
+    class InlineThread:
+        def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+
+        def start(self):
+            if self._target is not None:
+                self._target(*self._args, **self._kwargs)
+
+    monkeypatch.setattr("src.tui.app.threading.Thread", InlineThread)
+
+
+def test_starter_panel_renders_minimal_header(tmp_path, monkeypatch):
     monkeypatch.setattr("src.tui.session.random.choice", lambda _seq: "Tip: Short tip.")
     tui = _make_tui(tmp_path, monkeypatch)
     tui.show_starter_panel = True
@@ -37,22 +52,17 @@ def test_starter_panel_renders_single_top_box(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
 
-    assert "Mirror" in joined
-    assert "Welcome back!" in joined
-    assert "Tips for getting started" in joined
-    assert "Recent activity" in joined
+    assert "Operator" in joined
     assert "HuggingFace" in joined
     assert "Llama-3.3" in joined
     assert "▐▛███▜▌" in joined
     assert "▝▜█████▛▘" in joined
-    assert "approval:" not in joined
-    assert any(line.startswith("╭") for line in lines)
-    assert any(line.startswith("╰") for line in lines)
-    assert len(lines[0]) == 110
+    assert "Tips for getting started" not in joined
+    assert not any(line.startswith("╭") for line in lines)
     tui._task_executor.shutdown(wait=False)
 
 
-def test_starter_panel_shows_session_tip(tmp_path, monkeypatch):
+def test_starter_panel_stays_minimal_even_with_tip(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "src.tui.session.random.choice",
         lambda _seq: "Tip: Use /imagine <prompt> to generate images with Gemini and then ask Lumi to iterate on lighting, framing, and style.",
@@ -63,8 +73,9 @@ def test_starter_panel_shows_session_tip(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
 
-    assert "/imagine <prompt>" in joined
-    assert "Tips for getting started" in joined
+    assert "/imagine <prompt>" not in joined
+    assert "Tips for getting started" not in joined
+    assert "Lumi Operator" in joined
     tui._task_executor.shutdown(wait=False)
 
 
@@ -77,13 +88,47 @@ def test_chat_layout_keeps_prompt_and_transcript_separate(tmp_path, monkeypatch)
     prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(36, 110, 110)
     prompt = [_strip_ansi(line) for line in prompt_lines]
     chat = [_strip_ansi(line) for line in tui.renderer._build_chat_lines(110)]
-    prompt_top = tui.renderer._prompt_top(36, 1 + len(starter), len(prompt_lines), len(chat))
+    transcript_top = tui.renderer._transcript_top(len(starter), len(chat))
+    prompt_top = tui.renderer._prompt_top(36, transcript_top, len(prompt_lines), len(chat))
 
-    assert starter == []
-    assert any("❯" in line for line in prompt)
-    assert any("you" in line for line in chat)
+    assert any("Lumi Operator" in line for line in starter)
+    assert any("›" in line for line in prompt)
+    assert any("› hi" in line for line in chat)
     assert any("hello back" in line for line in chat)
-    assert prompt_top == 36 - len(prompt_lines) + 1
+    assert prompt_top == tui.renderer._transcript_top(len(starter), len(chat)) + len(chat)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_prompt_follows_transcript_until_it_hits_bottom(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    for index in range(8):
+        tui.store.add(Msg("user", f"message {index}"))
+        tui.store.add(Msg("assistant", f"reply {index}"))
+
+    prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(18, 110, 110)
+    chat = tui.renderer._build_chat_lines(110)
+    prompt_top = tui.renderer._prompt_top(18, 1, len(prompt_lines), len(chat))
+
+    assert prompt_top == 18 - len(prompt_lines) + 1
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_header_keeps_a_blank_row_before_transcript_when_visible(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.show_starter_panel = True
+    tui.starter_panel_pinned = True
+    tui.store.add(Msg("user", "hi"))
+    tui.store.add(Msg("assistant", "hello"))
+
+    starter = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
+    chat = [_strip_ansi(line) for line in tui.renderer._build_chat_lines(110)]
+    prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(36, 110, 110)
+    transcript_top = tui.renderer._transcript_top(len(starter), len(chat))
+    prompt_top = tui.renderer._prompt_top(36, transcript_top, len(prompt_lines), len(chat))
+
+    assert starter
+    assert transcript_top == 2 + len(starter)
+    assert prompt_top == transcript_top + len(chat)
     tui._task_executor.shutdown(wait=False)
 
 
@@ -96,12 +141,12 @@ def test_transcript_renders_compact_role_headers(tmp_path, monkeypatch):
     joined = "\n".join(chat)
 
     assert "◆ lumi" not in joined
-    assert "  you  14:05  hi" in joined
-    assert "  lumi  14:05  hello back" in joined
+    assert "  › hi" in joined
+    assert "  • hello back" in joined
     tui._task_executor.shutdown(wait=False)
 
 
-def test_starter_tip_aligns_with_transcript_headers(tmp_path, monkeypatch):
+def test_starter_header_aligns_with_transcript_markers(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "src.tui.session.random.choice",
         lambda _seq: "Tip: Use /voice [seconds] to record and transcribe straight into the prompt.",
@@ -113,15 +158,15 @@ def test_starter_tip_aligns_with_transcript_headers(tmp_path, monkeypatch):
 
     starter = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     chat = [_strip_ansi(line) for line in tui.renderer._build_chat_lines(110)]
-    tip_line = next(line for line in starter if "Use /voice [seconds]" in line)
-    user_line = next(line for line in chat if line.strip().startswith("you"))
+    header_line = next(line for line in starter if "Lumi Operator" in line)
+    user_line = next(line for line in chat if line.strip().startswith("›"))
 
-    assert "Use /voice [seconds]" in tip_line
-    assert user_line.startswith("  you")
+    assert "Lumi Operator" in header_line
+    assert user_line.startswith("  ›")
     tui._task_executor.shutdown(wait=False)
 
 
-def test_prompt_line_stays_flush_when_starter_tip_is_visible(tmp_path, monkeypatch):
+def test_prompt_line_stays_flush_when_header_is_visible(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "src.tui.session.random.choice",
         lambda _seq: "Tip: Use /doctor to check provider setup and runtime health.",
@@ -132,12 +177,12 @@ def test_prompt_line_stays_flush_when_starter_tip_is_visible(tmp_path, monkeypat
     starter = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(36, 110, 110)
     prompt = [_strip_ansi(line) for line in prompt_lines]
-    prompt_line = next(line for line in prompt if line.strip().startswith("❯"))
+    prompt_line = next(line for line in prompt if line.strip().startswith("›"))
 
-    assert any("Tips for getting started" in line for line in starter)
+    assert any("Lumi Operator" in line for line in starter)
     assert prompt[0].strip().startswith("─")
-    assert prompt[-1].strip().endswith("/effort")
-    assert prompt_line.startswith("❯")
+    assert "shortcuts" in prompt[-1]
+    assert prompt_line.startswith("›")
     assert len(prompt[0]) == 110
     tui._task_executor.shutdown(wait=False)
 
@@ -275,8 +320,59 @@ def test_identity_questions_answer_as_lumi(tmp_path, monkeypatch):
     tui._run_message("hi whats your name")
 
     messages = tui.store.snapshot()
-    assert any(msg.role == "assistant" and "I’m Lumi." in msg.text for msg in messages)
+    assert any(
+        msg.role == "assistant"
+        and "I’m Lumi" in msg.text
+        and "terminal coding agent" in msg.text
+        and "SardorchikDev" in msg.text
+        for msg in messages
+    )
     assert all("Claude Code" not in msg.text for msg in messages if msg.role == "assistant")
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_identity_followup_reaffirms_lumi_without_model_fallback(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+
+    def _unexpected_stream(*_args, **_kwargs):
+        raise AssertionError("identity follow-up should not hit the model")
+
+    tui._tui_stream = _unexpected_stream
+
+    tui._run_message("who are you")
+    tui._run_message("are you sure")
+
+    assistant_messages = [msg.text for msg in tui.store.snapshot() if msg.role == "assistant"]
+
+    assert any("I’m Lumi" in text for text in assistant_messages)
+    assert any("not Codex CLI or Claude Code" in text for text in assistant_messages)
+    assert all("I am Codex CLI" not in text for text in assistant_messages)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_first_casual_turn_uses_bootstrap_prompt_before_warmup_finishes(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui.system_prompt = "BOOTSTRAP PROMPT"
+    tui._startup_warmed = False
+
+    def _unexpected_prompt(*_args, **_kwargs):
+        raise AssertionError("first casual turn should not build the heavy prompt")
+
+    captured: dict[str, object] = {}
+
+    def _fake_stream(messages, _model, *_args, **_kwargs):
+        captured["messages"] = messages
+        return "hello back"
+
+    tui._make_system_prompt = _unexpected_prompt
+    tui._tui_stream = _fake_stream
+
+    tui._run_message("hello")
+
+    assert captured["messages"][0]["role"] == "system"
+    assert captured["messages"][0]["content"].startswith("BOOTSTRAP PROMPT")
     tui._task_executor.shutdown(wait=False)
 
 
@@ -291,6 +387,7 @@ def test_creator_questions_answer_with_sardor_identity(tmp_path, monkeypatch):
         msg.role == "assistant"
         and "Sardor Sodiqov" in msg.text
         and "SardorchikDev" in msg.text
+        and "maintains the project" in msg.text
         for msg in messages
     )
     tui._task_executor.shutdown(wait=False)
@@ -305,9 +402,11 @@ def test_capability_questions_answer_with_lumi_self_profile(tmp_path, monkeypatc
     messages = tui.store.snapshot()
     assert any(
         msg.role == "assistant"
-        and "In Mirror" in msg.text
+        and "In Operator" in msg.text
         and "edit" in msg.text
         and "search the web" in msg.text
+        and "/build" in msg.text
+        and "skills" in msg.text
         for msg in messages
     )
     tui._task_executor.shutdown(wait=False)
@@ -325,6 +424,7 @@ def test_runtime_questions_answer_with_provider_and_model(tmp_path, monkeypatch)
         and "HuggingFace" in msg.text
         and "Llama-3.3-70B-Instruct" in msg.text
         and "effort=" in msg.text
+        and "0.7.0 Operator" in msg.text
         for msg in messages
     )
     tui._task_executor.shutdown(wait=False)
@@ -370,18 +470,23 @@ def test_empty_state_keeps_prompt_under_starter_card(tmp_path, monkeypatch):
     starter = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
     prompt_lines, cursor_row, _cursor_col = tui.renderer._prompt_bar(36, 110, 110)
     prompt_lines = [_strip_ansi(line) for line in prompt_lines]
-    prompt_top = tui.renderer._prompt_top(36, 1 + len(starter), len(prompt_lines), 0)
+    prompt_top = tui.renderer._prompt_top(
+        36,
+        tui.renderer._transcript_top(len(starter), 0),
+        len(prompt_lines),
+        0,
+    )
     resolved_cursor_row = tui.renderer._prompt_cursor_row(36, len(prompt_lines), prompt_top, cursor_row)
 
-    assert any("Welcome back!" in line for line in starter)
-    assert prompt_top == 36 - len(prompt_lines) + 1
-    assert prompt_top > 1 + len(starter)
+    assert any("Lumi Operator" in line for line in starter)
+    assert prompt_top == 1 + len(starter)
     assert resolved_cursor_row == prompt_top + 1
     assert len(prompt_lines) == 4
     assert prompt_lines[0].strip().startswith("─")
-    assert prompt_lines[1].strip().startswith("❯")
+    assert prompt_lines[1].strip().startswith("›")
     assert prompt_lines[2].strip().startswith("─")
-    assert prompt_lines[3].strip().endswith("/effort")
+    assert "inspect this repo" in prompt_lines[1]
+    assert "shortcuts" in prompt_lines[3]
     tui._task_executor.shutdown(wait=False)
 
 
@@ -392,35 +497,29 @@ def test_ctrl_g_toggles_starter_panel(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(90)]
     prompt_lines, cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
     prompt = [_strip_ansi(line) for line in prompt_lines]
-    prompt_top = tui.renderer._prompt_top(30, 1, len(prompt_lines), 0)
+    prompt_top = tui.renderer._prompt_top(30, tui.renderer._transcript_top(0, 0), len(prompt_lines), 0)
     resolved_cursor_row = tui.renderer._prompt_cursor_row(30, len(prompt_lines), prompt_top, cursor_row)
 
     assert not lines
-    assert prompt_top == 30 - len(prompt_lines) + 1
+    assert prompt_top == 1
     assert resolved_cursor_row == prompt_top + 1
-    assert any("❯" in line for line in prompt)
+    assert any("›" in line for line in prompt)
     tui._task_executor.shutdown(wait=False)
 
 
-def test_starter_panel_auto_hides_after_chat_begins(tmp_path, monkeypatch):
+def test_starter_panel_stays_visible_after_chat_begins(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.store.add(Msg("user", "hi"))
 
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
 
-    assert lines == []
+    assert any("Lumi Operator" in line for line in lines)
     tui._task_executor.shutdown(wait=False)
 
 
-def test_ctrl_g_can_pin_starter_panel_during_active_chat(tmp_path, monkeypatch):
+def test_ctrl_g_toggles_starter_panel_during_active_chat(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.store.add(Msg("user", "hi"))
-
-    tui._handle_key("CTRL_G")
-    lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
-
-    assert any("Welcome back!" in line for line in lines)
-    assert tui.starter_panel_pinned is True
 
     tui._handle_key("CTRL_G")
     lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
@@ -428,6 +527,13 @@ def test_ctrl_g_can_pin_starter_panel_during_active_chat(tmp_path, monkeypatch):
     assert lines == []
     assert tui.show_starter_panel is False
     assert tui.starter_panel_pinned is False
+
+    tui._handle_key("CTRL_G")
+    lines = [_strip_ansi(line) for line in tui.renderer._build_starter_lines(110)]
+
+    assert any("Lumi Operator" in line for line in lines)
+    assert tui.show_starter_panel is True
+    assert tui.starter_panel_pinned is True
     tui._task_executor.shutdown(wait=False)
 
 
@@ -439,10 +545,83 @@ def test_prompt_bar_renders_claude_style_rail(tmp_path, monkeypatch):
 
     assert len(prompt) == 4
     assert prompt[0].strip().startswith("─")
-    assert prompt[1].strip().startswith("❯")
+    assert prompt[1].strip().startswith("›")
     assert prompt[2].strip().startswith("─")
-    assert prompt[3].strip().endswith("/effort")
+    assert "inspect this repo" in prompt[1]
+    assert "shortcuts" in prompt[3]
     assert len(prompt[0]) == 90
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_empty_prompt_shows_inline_placeholder_suggestion(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+
+    prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
+    prompt = [_strip_ansi(line) for line in prompt_lines]
+
+    assert prompt[1].strip().startswith("›")
+    assert "inspect this repo and tell me how it works" in prompt[1]
+    assert "try:" not in "\n".join(prompt)
+    assert "/claude.md create" not in "\n".join(prompt)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_resume_prefers_repo_autosave_for_current_workspace(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    history = [{"role": "user", "content": "repo hello"}, {"role": "assistant", "content": "repo hi"}]
+
+    save_repo_autosave(history, base_dir=tmp_path)
+    registry.commands["/load"]["func"](tui, "")
+
+    messages = tui.memory.get()
+    assert len(messages) == 2
+    assert messages[0]["content"] == "repo hello"
+    assert messages[1]["content"] == "repo hi"
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_clear_resets_repo_autosave_slot(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    history = [{"role": "user", "content": "old chat"}, {"role": "assistant", "content": "old reply"}]
+    save_repo_autosave(history, base_dir=tmp_path)
+    tui.memory.set_history(history)
+
+    registry.commands["/clear"]["func"](tui, "")
+
+    assert load_repo_autosave(tmp_path) == []
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_inline_placeholder_varies_with_repo_state_and_turns(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.turns = 3
+    tui.workspace_profile = SimpleNamespace(
+        changed_files=("src/tui/app.py",),
+        verification_commands={"tests": ("pytest -q",)},
+        frameworks=("FastAPI",),
+    )
+
+    prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
+    prompt = [_strip_ansi(line) for line in prompt_lines]
+    placeholder = prompt[1]
+
+    expected = (
+        "review the current changes and find issues",
+        "summarize what changed and what looks risky",
+        "trace the changed files and explain the impact",
+        "check the diff for regressions and edge cases",
+        "identify the highest-risk change before we merge anything",
+        "show me which edit is most likely to break prod",
+        "find the bug hiding in the latest changes",
+        "tell me which edit is acting confident for no reason",
+        "show me the diff line that is about to start drama",
+    )
+
+    assert prompt[1].strip().startswith("›")
+    assert any(candidate in placeholder for candidate in expected)
+    assert "try:" not in "\n".join(prompt)
+    assert "/doctor" not in "\n".join(prompt)
+    assert "/claude.md create" not in "\n".join(prompt)
     tui._task_executor.shutdown(wait=False)
 
 
@@ -464,13 +643,13 @@ def test_recent_commands_clear_between_tui_sessions(tmp_path, monkeypatch):
     lines = [_strip_ansi(line) for line in second.renderer._build_starter_lines(110)]
     joined = "\n".join(lines)
     assert "/clear" not in joined
-    assert "Mirror" in joined
+    assert "Operator" in joined
 
     first._task_executor.shutdown(wait=False)
     second._task_executor.shutdown(wait=False)
 
 
-def test_starter_panel_shows_session_summary(tmp_path, monkeypatch):
+def test_starter_panel_hides_session_summary_in_minimal_mode(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.show_starter_panel = True
     tui.little_notes.record_action("Created 2 file(s) and 1 folder(s).")
@@ -480,7 +659,7 @@ def test_starter_panel_shows_session_summary(tmp_path, monkeypatch):
     joined = "\n".join(lines)
 
     assert "HuggingFace" in joined
-    assert "Created 2 file(s) and 1 folder(s)." in joined
+    assert "Created 2 file(s) and 1 folder(s)." not in joined
     tui._task_executor.shutdown(wait=False)
 
 
@@ -657,6 +836,24 @@ def test_arrow_keys_keep_history_navigation_when_prompt_has_text(tmp_path, monke
     tui._task_executor.shutdown(wait=False)
 
 
+def test_busy_state_blocks_typing_and_escape_requests_stop(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui.busy = True
+    tui.buf = "draft"
+    tui.cur_pos = len(tui.buf)
+
+    tui._handle_key("a")
+
+    assert tui.buf == "draft"
+    assert tui.cur_pos == len("draft")
+
+    tui._handle_key("ESC")
+
+    assert tui.stop_requested() is True
+    tui._task_executor.shutdown(wait=False)
+
+
 def test_escape_closes_closeable_side_pane(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.redraw = lambda: None
@@ -758,7 +955,7 @@ def test_path_suggestions_complete_with_tab(tmp_path, monkeypatch):
     tui._task_executor.shutdown(wait=False)
 
 
-def test_multiline_enter_inserts_newline_and_prompt_shows_badges(tmp_path, monkeypatch):
+def test_multiline_enter_inserts_newline_and_prompt_shows_content(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.multiline = True
     tui.buf = "hello"
@@ -773,7 +970,7 @@ def test_multiline_enter_inserts_newline_and_prompt_shows_badges(tmp_path, monke
     joined = "\n".join(lines)
 
     assert tui.buf == "hello\nworld"
-    assert "❯ hello" in joined
+    assert "› hello" in joined
     assert "world" in joined
     tui._task_executor.shutdown(wait=False)
 
@@ -832,8 +1029,8 @@ def test_effort_command_accepts_ehigh_and_updates_request_profile(tmp_path, monk
     assert reply == "ok"
     assert tui.reasoning_effort == "ehigh"
     assert captured["client"] is tui.client
-    assert captured["max_tokens"] == 3072
-    assert captured["temperature"] == 0.2
+    assert captured["max_tokens"] == 16384
+    assert captured["temperature"] == 0.1
     assert "Reasoning effort: extra high." in str(captured["messages"][0]["content"])
     tui._task_executor.shutdown(wait=False)
 
@@ -861,8 +1058,8 @@ def test_tui_defaults_to_medium_effort_with_tighter_chat_budget(tmp_path, monkey
 
     assert reply == "ok"
     assert tui.reasoning_effort == "medium"
-    assert captured["max_tokens"] == 2048
-    assert captured["temperature"] == 0.45
+    assert captured["max_tokens"] == 4096
+    assert captured["temperature"] == 0.7
     assert str(captured["messages"][0]["content"]) == "You are Lumi."
     tui._task_executor.shutdown(wait=False)
 
@@ -889,8 +1086,8 @@ def test_silent_call_honors_low_effort(tmp_path, monkeypatch):
     reply = tui._silent_call("Summarize this.", "demo-model", max_tokens=1000)
 
     assert reply == "done"
-    assert captured["max_tokens"] == 700
-    assert captured["temperature"] == 0.3
+    assert captured["max_tokens"] == 1000
+    assert captured["temperature"] == 1.0
     assert "Reasoning effort: low." in str(captured["messages"][0]["content"])
     tui._task_executor.shutdown(wait=False)
 
@@ -938,7 +1135,7 @@ def test_model_picker_opens_in_provider_stage(tmp_path, monkeypatch):
     tui._task_executor.shutdown(wait=False)
 
 
-def test_picker_popup_anchors_above_lower_prompt_on_left(tmp_path, monkeypatch):
+def test_picker_popup_anchors_below_top_prompt_on_left(tmp_path, monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "x")
     monkeypatch.setenv("GEMINI_API_KEY", "y")
     monkeypatch.setattr("src.tui.app.get_available_providers", lambda: ["huggingface", "gemini"])
@@ -949,17 +1146,22 @@ def test_picker_popup_anchors_above_lower_prompt_on_left(tmp_path, monkeypatch):
     tui._open_picker()
     starter = tui.renderer._build_starter_lines(90)
     prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
-    prompt_top = tui.renderer._prompt_top(30, 1 + len(starter), len(prompt_lines), 0)
+    prompt_top = tui.renderer._prompt_top(
+        30,
+        tui.renderer._transcript_top(len(starter), 0),
+        len(prompt_lines),
+        0,
+    )
     popup = tui.renderer._picker_popup(30, 90)
     first_cursor = re.match(r"\x1b\[(\d+);(\d+)H", popup)
 
     assert first_cursor is not None
     assert first_cursor.group(2) == "1"
-    assert int(first_cursor.group(1)) < prompt_top
+    assert int(first_cursor.group(1)) > prompt_top
     tui._task_executor.shutdown(wait=False)
 
 
-def test_browser_popup_anchors_above_lower_prompt_on_left(tmp_path, monkeypatch):
+def test_browser_popup_anchors_below_top_prompt_on_left(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.browser_visible = True
     tui.browser_cwd = str(tmp_path)
@@ -967,13 +1169,18 @@ def test_browser_popup_anchors_above_lower_prompt_on_left(tmp_path, monkeypatch)
 
     starter = tui.renderer._build_starter_lines(90)
     prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
-    prompt_top = tui.renderer._prompt_top(30, 1 + len(starter), len(prompt_lines), 0)
+    prompt_top = tui.renderer._prompt_top(
+        30,
+        tui.renderer._transcript_top(len(starter), 0),
+        len(prompt_lines),
+        0,
+    )
     popup = tui.renderer._browser_popup(30, 90)
     first_cursor = re.match(r"\x1b\[(\d+);(\d+)H", popup)
 
     assert first_cursor is not None
     assert first_cursor.group(2) == "1"
-    assert int(first_cursor.group(1)) < prompt_top
+    assert int(first_cursor.group(1)) > prompt_top
     tui._task_executor.shutdown(wait=False)
 
 
@@ -1005,19 +1212,25 @@ def test_slash_popup_renders_codex_style_command_and_description(tmp_path, monke
     tui._task_executor.shutdown(wait=False)
 
 
-def test_slash_popup_footer_stays_above_prompt_rail(tmp_path, monkeypatch):
+def test_slash_popup_stays_below_top_prompt_rail(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     tui.buf = "/"
     tui.cur_pos = 1
     tui._update_slash()
 
     prompt_lines, _cursor_row, _cursor_col = tui.renderer._prompt_bar(30, 90, 90)
-    prompt_top = tui.renderer._prompt_top(30, 1 + len(tui.renderer._build_starter_lines(90)), len(prompt_lines), 0)
+    starter = tui.renderer._build_starter_lines(90)
+    prompt_top = tui.renderer._prompt_top(
+        30,
+        tui.renderer._transcript_top(len(starter), 0),
+        len(prompt_lines),
+        0,
+    )
     popup = tui.renderer._slash_popup(30, 90)
     rows = [int(match) for match, _col in re.findall(r"\x1b\[(\d+);(\d+)H", popup)]
 
     assert rows
-    assert max(rows) < prompt_top
+    assert min(rows) > prompt_top
     tui._task_executor.shutdown(wait=False)
 
 
@@ -1204,25 +1417,87 @@ def test_model_picker_uses_icons_without_preview_documentation(tmp_path, monkeyp
 def test_build_plan_command_opens_workbench_plan_pane(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
     monkeypatch.setattr("src.tui.command_groups.prepare_workbench_plan", lambda *args, **kwargs: SimpleNamespace())
-    monkeypatch.setattr("src.tui.command_groups.render_workbench_plan", lambda _plan: "Mirror\nbuild plan")
+    monkeypatch.setattr("src.tui.command_groups.render_workbench_plan", lambda _plan: "Operator\nbuild plan")
 
     registry.commands["/build"]["func"](tui, "--plan add search")
 
     assert tui.pane_active is True
     assert tui.pane.title == "build plan"
-    assert "Mirror" in "\n".join(tui.pane.content())
+    assert "Operator" in "\n".join(tui.pane.content())
     tui._task_executor.shutdown(wait=False)
 
 
 def test_learn_command_opens_workbench_report_pane(tmp_path, monkeypatch):
     tui = _make_tui(tmp_path, monkeypatch)
-    monkeypatch.setattr("src.tui.command_groups.render_workbench_report", lambda *_args, **_kwargs: "Mirror\nrepo map")
+    monkeypatch.setattr("src.tui.command_groups.render_workbench_report", lambda *_args, **_kwargs: "Operator\nrepo map")
 
     registry.commands["/learn"]["func"](tui, "architecture")
 
     assert tui.pane_active is True
     assert tui.pane.title == "workbench learn"
     assert "repo map" in "\n".join(tui.pane.content())
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_launch_workbench_keeps_existing_non_jobs_pane(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    _patch_inline_thread(monkeypatch)
+    tui._notify = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "src.tui.app.execute_workbench",
+        lambda *_args, **_kwargs: SimpleNamespace(summary="created game", risk_level="low"),
+    )
+    monkeypatch.setattr("src.tui.app.render_workbench_result", lambda result: f"workbench ok: {result.summary}")
+
+    tui.set_pane(title="browser", subtitle="cwd", lines=["src"], close_on_escape=True)
+    tui.launch_workbench("build", "a simple number guessing python game")
+
+    assert tui.pane_active is True
+    assert tui.pane.title == "browser"
+    assert tui.workbench_jobs[0]["status"] == "done"
+    assert tui.workbench_jobs[0]["summary"] == "created game"
+    assert tui.agent_active_objective is None
+    assert any(msg.role == "system" and "workbench ok: created game" in msg.text for msg in tui.store.snapshot())
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_launch_workbench_refreshes_jobs_pane_when_visible(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    _patch_inline_thread(monkeypatch)
+    tui._notify = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "src.tui.app.execute_workbench",
+        lambda *_args, **_kwargs: SimpleNamespace(summary="created game", risk_level="low"),
+    )
+    monkeypatch.setattr("src.tui.app.render_workbench_result", lambda result: f"workbench ok: {result.summary}")
+
+    registry.commands["/jobs"]["func"](tui, "")
+    tui.launch_workbench("build", "a simple number guessing python game")
+
+    assert tui.pane_active is True
+    assert tui.pane.title == "workbench jobs"
+    assert any("[done] build" in line for line in tui.pane.lines)
+    assert any("summary: created game" in line for line in tui.pane.lines)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_launch_workbench_failure_marks_job_and_clears_agent_state(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    _patch_inline_thread(monkeypatch)
+    tui._notify = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("src.tui.app.execute_workbench", _boom)
+
+    tui.launch_workbench("build", "broken task")
+
+    assert tui.workbench_jobs[0]["status"] == "failed"
+    assert tui.workbench_jobs[0]["stage"] == "failed"
+    assert tui.agent_active_objective is None
+    assert tui.agent_tasks == []
+    assert any(msg.role == "error" and "build failed: boom" in msg.text for msg in tui.store.snapshot())
     tui._task_executor.shutdown(wait=False)
 
 
@@ -1364,8 +1639,59 @@ def test_permissions_command_renders_permission_report(tmp_path, monkeypatch):
     tui._execute_command("/permissions", "all")
 
     messages = tui.store.snapshot()
+    assert any(msg.role == "system" and "Tool permissions" in msg.text for msg in messages)
     assert any(msg.role == "system" and "Plugin permissions" in msg.text for msg in messages)
-    assert any(msg.role == "system" and "loaded plugins" in msg.text for msg in messages)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_command_palette_toggles_and_surfaces_recent_prompt(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.redraw = lambda: None
+    tui.history.entries.append("explain this repository")
+
+    tui._handle_key("CTRL_P")
+
+    assert tui.command_palette_visible is True
+    assert any(item["kind"] == "prompt" and item["value"] == "explain this repository" for item in tui.command_palette_hits)
+
+    tui._handle_key("ESC")
+
+    assert tui.command_palette_visible is False
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_transcript_renders_tool_rows_inline(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.store.add(
+        Msg(
+            "tool",
+            "✓ 230ms",
+            label="edit_file  src/core/session.py",
+            meta={"status": "done", "ok": True, "duration_ms": 230},
+        )
+    )
+
+    lines = [_strip_ansi(line) for line in tui.renderer._build_chat_lines(110)]
+
+    assert any("✓ edit_file  src/core/session.py  ✓ 230ms" in line for line in lines)
+    tui._task_executor.shutdown(wait=False)
+
+
+def test_permission_popup_renders_modal(tmp_path, monkeypatch):
+    tui = _make_tui(tmp_path, monkeypatch)
+    tui.permission_prompt.active = True
+    tui.permission_prompt.tool_name = "run_shell"
+    tui.permission_prompt.display = "$ pytest tests/ -q"
+    tui.permission_prompt.rule_hint = "run_shell:pytest *"
+    tui.permission_prompt.selected = 1
+    tui.permission_prompt_active = True
+
+    rendered = _strip_ansi(tui.renderer._permission_popup(30, 100))
+
+    assert "Permission required" in rendered
+    assert "run_shell" in rendered
+    assert "pytest tests/ -q" in rendered
+    assert "[Allow Always]" in rendered
     tui._task_executor.shutdown(wait=False)
 
 
@@ -1384,12 +1710,12 @@ def test_skill_command_executes_through_chat_runtime(tmp_path, monkeypatch):
 
     tui._tui_stream = fake_stream
 
-    tui._execute_command("/release", "v0.6.0")
+    tui._execute_command("/release", "v0.7.0")
 
     messages = tui.store.snapshot()
-    assert any(msg.role == "user" and msg.text == "/release v0.6.0" for msg in messages)
+    assert any(msg.role == "user" and msg.text == "/release v0.7.0" for msg in messages)
     assert tui.last_reply == "Release notes ready."
-    assert "Draft release notes for v0.6.0." in captured["messages"][-1]["content"]
+    assert "Draft release notes for v0.7.0." in captured["messages"][-1]["content"]
     tui._task_executor.shutdown(wait=False)
 
 

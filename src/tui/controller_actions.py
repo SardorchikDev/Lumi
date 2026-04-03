@@ -11,6 +11,7 @@ from src.chat.model_filters import (
     filter_models_by_allowlist,
     model_allowlist_env_keys,
 )
+from src.chat.optimizer import estimate_message_tokens, model_context_limit
 from src.chat.providers import (
     get_provider_spec,
     provider_capability_model_hints,
@@ -21,6 +22,7 @@ from src.chat.providers import (
 from src.tui.state import Msg
 from src.utils.hooks import run_hooks
 from src.utils.skills import build_skill_prompt, find_skill, skill_hits
+from src.utils.workbench import WORKBENCH_NAME, WORKBENCH_TITLE, WORKBENCH_VERSION
 
 
 def _normalized_prompt(text: str) -> str:
@@ -34,6 +36,10 @@ def _is_identity_prompt(text: str) -> bool:
     phrases = (
         "who are you",
         "what are you",
+        "tell me about yourself",
+        "introduce yourself",
+        "what do you know about yourself",
+        "tell me everything about you",
         "what is your name",
         "whats your name",
         "what s your name",
@@ -58,6 +64,9 @@ def _is_capabilities_prompt(text: str) -> bool:
         "what do you help with",
         "what can lumi do",
         "what is lumi able to do",
+        "what are all your commands",
+        "what tools do you have",
+        "what features does lumi have",
     )
     return any(phrase in lowered for phrase in phrases)
 
@@ -74,6 +83,8 @@ def _is_runtime_prompt(text: str) -> bool:
         "what engine are you using",
         "what llm are you using",
         "what model powers you",
+        "what version are you",
+        "what release are you on",
     )
     return any(phrase in lowered for phrase in phrases)
 
@@ -92,6 +103,46 @@ def _is_workspace_prompt(text: str) -> bool:
         "do you know this project",
     )
     return any(phrase in lowered for phrase in phrases)
+
+
+def _is_self_knowledge_followup_prompt(text: str) -> bool:
+    lowered = _normalized_prompt(text)
+    short_followups = {
+        "are you sure",
+        "you sure",
+        "really",
+        "really sure",
+        "for real",
+        "fr",
+        "be honest",
+        "seriously",
+    }
+    if lowered in short_followups:
+        return True
+    phrases = (
+        "are you actually sure",
+        "who are you actually",
+        "what are you actually",
+        "who are you really",
+        "what are you really",
+        "be honest who are you",
+        "be honest what are you",
+        "are you actually lumi",
+        "so who are you",
+        "what are you then",
+    )
+    return any(phrase in lowered for phrase in phrases)
+
+
+def _creator_profile(tui: Any) -> tuple[str, str, str]:
+    creator = (
+        getattr(tui, "persona_override", {}).get("creator")
+        or getattr(tui, "persona", {}).get("creator")
+        or "Sardor Sodiqov (SardorchikDev)"
+    )
+    full_name = "Sardor Sodiqov" if "Sardor" in creator else creator
+    github = "SardorchikDev"
+    return creator, full_name, github
 
 
 def _summarize_hook_failure(result) -> str:
@@ -156,8 +207,7 @@ def _run_skill_turn(
         tui.prev_reply = tui.last_reply
         tui.last_reply = raw_reply
         tui.turns += 1
-        if tui.turns % 5 == 0:
-            tui._task_executor.submit(lambda: session_save_fn(tui.memory.get()))
+        tui._task_executor.submit(lambda: session_save_fn(tui.memory.get()))
         if tui.turns % 8 == 0:
             def _bg_remember() -> None:
                 try:
@@ -194,14 +244,13 @@ def _is_creator_prompt(text: str) -> bool:
 
 
 def _creator_reply(tui: Any) -> str:
-    creator = (
-        getattr(tui, "persona_override", {}).get("creator")
-        or getattr(tui, "persona", {}).get("creator")
-        or "Sardor Sodiqov (SardorchikDev)"
-    )
-    if "SardorchikDev" in creator:
-        return "I'm Lumi, created by Sardor Sodiqov, aka SardorchikDev on GitHub."
-    return f"I'm Lumi, created by {creator}."
+    creator, full_name, github = _creator_profile(tui)
+    if github in creator or full_name in creator:
+        return (
+            f"My creator is {full_name}. On GitHub he goes by {github}. "
+            f"He built Lumi and maintains the project."
+        )
+    return f"My creator is {creator}."
 
 
 def _display_path(path: Path, *, max_len: int = 56) -> str:
@@ -231,14 +280,12 @@ def _runtime_identity_bits(tui: Any, *, get_provider_fn) -> tuple[str, str, str]
 
 def _identity_reply(tui: Any, *, get_provider_fn) -> str:
     provider_label, model, _provider_key = _runtime_identity_bits(tui, get_provider_fn=get_provider_fn)
-    creator = (
-        getattr(tui, "persona_override", {}).get("creator")
-        or getattr(tui, "persona", {}).get("creator")
-        or "Sardor Sodiqov (SardorchikDev)"
-    )
+    _creator, full_name, github = _creator_profile(tui)
     return (
-        f"I’m Lumi. Mirror is the current Lumi workbench release, built by {creator}. "
-        f"I can work across files, memory, search, repo-aware tasks, and structured coding workflows. "
+        f"I’m Lumi, the terminal coding agent for this app. "
+        f"My current release line is {WORKBENCH_TITLE}. "
+        f"I was created by {full_name}, known on GitHub as {github}. "
+        f"I handle repo-aware coding, tools, memory, search, plugins, and workbench workflows. "
         f"Right now I’m running on {provider_label} with {model}."
     )
 
@@ -252,6 +299,8 @@ def _capabilities_reply(tui: Any, *, get_provider_fn) -> str:
         "search the web when needed",
         "remember user facts and recent conversation context",
         "hand off to external coding CLIs with /mode vessel",
+        "run workbench flows like /build, /review, /ship, /learn, and /fixci",
+        "use slash commands, command palette, permissions, hooks, skills, and plugins",
     ]
     if provider_supports(provider_key, "vision"):
         abilities.append("inspect images")
@@ -261,7 +310,7 @@ def _capabilities_reply(tui: Any, *, get_provider_fn) -> str:
         abilities.append("use trusted plugins")
     abilities_text = ", ".join(abilities[:-1]) + f", and {abilities[-1]}" if len(abilities) > 1 else abilities[0]
     return (
-        f"I’m Lumi. In Mirror, I can {abilities_text}. "
+        f"I’m Lumi. In {WORKBENCH_NAME}, I can {abilities_text}. "
         f"My current runtime is {provider_label} with {model}."
     )
 
@@ -272,7 +321,7 @@ def _runtime_reply(tui: Any, *, get_provider_fn) -> str:
     compact = "on" if getattr(tui, "_compact", False) else "off"
     guardian = "on" if getattr(tui, "guardian_enabled", False) else "off"
     return (
-        f"I’m Lumi, currently running on {provider_label} with {model}. "
+        f"I’m Lumi on {WORKBENCH_VERSION} {WORKBENCH_NAME}, currently running on {provider_label} with {model}. "
         f"Runtime state: effort={effort}, compact={compact}, guardian={guardian}."
     )
 
@@ -290,8 +339,67 @@ def _workspace_reply(tui: Any) -> str:
     details_text = f" I’m seeing {', '.join(details)}." if details else ""
     return (
         f"I’m currently working in {_display_path(workspace)}."
-        f"{details_text} I can inspect the repo structure, files, and project context from here."
+        f"{details_text} I can inspect the repo structure, files, git state, project context, and active code from here."
     )
+
+
+def _recent_self_knowledge_topic(tui: Any) -> str | None:
+    snapshot_fn = getattr(tui.store, "snapshot", None)
+    recent = list(snapshot_fn() if callable(snapshot_fn) else [])
+    for msg in reversed(recent[-6:]):
+        text = str(getattr(msg, "text", "") or "")
+        if not text:
+            continue
+        if getattr(msg, "role", "") == "user":
+            if _is_identity_prompt(text):
+                return "identity"
+            if _is_creator_prompt(text):
+                return "creator"
+            if _is_capabilities_prompt(text):
+                return "capabilities"
+            if _is_runtime_prompt(text):
+                return "runtime"
+            if _is_workspace_prompt(text):
+                return "workspace"
+        elif getattr(msg, "role", "") == "assistant":
+            lowered = _normalized_prompt(text)
+            if "i m lumi" in lowered or "i am lumi" in lowered or "created by sardor sodiqov" in lowered:
+                return "identity"
+            if "my creator is" in lowered:
+                return "creator"
+            if "current runtime" in lowered or "running on" in lowered:
+                return "runtime"
+            if "i can inspect the repo structure" in lowered or "currently working in" in lowered:
+                return "workspace"
+            if "i can switch providers and models" in lowered or "what i can do" in lowered:
+                return "capabilities"
+    return None
+
+
+def _self_knowledge_followup_reply(tui: Any, topic: str, *, get_provider_fn) -> str | None:
+    provider_label, model, _provider_key = _runtime_identity_bits(tui, get_provider_fn=get_provider_fn)
+    if topic == "creator":
+        return (
+            "Yes. My creator is Sardor Sodiqov, and his GitHub handle is SardorchikDev. "
+            "He built Lumi and maintains the project."
+        )
+    if topic == "capabilities":
+        return _capabilities_reply(tui, get_provider_fn=get_provider_fn)
+    if topic == "runtime":
+        return (
+            f"Yes. I’m Lumi, and my current runtime is {provider_label} with {model}. "
+            f"My release line is {WORKBENCH_TITLE}."
+        )
+    if topic == "workspace":
+        return _workspace_reply(tui)
+    if topic == "identity":
+        return (
+            f"Yes. I’m Lumi, not Codex CLI or Claude Code. "
+            f"My release line is {WORKBENCH_TITLE}. "
+            f"My creator is Sardor Sodiqov, known on GitHub as SardorchikDev. "
+            f"Right now I’m running on {provider_label} with {model}."
+        )
+    return None
 
 
 def _self_knowledge_reply(tui: Any, text: str, *, get_provider_fn) -> str | None:
@@ -305,6 +413,10 @@ def _self_knowledge_reply(tui: Any, text: str, *, get_provider_fn) -> str | None
         return _runtime_reply(tui, get_provider_fn=get_provider_fn)
     if _is_workspace_prompt(text):
         return _workspace_reply(tui)
+    if _is_self_knowledge_followup_prompt(text):
+        topic = _recent_self_knowledge_topic(tui)
+        if topic:
+            return _self_knowledge_followup_reply(tui, topic, get_provider_fn=get_provider_fn)
     return None
 
 
@@ -339,6 +451,15 @@ def cancel_pending_file_plan(tui: Any) -> bool:
 
 def cancel_transient_state(tui: Any) -> bool:
     changed = False
+    if getattr(tui, "permission_prompt_active", False):
+        tui._approve_pending_permission("deny")
+        changed = True
+    if getattr(tui, "command_palette_visible", False):
+        tui.command_palette_visible = False
+        tui.command_palette_query = ""
+        tui.command_palette_hits = []
+        tui.command_palette_sel = 0
+        changed = True
     if getattr(tui, "shortcuts_visible", False):
         tui.shortcuts_visible = False
         changed = True
@@ -575,6 +696,7 @@ def run_message(
         tui.prev_reply = tui.last_reply
         tui.last_reply = self_reply
         tui.turns += 1
+        tui._task_executor.submit(lambda: session_save_fn(tui.memory.get()))
         after_hooks = run_hooks(
             "after_response",
             base_dir=Path.cwd(),
@@ -587,7 +709,11 @@ def run_message(
 
     is_code = is_complex_coding_task_fn(user_input) or is_coding_task_fn(user_input)
     is_files = is_file_generation_task_fn(user_input)
-    system_prompt = tui._make_system_prompt(coding_mode=is_code, file_mode=is_files)
+    system_prompt = tui._system_prompt_for_turn(
+        user_input=user_input,
+        coding_mode=is_code,
+        file_mode=is_files,
+    )
 
     if needs_plan_first_fn(user_input) and is_files:
         system_prompt += "\n\n[INSTRUCTION: Output a brief one-paragraph plan. Then write each file completely.]"
@@ -644,23 +770,29 @@ def run_message(
             tui.set_busy(False)
             return
 
-    if len(tui.memory.get()) > 15 and tui.turns % 10 == 0 and tui.turns > 0:
+    active_model = tui.current_model if tui.current_model != "council" else get_models_fn(get_provider_fn())[0]
+    estimated_tokens = estimate_message_tokens(tui.memory.get()) + max(1, len(system_prompt) // 4)
+    if estimated_tokens >= int(model_context_limit(active_model, get_provider_fn()) * 0.8):
         def _compress() -> None:
             try:
-                snapshot = tui.memory.get()[:-4]
+                history = tui.memory.get()
+                take = max(2, int(len(history) * 0.3))
+                snapshot = history[:take]
                 if not snapshot:
                     return
-                model = tui.current_model if tui.current_model != "council" else get_models_fn(get_provider_fn())[0]
                 summary = tui._silent_call(
-                    "Summarize this conversation briefly:\n\n"
-                    + "\n".join(f"{item['role']}: {item['content'][:200]}" for item in snapshot),
-                    model,
-                    200,
+                    "Summarize the following conversation segment in 200 words, preserving key decisions, file paths, "
+                    "and code changes made.\n\n"
+                    + "\n".join(f"{item['role']}: {item['content'][:240]}" for item in snapshot),
+                    active_model,
+                    max_tokens=220,
                 )
                 if summary:
                     with tui._state_lock:
-                        tui.memory.replace_with_summary(summary, tail_messages=4)
+                        tail_messages = max(4, len(history) - take)
+                        tui.memory.replace_with_summary(summary, tail_messages=tail_messages)
                         tui._cached_tok_len = -1
+                    tui._notify(f"Context compacted. {len(snapshot)} messages summarized.", duration=2.0)
                     log.debug("Memory compressed to summary + last 4 messages")
             except Exception:
                 log.exception("Memory compression failed")
@@ -689,8 +821,7 @@ def run_message(
     tui.turns += 1
     tui.set_busy(False)
 
-    if tui.turns % 5 == 0:
-        tui._task_executor.submit(lambda: session_save_fn(tui.memory.get()))
+    tui._task_executor.submit(lambda: session_save_fn(tui.memory.get()))
     if tui.turns % 8 == 0:
         def _bg_remember() -> None:
             try:
@@ -860,6 +991,10 @@ def _scroll_active_surface(
     if tui.picker_visible:
         _picker_move_selection(tui, overlay_delta)
         return
+    if getattr(tui, "command_palette_visible", False):
+        if tui.command_palette_hits:
+            tui.command_palette_sel = max(0, min(len(tui.command_palette_hits) - 1, tui.command_palette_sel + overlay_delta))
+        return
 
     transcript_step = max(1, transcript_amount)
     if up:
@@ -875,8 +1010,10 @@ def _use_arrow_scroll(tui: Any) -> bool:
             tui.slash_visible,
             tui.path_visible,
             tui.picker_visible,
+            getattr(tui, "command_palette_visible", False),
             getattr(tui, "shortcuts_visible", False),
             getattr(tui, "workspace_trust_visible", False),
+            getattr(tui, "permission_prompt_active", False),
             getattr(tui, "pane_active", False),
             getattr(getattr(tui, "review_card", None), "active", False),
             bool(tui.buf),
@@ -1446,7 +1583,13 @@ def handle_key(
     if not key:
         return
     if isinstance(key, tuple) and len(key) == 2 and key[0] == "PASTE":
+        if tui.busy:
+            return
         pasted = str(key[1] or "")
+        if getattr(tui, "command_palette_visible", False):
+            tui.command_palette_query += pasted
+            tui._refresh_command_palette()
+            return
         if tui.picker_visible:
             tui.picker_query += pasted
             tui._refresh_picker()
@@ -1456,6 +1599,28 @@ def handle_key(
         tui.buf = tui.buf[: tui.cur_pos] + pasted + tui.buf[tui.cur_pos :]
         tui.cur_pos += len(pasted)
         update_slash(tui, registry=registry, suggest_paths_fn=suggest_paths_fn)
+        return
+    if getattr(tui, "permission_prompt_active", False):
+        if key == "ESC":
+            tui._approve_pending_permission("deny")
+            return
+        if key in {"LEFT", "UP", "TAB"}:
+            tui.permission_prompt.selected = (int(getattr(tui.permission_prompt, "selected", 0) or 0) - 1) % 3
+            tui.redraw()
+            return
+        if key in {"RIGHT", "DOWN"}:
+            tui.permission_prompt.selected = (int(getattr(tui.permission_prompt, "selected", 0) or 0) + 1) % 3
+            tui.redraw()
+            return
+        if key in {"1", "2", "3"}:
+            tui.permission_prompt.selected = int(key) - 1
+            tui.redraw()
+            return
+        if key == "ENTER":
+            selected = int(getattr(tui.permission_prompt, "selected", 0) or 0)
+            decision = ("allow_once", "allow_always", "deny")[selected]
+            tui._approve_pending_permission(decision)
+            return
         return
     if getattr(tui, "workspace_trust_visible", False):
         if key == "ESC":
@@ -1478,6 +1643,10 @@ def handle_key(
             tui.redraw()
             return
         return
+    if tui.busy:
+        if key == "ESC":
+            tui.request_stop()
+        return
     shortcuts_visible = bool(getattr(tui, "shortcuts_visible", False))
     shortcuts_context_blocked = any(
         (
@@ -1485,6 +1654,7 @@ def handle_key(
             tui.slash_visible,
             tui.path_visible,
             tui.picker_visible,
+            getattr(tui, "command_palette_visible", False),
             getattr(tui, "pane_active", False),
             getattr(getattr(tui, "review_card", None), "active", False),
         )
@@ -1507,20 +1677,24 @@ def handle_key(
             tui._running = False
         return
     if key == "CTRL_G":
-        has_messages = bool(tui.store.snapshot())
-        starter_pinned = bool(getattr(tui, "starter_panel_pinned", False))
-        starter_visible = bool(getattr(tui, "show_starter_panel", True)) and (not has_messages or starter_pinned)
-        if starter_visible:
-            tui.show_starter_panel = False
-            tui.starter_panel_pinned = False
-        else:
-            tui.show_starter_panel = True
-            tui.starter_panel_pinned = True
+        starter_visible = bool(getattr(tui, "show_starter_panel", True))
+        tui.show_starter_panel = not starter_visible
+        tui.starter_panel_pinned = tui.show_starter_panel
         tui.redraw()
         return
     if key == "CTRL_N":
         if not tui.slash_visible:
             tui._open_picker()
+        return
+    if key == "CTRL_P":
+        tui._toggle_command_palette()
+        return
+    if key == "CTRL_T":
+        tui._toggle_todo_pane()
+        return
+    if getattr(tui, "command_palette_visible", False) and key == "CTRL_U":
+        tui.command_palette_query = ""
+        tui._refresh_command_palette()
         return
     if tui.picker_visible and key == "CTRL_U":
         tui.picker_query = ""
@@ -1530,6 +1704,8 @@ def handle_key(
         tui.memory.clear()
         tui.store.clear()
         tui.agents.clear()
+        tui.tool_row_index = {}
+        tui.agent_todos = []
         tui.last_msg = tui.last_reply = tui.prev_reply = None
         tui.turns = 0
         tui.set_busy(False)
@@ -1564,6 +1740,10 @@ def handle_key(
         if _use_arrow_scroll(tui):
             _scroll_active_surface(tui, up=True, overlay_amount=3, transcript_amount=3)
             return
+        if getattr(tui, "command_palette_visible", False):
+            tui.command_palette_sel = max(0, tui.command_palette_sel - 1)
+            tui.redraw()
+            return
         if getattr(tui, "browser_visible", False):
             tui.browser_sel = max(0, tui.browser_sel - 1)
             tui.redraw()
@@ -1580,6 +1760,11 @@ def handle_key(
     if key == "DOWN":
         if _use_arrow_scroll(tui):
             _scroll_active_surface(tui, up=False, overlay_amount=3, transcript_amount=3)
+            return
+        if getattr(tui, "command_palette_visible", False):
+            if tui.command_palette_hits:
+                tui.command_palette_sel = min(len(tui.command_palette_hits) - 1, tui.command_palette_sel + 1)
+            tui.redraw()
             return
         if getattr(tui, "browser_visible", False):
             tui.browser_sel = min(len(tui.browser_items) - 1, tui.browser_sel + 1)
@@ -1626,6 +1811,11 @@ def handle_key(
         )
         return
     if key == "TAB":
+        if getattr(tui, "command_palette_visible", False):
+            if tui.command_palette_hits:
+                tui.command_palette_sel = min(len(tui.command_palette_hits) - 1, tui.command_palette_sel + 1)
+            tui.redraw()
+            return
         if tui.slash_visible and tui.slash_hits:
             cmd = tui.slash_hits[tui.slash_sel][0]
             tui.buf = cmd + " "
@@ -1639,6 +1829,9 @@ def handle_key(
         return
 
     if key == "ENTER":
+        if getattr(tui, "command_palette_visible", False):
+            tui._run_command_palette_selection()
+            return
         if getattr(tui, "browser_visible", False):
             tui._browser_select()
             return
@@ -1664,21 +1857,7 @@ def handle_key(
         tui.slash_visible = False
         tui.history.reset_navigation()
         tui.path_visible = False
-        if tui._pending_file_plan is not None and not tui.busy and not text:
-            tui._consume_pending_file_plan("")
-            return
-        if text and not tui.busy:
-            if tui._consume_pending_file_plan(text):
-                return
-            tui.history.append(text)
-            if text.startswith("/"):
-                parts = text.split(None, 1)
-                tui._execute_command(parts[0].lower(), parts[1] if len(parts) > 1 else "")
-            else:
-                if tui._active_task and not tui._active_task.done():
-                    tui._err("Still busy — wait for the current reply.")
-                else:
-                    tui._active_task = tui._task_executor.submit(tui._run_message, text)
+        tui._submit_prompt_text(text)
         return
     if key == "CTRL_D":
         text = tui.buf.strip()
@@ -1687,24 +1866,15 @@ def handle_key(
         tui.slash_visible = False
         tui.history.reset_navigation()
         tui.path_visible = False
-        if tui._pending_file_plan is not None and not tui.busy and not text:
-            tui._consume_pending_file_plan("")
-            return
-        if text and not tui.busy:
-            if tui._consume_pending_file_plan(text):
-                return
-            tui.history.append(text)
-            if text.startswith("/"):
-                parts = text.split(None, 1)
-                tui._execute_command(parts[0].lower(), parts[1] if len(parts) > 1 else "")
-            else:
-                if tui._active_task and not tui._active_task.done():
-                    tui._err("Still busy — wait for the current reply.")
-                else:
-                    tui._active_task = tui._task_executor.submit(tui._run_message, text)
+        tui._submit_prompt_text(text)
         return
 
     if key == "BACKSPACE":
+        if getattr(tui, "command_palette_visible", False):
+            if tui.command_palette_query:
+                tui.command_palette_query = tui.command_palette_query[:-1]
+                tui._refresh_command_palette()
+            return
         if tui.picker_visible:
             if tui.picker_query:
                 tui.picker_query = tui.picker_query[:-1]
@@ -1724,6 +1894,8 @@ def handle_key(
         tui._update_slash()
         return
     if key == "DELETE":
+        if getattr(tui, "command_palette_visible", False):
+            return
         if tui.picker_visible:
             return
         if tui.cur_pos < len(tui.buf):
@@ -1731,6 +1903,13 @@ def handle_key(
         tui._update_slash()
         return
     if key == "CTRL_W":
+        if getattr(tui, "command_palette_visible", False):
+            if tui.command_palette_query:
+                tui.command_palette_query = tui.command_palette_query.rstrip()
+                cut = tui.command_palette_query.rfind(" ")
+                tui.command_palette_query = tui.command_palette_query[: cut + 1] if cut >= 0 else ""
+                tui._refresh_command_palette()
+            return
         if tui.picker_visible:
             if tui.picker_query:
                 tui.picker_query = tui.picker_query.rstrip()
@@ -1785,6 +1964,10 @@ def handle_key(
         tui._update_slash()
         return
     if key == "HOME":
+        if getattr(tui, "command_palette_visible", False):
+            tui.command_palette_sel = 0
+            tui.redraw()
+            return
         if tui.picker_visible:
             tui.picker_sel = _picker_first_selectable(tui.picker_items)
             _update_picker_preview(tui)
@@ -1793,6 +1976,11 @@ def handle_key(
         tui._update_slash()
         return
     if key == "END":
+        if getattr(tui, "command_palette_visible", False):
+            if tui.command_palette_hits:
+                tui.command_palette_sel = len(tui.command_palette_hits) - 1
+                tui.redraw()
+            return
         if tui.picker_visible:
             selectable = _picker_selectable_indexes(tui.picker_items)
             if selectable:
@@ -1816,6 +2004,11 @@ def handle_key(
     if tui.picker_visible and key and all((char.isprintable() or ord(char) > 127) for char in key):
         tui.picker_query += key
         tui._refresh_picker()
+        return
+
+    if getattr(tui, "command_palette_visible", False) and key and all((char.isprintable() or ord(char) > 127) for char in key):
+        tui.command_palette_query += key
+        tui._refresh_command_palette()
         return
 
     if key and all((char.isprintable() or ord(char) > 127 or char == "\n") for char in key):

@@ -24,7 +24,7 @@ HELP_CATEGORIES = {
     "🌐 Web": ["/search", "/web", "/image", "/imagine", "/data"],
     "🧠 Memory": ["/remember", "/memory", "/forget", "/save", "/load", "/resume", "/sessions", "/session", "/export", "/tokens", "/cost", "/context", "/skills"],
     "🛠️ Tools": ["/shell", "/scaffold", "/lint", "/fmt", "/todo", "/note", "/draft", "/weather", "/timer", "/copy", "/paste", "/diff", "/pdf", "/jobs", "/hooks"],
-    "⚙️ System": ["/status", "/doctor", "/onboard", "/rebirth", "/benchmark", "/permissions", "/config", "/model", "/brief", "/fast", "/effort", "/council", "/agents", "/tasks", "/mode", "/offline", "/godmode", "/pane", "/apply", "/index", "/rag", "/voice", "/persona", "/sys", "/plugins", "/plugin", "/reload-plugins", "/compact", "/version", "/help", "/exit"],
+    "⚙️ System": ["/status", "/doctor", "/onboard", "/rebirth", "/benchmark", "/permissions", "/config", "/model", "/brief", "/fast", "/effort", "/council", "/agents", "/tasks", "/mode", "/offline", "/godmode", "/pane", "/apply", "/index", "/rag", "/voice", "/persona", "/sys", "/plugins", "/plugin", "/reload-plugins", "/logs", "/compact", "/version", "/help", "/exit"],
 }
 
 
@@ -340,7 +340,7 @@ def register_command_groups(
 
     @registry.register("/jobs", "Show background Workbench jobs")
     def cmd_jobs(tui, arg: str):
-        tui._refresh_workbench_pane()
+        tui._refresh_workbench_pane(force=True)
 
     @registry.register("/fix", "Diagnose error and fix it")
     def cmd_fix(tui, arg: str):

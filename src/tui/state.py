@@ -17,6 +17,7 @@ class Msg:
     text: str
     label: str = ""
     ts: str = ""
+    meta: dict | None = None
 
     def __post_init__(self) -> None:
         if not self.ts:
@@ -55,32 +56,64 @@ class Store:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._data: list[Msg] = []
+        self._version = 0
 
     def add(self, msg: Msg) -> int:
         with self._lock:
             self._data.append(msg)
+            self._version += 1
             return len(self._data) - 1
 
     def append(self, index: int, chunk: str) -> None:
         with self._lock:
             self._data[index].text += chunk
+            self._version += 1
 
     def set_text(self, index: int, text: str) -> None:
         with self._lock:
             self._data[index].text = text
+            self._version += 1
+
+    def update(
+        self,
+        index: int,
+        *,
+        role: str | None = None,
+        text: str | None = None,
+        label: str | None = None,
+        meta: dict | None = None,
+    ) -> None:
+        with self._lock:
+            msg = self._data[index]
+            if role is not None:
+                msg.role = role
+            if text is not None:
+                msg.text = text
+            if label is not None:
+                msg.label = label
+            if meta is not None:
+                msg.meta = meta
+            self._version += 1
 
     def finalize(self, index: int) -> None:
         with self._lock:
             if self._data[index].role == "streaming":
                 self._data[index].role = "assistant"
+                self._version += 1
 
     def clear(self) -> None:
         with self._lock:
             self._data.clear()
+            self._version += 1
 
     def snapshot(self) -> list[Msg]:
         with self._lock:
             return list(self._data)
+
+    @property
+    def version(self) -> int:
+        with self._lock:
+            return self._version
 
 
 @dataclass
@@ -97,3 +130,12 @@ class AgentState:
         self.st = "ok" if ok else "fail"
         self.conf = conf
         self.t = timing
+
+
+@dataclass(slots=True)
+class PermissionPromptState:
+    active: bool = False
+    tool_name: str = ""
+    display: str = ""
+    rule_hint: str = ""
+    selected: int = 0

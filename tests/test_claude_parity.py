@@ -48,6 +48,6 @@ def test_render_claude_parity_report_contains_release_path():
     report = render_claude_parity_report()
 
     assert "Claude parity audit" in report
-    assert "Mirror workstreams" in report
-    assert "v0.6.0: Mirror" in report
+    assert "Operator workstreams" in report
+    assert "v0.7.0: Operator" in report
     assert "v1.0.0: Native" in report

@@ -10,6 +10,11 @@ from typing import Any
 SkipErrorMapper = Callable[[str, str], str | None]
 DeltaCallback = Callable[[str], None]
 StatusCallback = Callable[[str], None]
+StopCheck = Callable[[], bool]
+
+
+class StreamCancelledError(RuntimeError):
+    """Raised when the caller requests an early stop during streaming."""
 
 SKIP_ERRORS = (
     "404",
@@ -41,6 +46,7 @@ def stream_once(
     temperature: float,
     *,
     on_delta: DeltaCallback | None = None,
+    should_stop: StopCheck | None = None,
 ) -> str:
     stream = client.chat.completions.create(
         model=model,
@@ -50,15 +56,30 @@ def stream_once(
         stream=True,
     )
     full = ""
-    for chunk in stream:
-        if not getattr(chunk, "choices", None):
-            continue
-        delta = chunk.choices[0].delta.content
-        if not delta:
-            continue
-        full += delta
-        if on_delta is not None:
-            on_delta(delta)
+    try:
+        for chunk in stream:
+            if should_stop is not None and should_stop():
+                close_fn = getattr(stream, "close", None)
+                if callable(close_fn):
+                    close_fn()
+                raise StreamCancelledError("Stopped by user.")
+            if not getattr(chunk, "choices", None):
+                continue
+            delta = chunk.choices[0].delta.content
+            if not delta:
+                continue
+            full += delta
+            if on_delta is not None:
+                on_delta(delta)
+            if should_stop is not None and should_stop():
+                close_fn = getattr(stream, "close", None)
+                if callable(close_fn):
+                    close_fn()
+                raise StreamCancelledError("Stopped by user.")
+    finally:
+        close_fn = getattr(stream, "close", None)
+        if callable(close_fn):
+            close_fn()
     if not full.strip():
         raise RuntimeError("Empty response from model.")
     return full.strip()
@@ -78,6 +99,7 @@ def stream_with_fallback(
     friendly_error,
     on_delta: DeltaCallback | None = None,
     on_status: StatusCallback | None = None,
+    should_stop: StopCheck | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
     stream_fn: Callable[[Any, str, list[dict[str, str]], int, float], str] | None = None,
 ) -> str:
@@ -91,6 +113,7 @@ def stream_with_fallback(
             active_max_tokens,
             active_temperature,
             on_delta=on_delta,
+            should_stop=should_stop,
         )
     )
     last_err = "All models failed."

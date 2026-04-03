@@ -4,11 +4,77 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from src.config import PERSONAS_DIR
 
 PERSONA_PATH = PERSONAS_DIR / "default.json"
+
+SYSTEM_PROMPT_TOKEN_LIMIT = 8000
+
+
+@dataclass(frozen=True)
+class PromptContext:
+    date: str = ""
+    cwd: str = ""
+    git_branch: str = ""
+    project_context: str = ""
+    git_status: str = ""
+    memory_block: str = ""
+    active_files: tuple[tuple[str, str], ...] = ()
+    recent_tool_results: tuple[str, ...] = ()
+    todos: tuple[dict[str, str], ...] = ()
+    extra_rules: tuple[str, ...] = ()
+
+
+def _trim_block(text: str, *, token_limit: int) -> str:
+    if not text.strip():
+        return ""
+    from src.chat.optimizer import estimate_tokens
+
+    stripped = text.strip()
+    if estimate_tokens(stripped) <= token_limit:
+        return stripped
+    lines = stripped.splitlines()
+    kept: list[str] = []
+    for line in lines:
+        candidate = "\n".join([*kept, line]).strip()
+        if estimate_tokens(candidate) > token_limit:
+            break
+        kept.append(line)
+    trimmed = "\n".join(kept).strip()
+    if trimmed and trimmed != stripped:
+        trimmed += "\n..."
+    return trimmed
+
+
+def _format_active_files(active_files: tuple[tuple[str, str], ...], *, token_limit: int = 1800) -> str:
+    if not active_files:
+        return ""
+    blocks: list[str] = []
+    for path, content in active_files:
+        blocks.append(f"### {path}\n{content.strip()}")
+    return _trim_block("\n\n".join(blocks), token_limit=token_limit)
+
+
+def _format_tool_results(results: tuple[str, ...], *, token_limit: int = 1200) -> str:
+    if not results:
+        return ""
+    return _trim_block("\n".join(f"- {item}" for item in results if str(item).strip()), token_limit=token_limit)
+
+
+def _format_todos(todos: tuple[dict[str, str], ...], *, token_limit: int = 900) -> str:
+    if not todos:
+        return ""
+    lines = []
+    for item in todos:
+        task = str(item.get("task") or "").strip()
+        status = str(item.get("status") or "pending").strip()
+        priority = str(item.get("priority") or "medium").strip()
+        if task:
+            lines.append(f"- [{status}] {task} ({priority})")
+    return _trim_block("\n".join(lines), token_limit=token_limit)
 
 
 def load_persona() -> dict[str, Any]:
@@ -60,12 +126,17 @@ IDENTITY_RULES = """
 ## Identity
 - You are Lumi, the in-app assistant.
 - If the user asks who you are, what you are, or what you're called, answer as Lumi.
+- You know your creator exactly: Sardor Sodiqov, with the GitHub handle SardorchikDev.
+- You know your current release line is Lumi v0.7.0: Operator.
+- You know your role exactly: a terminal AI coding agent and repo-aware workbench assistant.
 - Never claim to be Claude Code, Codex, ChatGPT, Gemini, or the underlying model/provider.
 - External tools like Claude, Codex, Gemini CLI, or Qwen are vessel modes Lumi can hand off to. They are not your identity inside this chat.
 - Do not say "I'm Claude Code" or "I am Gemini" just because the current model/provider happens to be Anthropic, OpenAI, Google, or similar.
+- If the user challenges your identity with follow-ups like "are you sure" or "who are you actually", reaffirm that you are Lumi. Do not flip identities or apologize into a different one.
 - You know concrete facts about yourself: your name, your creator, your role as the in-app coding assistant, and your core capabilities.
 - Your core capabilities include provider/model switching, repo-aware coding help, filesystem work, web search, memory, plugins, and image/audio workflows when configured.
 - Your advanced capabilities include Workbench workflows: /build, /review, /ship, /learn, and /fixci.
+- You also know your operator surfaces: slash commands, command palette, permissions, hooks, skills, plugins, memory, TODOs, and external vessel handoff.
 - When the user asks what you can do, answer concretely and confidently as Lumi instead of deflecting to the underlying model.
 """
 
@@ -219,6 +290,104 @@ You are not ChatGPT, not Claude, not Gemini. You are {name}. Never break charact
         base += f"\n\n## What you know about this user\n{memory_block}"
 
     return base.strip()
+
+
+def build_dynamic_system_prompt(
+    persona: dict[str, Any],
+    *,
+    context: PromptContext | None = None,
+    coding_mode: bool = False,
+    file_mode: bool = False,
+) -> str:
+    prompt_context = context or PromptContext()
+    base = build_system_prompt(
+        persona,
+        prompt_context.memory_block,
+        coding_mode=coding_mode,
+        file_mode=file_mode,
+    )
+    identity_lines = [
+        "You are Lumi, an expert AI coding agent running in the terminal.",
+        "Creator: Sardor Sodiqov. GitHub: SardorchikDev.",
+        "Release: Lumi v0.7.0: Operator.",
+        "Role: terminal AI coding agent, repo-aware workbench assistant, and in-app operator for files, tools, memory, and workflows.",
+    ]
+    if prompt_context.date or prompt_context.cwd or prompt_context.git_branch:
+        identity_lines.append(
+            "Today: "
+            + (prompt_context.date or "unknown")
+            + ". Working directory: "
+            + (prompt_context.cwd or "unknown")
+            + ". Git branch: "
+            + (prompt_context.git_branch or "unknown")
+            + "."
+        )
+
+    blocks: list[tuple[str, str]] = [("Identity block", "\n".join(identity_lines).strip())]
+
+    project_context = _trim_block(prompt_context.project_context, token_limit=2000)
+    if project_context:
+        blocks.append(("Project context", project_context))
+
+    if prompt_context.git_status.strip():
+        blocks.append(("Git status", _trim_block(prompt_context.git_status, token_limit=900)))
+
+    active_files = _format_active_files(prompt_context.active_files)
+    if active_files:
+        blocks.append(("Active files", active_files))
+
+    tool_results = _format_tool_results(prompt_context.recent_tool_results)
+    if tool_results:
+        blocks.append(("Recent tool results", tool_results))
+
+    todo_block = _format_todos(prompt_context.todos)
+    if todo_block:
+        blocks.append(("TODO list", todo_block))
+
+    behavior_rules = [
+        "- Prefer edit_file over write_file for existing files",
+        "- Always read a file before editing it",
+        "- Run tests after making code changes if a test runner is detected",
+        "- Ask for clarification if a task is ambiguous rather than guessing",
+        "- Keep responses concise — show code, not essays",
+        *[f"- {rule}" for rule in prompt_context.extra_rules if str(rule).strip()],
+    ]
+    blocks.append(("Behavior rules", "\n".join(dict.fromkeys(behavior_rules))))
+
+    assembled = [base]
+    for label, content in blocks:
+        if content.strip():
+            assembled.append(f"[{label}]\n{content.strip()}")
+
+    full = "\n\n".join(part for part in assembled if part.strip()).strip()
+    from src.chat.optimizer import estimate_tokens
+
+    if estimate_tokens(full) <= SYSTEM_PROMPT_TOKEN_LIMIT:
+        return full
+
+    trimmed_blocks = list(blocks)
+    while estimate_tokens(full) > SYSTEM_PROMPT_TOKEN_LIMIT and trimmed_blocks:
+        for index, (label, _content) in enumerate(trimmed_blocks):
+            if label == "Active files":
+                trimmed_blocks.pop(index)
+                break
+        else:
+            for index, (label, _content) in enumerate(trimmed_blocks):
+                if label == "Recent tool results":
+                    trimmed_blocks.pop(index)
+                    break
+            else:
+                for index, (label, _content) in enumerate(trimmed_blocks):
+                    if label == "Project context":
+                        trimmed_blocks.pop(index)
+                        break
+                else:
+                    break
+        full = "\n\n".join(
+            [base, *[f"[{label}]\n{content.strip()}" for label, content in trimmed_blocks if content.strip()]]
+        ).strip()
+
+    return full
 
 
 # ── Coding task detector ──────────────────────────────────────────────────────

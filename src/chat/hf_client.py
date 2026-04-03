@@ -333,7 +333,7 @@ def _friendly_error(msg: str, provider: str):
 
 _SKIP_ERRORS = _STREAM_SKIP_ERRORS
 
-def _do_stream(client, model, messages, max_tokens, temperature, on_delta=None) -> str:
+def _do_stream(client, model, messages, max_tokens, temperature, on_delta=None, should_stop=None) -> str:
     """Single streaming attempt — returns full text."""
     return stream_once(
         client,
@@ -342,10 +342,11 @@ def _do_stream(client, model, messages, max_tokens, temperature, on_delta=None) 
         max_tokens,
         temperature,
         on_delta=on_delta,
+        should_stop=should_stop,
     )
 
 
-def _call_stream_attempt(client, model, messages, max_tokens, temperature, on_delta=None) -> str:
+def _call_stream_attempt(client, model, messages, max_tokens, temperature, on_delta=None, should_stop=None) -> str:
     try:
         return _do_stream(
             client,
@@ -354,10 +355,14 @@ def _call_stream_attempt(client, model, messages, max_tokens, temperature, on_de
             max_tokens,
             temperature,
             on_delta=on_delta,
+            should_stop=should_stop,
         )
     except TypeError as exc:
-        if "on_delta" not in str(exc):
+        message = str(exc)
+        if "on_delta" not in message and "should_stop" not in message:
             raise
+        if "should_stop" in message and "on_delta" not in message:
+            return _do_stream(client, model, messages, max_tokens, temperature, on_delta=on_delta)
         return _do_stream(client, model, messages, max_tokens, temperature)
 
 
@@ -370,6 +375,7 @@ def chat_stream(
     *,
     on_delta=None,
     on_status=None,
+    should_stop=None,
     sleep_fn=time.sleep,
 ) -> str:
     provider = get_provider()
@@ -416,5 +422,6 @@ def chat_stream(
             active_max_tokens,
             active_temperature,
             on_delta=on_delta,
+            should_stop=should_stop,
         ),
     )

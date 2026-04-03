@@ -5,18 +5,22 @@ Lumi's next program is not cosmetic polish. It is a Claude-parity push followed 
 ## Release Path
 
 - `v0.5.0: Forge`
-  - current release
+  - historical baseline
   - repo-aware workbench, project memory, hooks, skills, and background execution baseline
 - `v0.6.0: Mirror`
-  - Python parity release
+  - historical parity-mapping release
+  - closed the highest-value command, workflow, and subsystem gaps against Claude Code
+- `v0.7.0: Operator`
+  - current release
+  - execution-focused Python release
   - closes the highest-value command, workflow, and subsystem gaps against Claude Code
 - `v1.0.0: Native`
   - Bun/TypeScript/Ink rewrite
-  - reimplements Lumi on a runtime shape closer to Claude Code once Mirror behavior is stable
+  - reimplements Lumi on a runtime shape closer to Claude Code once Operator behavior is stable
 
-## Mirror Goal
+## Operator Goal
 
-Mirror should make Lumi feel close enough to Claude Code in real use that the later rewrite is mainly architectural, not a product redesign.
+Operator should make Lumi feel close enough to Claude Code in real use that the later rewrite is mainly architectural, not a product redesign.
 
 That means closing gaps in:
 
@@ -32,7 +36,7 @@ That means closing gaps in:
 - TUI control density
 - measurable parity auditing
 
-## The 17 Mirror Workstreams
+## The 17 Operator Workstreams
 
 1. Wildcard tool permission engine
 2. Explicit tool registry

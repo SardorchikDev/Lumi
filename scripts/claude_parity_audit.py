@@ -25,7 +25,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="Fail with non-zero exit if any Claude command or Mirror workstream is still missing",
+        help="Fail with non-zero exit if any Claude command or Operator workstream is still missing",
     )
     parser.add_argument(
         "--json",
@@ -68,7 +68,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.strict and (missing_commands or workstreams):
         print("\nClaude parity audit failed: Lumi is not yet at 1:1 parity.")
         print(f"  Missing command tokens: {len(missing_commands)}")
-        print(f"  Mirror workstreams remaining: {len(workstreams)}")
+        print(f"  Operator workstreams remaining: {len(workstreams)}")
         return 1
 
     print("\nClaude parity audit completed.")

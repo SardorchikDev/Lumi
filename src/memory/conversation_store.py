@@ -1,6 +1,7 @@
 """Save and load conversations — with named session support."""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import datetime
@@ -9,14 +10,57 @@ from typing import Any
 
 from src.config import SESSIONS_DIR
 
+_WORKSPACE_MARKERS = (
+    ".git",
+    "LUMI.md",
+    "CLAUDE.md",
+    ".lumi",
+    "pyproject.toml",
+    "package.json",
+    "Cargo.toml",
+    "go.mod",
+    "Makefile",
+)
+
 
 def _ensure() -> None:
     SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _autosave_dir() -> Path:
+    _ensure()
+    path = SESSIONS_DIR / "_repo_autosave"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _slug(name: str) -> str:
     """Convert session name to safe filename slug."""
     return re.sub(r"[^a-zA-Z0-9_-]", "-", name.strip().lower())[:40]
+
+
+def _workspace_root(base_dir: str | Path | None = None) -> Path:
+    current = Path(base_dir or Path.cwd()).expanduser().resolve()
+    if current.is_file():
+        current = current.parent
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    for candidate in (current, *current.parents):
+        if any((candidate / marker).exists() for marker in _WORKSPACE_MARKERS if marker != ".git"):
+            return candidate
+    return current
+
+
+def _workspace_key(base_dir: str | Path | None = None) -> str:
+    root = _workspace_root(base_dir)
+    return hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:12]
+
+
+def _autosave_path(base_dir: str | Path | None = None) -> Path:
+    root = _workspace_root(base_dir)
+    name = _slug(root.name) or "workspace"
+    return _autosave_dir() / f"{name}-{_workspace_key(root)}.json"
 
 
 def save(history: list[dict[str, str]], name: str = "") -> Path:
@@ -43,6 +87,22 @@ def save(history: list[dict[str, str]], name: str = "") -> Path:
     return path
 
 
+def save_repo_autosave(history: list[dict[str, str]], base_dir: str | Path | None = None) -> Path:
+    """Persist the current workspace conversation into its stable autosave slot."""
+    root = _workspace_root(base_dir)
+    path = _autosave_path(root)
+    payload = {
+        "name": root.name or str(root),
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "workspace": str(root),
+        "workspace_key": _workspace_key(root),
+        "autosave": True,
+        "messages": history,
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 def _read_session(path: Path) -> list[dict[str, str]]:
     """Read messages from a session file, handling both old and new formats."""
     try:
@@ -62,6 +122,29 @@ def load_latest(name: str = "") -> list[dict[str, str]]:
     pattern = f"{_slug(name)}-*.json" if name else "*.json"
     files   = sorted(SESSIONS_DIR.glob(pattern))
     return _read_session(files[-1]) if files else []
+
+
+def load_repo_autosave(base_dir: str | Path | None = None) -> list[dict[str, str]]:
+    """Load the stable autosave slot for the current workspace."""
+    return _read_session(_autosave_path(base_dir))
+
+
+def load_resume(name: str = "", base_dir: str | Path | None = None) -> list[dict[str, str]]:
+    """Load the best resume target for a workspace.
+
+    Resolution order:
+    - explicit named session via ``/load foo``
+    - workspace autosave for blank/latest/repo/autosave/current
+    - newest global saved session as a fallback
+    """
+    query = name.strip()
+    lowered = query.lower()
+    if query and lowered not in {"latest", "repo", "autosave", "current"}:
+        return load_by_name(query)
+    workspace_history = load_repo_autosave(base_dir)
+    if workspace_history:
+        return workspace_history
+    return load_latest()
 
 
 def load_by_name(name: str) -> list[dict[str, str]]:

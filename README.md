@@ -5,26 +5,26 @@
 </p>
 
 <p align="center">
-  <strong>Current release:</strong> <code>v0.6.0: Mirror</code><br>
+  <strong>Current release:</strong> <code>v0.7.0: Operator</code><br>
   <strong>Rewrite target:</strong> <code>v1.0.0: Native</code>
 </p>
 
 <p align="center">
   <a href="#install">Install</a> ·
   <a href="#quick-start">Quick Start</a> ·
-  <a href="#whats-new-in-060">What's New</a> ·
-  <a href="#mirror-workflow">Mirror Workflow</a> ·
+  <a href="#whats-new-in-070">What's New</a> ·
+  <a href="#operator-workflow">Operator Workflow</a> ·
   <a href="#commands">Commands</a> ·
   <a href="#development">Development</a>
 </p>
 
 <p align="center">
   <img alt="CI" src="https://img.shields.io/github/actions/workflow/status/SardorchikDev/Lumi/ci.yml?branch=main&style=flat-square&label=ci">
-  <img alt="Release" src="https://img.shields.io/badge/release-0.6.0%20Mirror-16324f?style=flat-square">
+  <img alt="Release" src="https://img.shields.io/badge/release-0.7.0%20Operator-16324f?style=flat-square">
   <img alt="License" src="https://img.shields.io/github/license/SardorchikDev/Lumi?style=flat-square">
   <img alt="Python" src="https://img.shields.io/badge/python-3.10%2B-10322c?style=flat-square">
 </p>
-<p align="center"><em>Mirror is the current Claude-parity push. Native is the later Bun/TypeScript/Ink rewrite.</em></p>
+<p align="center"><em>Operator is the current execution-focused release. Native is the later Bun/TypeScript/Ink rewrite.</em></p>
 
 > Lumi is for real repo work: inspect, plan, edit, test, review, and ship from the terminal without collapsing into a generic chat loop.
 
@@ -32,7 +32,7 @@
   <table>
     <tr>
     <td width="50%" valign="top">
-        <strong>Mirror Workbench</strong><br>
+        <strong>Operator Workbench</strong><br>
         <code>/build</code>, <code>/learn</code>, <code>/review</code>, <code>/fixci</code>, and <code>/ship</code> map requests to risk-aware repo runs.
       </td>
       <td width="50%" valign="top">
@@ -61,21 +61,30 @@
 - has both a full TUI and classic CLI mode
 - includes release gates for benchmark and capability audits
 
-## What's New In 0.6.0
+## What's New In 0.7.0
+
+`Operator` is the name because this release is where Lumi stops only mirroring another coding CLI's surface and starts acting like an operator inside the repo: it owns identity, tool execution, permissions, context pressure, and transcript flow more tightly.
 
 ### Added
 
-- Mirror branding across the TUI, CLI, docs, and installer
-- Claude parity audit command via `scripts/claude_parity_audit.py`
-- `LUMI_MIRROR_SPEC.md` and refreshed `ROADMAP.md` for the 17-workstream Mirror program
-- current release metadata aligned around `v0.6.0: Mirror`
+- operator release branding across the docs and release metadata
+- real tool-permission management via `/permissions` with global and project rule files
+- session telemetry via `/tokens` and `/cost`
+- recent tool and shell log access via `/logs`
+- stronger project memory and dynamic prompt context assembly
+- hardened local self-knowledge so Lumi knows its own identity, creator, release line, and runtime
 
-### Improved
+### Changed
 
-- Mirror Workbench identity across runtime status and startup surfaces
+- prompt flow now behaves like a messaging app:
+  the transcript grows first, then the prompt follows it downward until it reaches the bottom
+- one spacer row now separates the startup header from the first message block
 - Gemini-first startup with `gemini-2.5-flash` as the preferred default when configured
 - `/model` only showing configured providers
 - `/effort` support with real runtime profiles
+- while Lumi is working, prompt input is locked and `Esc` is the stop action
+- startup visuals stay ANSI-only with the minimal Claude-style mini bot and compact header
+- self-identity follow-ups like `are you sure` now stay on Lumi instead of leaking host model identity
 - status and doctor output with Workbench awareness
 
 ### Operational
@@ -83,21 +92,18 @@
 - benchmark gate, rebirth audit, and Claude parity audit remain part of the release path
 - CI is aligned with current GitHub Actions runtime expectations
 
-## Mirror Program
+## Why Operator
 
-`v0.6.0: Mirror` is the Python-side Claude-parity release.
+`Mirror` was the parity-mapping phase. `Operator` is the phase where Lumi starts behaving like an actual terminal operator.
 
-It is focused on:
+That means:
 
-- wildcard permission rules
-- an explicit tool registry
-- real git workflow commands
-- deeper task and agent orchestration
-- LSP-backed repo intelligence
-- IDE bridge groundwork
-- fuller config, privacy, usage, and install surfaces
-- denser TUI operator controls
-- measurable parity auditing
+- tighter control over tools and permissions
+- clearer runtime identity and creator knowledge
+- better transcript and prompt behavior under real chat usage
+- live session telemetry and logs
+- stronger repo memory and dynamic context building
+- a cleaner path from chat request to real repo action
 
 Planning artifacts:
 
@@ -204,9 +210,9 @@ LUMI_STATE_DIR=~/.codex/memories/lumi/state
 LUMI_CACHE_DIR=~/.codex/memories/lumi/cache
 ```
 
-## Mirror Workflow
+## Operator Workflow
 
-Mirror adds a real coding loop.
+Operator adds a tighter coding loop.
 
 1. `/learn` maps the repo, conventions, hotspots, impact files, and suggested tests.
 2. `/build` turns a request into a risk-aware implementation run.
@@ -235,7 +241,7 @@ Use when you want Lumi to understand the repo before making changes.
 
 ### `/review`
 
-Existing file review stays in place. Empty-target or `workspace` review routes through Mirror.
+Existing file review stays in place. Empty-target or `workspace` review routes through Operator.
 
 ```text
 /review workspace
@@ -300,11 +306,13 @@ This keeps Lumi consistent across sessions instead of re-learning the repo from 
 
 Lumi's default interface is prompt-first:
 
-- welcome card on startup
+- compact startup header on launch
 - prompt rail and footer shortcuts
-- dense transcript above the prompt
+- transcript-first flow where the prompt follows the conversation downward
 - command menus and model picker
 - shortcuts overlay on `?`
+- command palette on `Ctrl+P`
+- TODO pane on `Ctrl+T`
 - review cards and approval flows
 - background Workbench jobs pane
 - terminal-safe paste and selection behavior
@@ -314,6 +322,8 @@ Useful keys:
 - `?` shows shortcuts
 - `/` opens the command menu
 - `Ctrl+N` opens the model picker
+- `Ctrl+P` opens the command palette
+- `Ctrl+T` toggles the TODO pane
 - `Ctrl+G` toggles the starter card
 - `Tab` accepts command or path suggestions
 - `PgUp` / `PgDn` scroll menus and transcript
@@ -335,10 +345,12 @@ Useful keys:
 | `/hooks [inspect]` | Show lifecycle hook configuration |
 | `/rebirth [status\|on\|off]` | Show the rebirth capability profile and toggles |
 | `/benchmark [list]` | Show built-in benchmark scenarios |
+| `/tokens` or `/cost` | Show token usage and session cost |
+| `/logs` | Show recent tool and shell logs |
 | `/clear` | Clear the current conversation |
 | `/exit` | Exit Lumi |
 
-### Mirror Workbench
+### Operator Workbench
 
 | Command | Description |
 |---|---|
@@ -375,7 +387,7 @@ Useful keys:
 | `/lumi.md show\|create` | Show or create Lumi project context |
 | `/claude.md show\|create` | Show or create Claude Code-compatible project context |
 | `/plugins` | Show plugin status |
-| `/permissions [all\|plugins]` | Show plugin permission info |
+| `/permissions [all\|plugins\|mode\|add\|rm]` | Show or update tool permissions, plus plugin permission info |
 
 ## Skills and Hooks
 
@@ -422,7 +434,7 @@ Example hook config:
 
 ## Rebirth Profile
 
-`Mirror` is the release name. `Rebirth` is still a runtime profile.
+`Operator` is the release name. `Rebirth` is still a runtime profile.
 
 Use `/rebirth` to view the capability matrix and readiness score for core coding-agent workflows.
 

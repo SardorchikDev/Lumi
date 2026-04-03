@@ -59,16 +59,21 @@ class SessionContext:
 
     def save_session(self, name: str = "") -> pathlib.Path:
         """Save current conversation to disk."""
-        from src.memory.conversation_store import save
-        return save(self.memory.get(), name)
+        from src.memory.conversation_store import save, save_repo_autosave
+
+        path = save(self.memory.get(), name)
+        save_repo_autosave(self.memory.get(), base_dir=pathlib.Path.cwd())
+        return path
 
     def load_session(self, name: str = "") -> bool:
         """Load session by name (empty for latest). Returns success."""
-        from src.memory.conversation_store import load_by_name, load_latest
-        h = load_by_name(name) if name else load_latest()
+        from src.memory.conversation_store import load_resume, save_repo_autosave
+
+        h = load_resume(name, base_dir=pathlib.Path.cwd())
         if h:
             self.memory.set_history(h)
             self.turns = len(h) // 2
+            save_repo_autosave(h, base_dir=pathlib.Path.cwd())
             return True
         return False
 

@@ -15,7 +15,7 @@ from src.config import DATA_DIR
 RUNTIME_CONFIG_DIR = DATA_DIR / "runtime"
 _TRUE_VALUES = {"1", "true", "yes", "on", "enable", "enabled"}
 _FALSE_VALUES = {"0", "false", "no", "off", "disable", "disabled"}
-_ALLOWED_PERMISSION_MODES = {"default", "plan", "auto", "bypass"}
+_ALLOWED_PERMISSION_MODES = {"ask", "auto", "strict", "default", "plan", "bypass"}
 _ALLOWED_PRIVACY_MODES = {"standard", "strict", "offline"}
 
 
@@ -29,7 +29,7 @@ class RuntimeConfig:
     compact_mode: bool = False
     multiline: bool = False
     reasoning_effort: str = "medium"
-    permission_mode: str = "default"
+    permission_mode: str = "ask"
     privacy_mode: str = "standard"
 
 
@@ -60,6 +60,17 @@ def _coerce_bool(value: str | bool) -> bool:
     if lowered in _FALSE_VALUES:
         return False
     raise ValueError(f"Expected one of: {', '.join(sorted(_TRUE_VALUES | _FALSE_VALUES))}")
+
+
+def _normalize_permission_mode(value: str | None) -> str:
+    lowered = str(value or "ask").strip().lower()
+    aliases = {
+        "default": "ask",
+        "plan": "ask",
+        "bypass": "auto",
+    }
+    lowered = aliases.get(lowered, lowered)
+    return lowered if lowered in {"ask", "auto", "strict"} else "ask"
 
 
 def _normalize_extra_dirs(base_dir: Path, values: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
@@ -103,7 +114,7 @@ def load_runtime_config(base_dir: Path | None = None) -> RuntimeConfig:
         compact_mode=bool(payload.get("compact_mode", False)),
         multiline=bool(payload.get("multiline", False)),
         reasoning_effort=normalize_reasoning_effort(str(payload.get("reasoning_effort") or "medium")),
-        permission_mode=str(payload.get("permission_mode") or "default"),
+        permission_mode=_normalize_permission_mode(str(payload.get("permission_mode") or "ask")),
         privacy_mode=str(payload.get("privacy_mode") or "standard"),
     )
 
@@ -119,7 +130,7 @@ def save_runtime_config(config: RuntimeConfig, base_dir: Path | None = None) -> 
         compact_mode=bool(config.compact_mode),
         multiline=bool(config.multiline),
         reasoning_effort=normalize_reasoning_effort(config.reasoning_effort),
-        permission_mode=config.permission_mode if config.permission_mode in _ALLOWED_PERMISSION_MODES else "default",
+        permission_mode=_normalize_permission_mode(config.permission_mode),
         privacy_mode=config.privacy_mode if config.privacy_mode in _ALLOWED_PRIVACY_MODES else "standard",
     )
     _config_path(root).write_text(json.dumps(asdict(normalized), indent=2, ensure_ascii=False), encoding="utf-8")
@@ -213,8 +224,8 @@ def parse_runtime_config_update(key: str, value: str) -> dict[str, Any]:
     if normalized_key in {"fast", "fast_mode"}:
         return {"fast_mode": _coerce_bool(raw)}
     if normalized_key in {"permissions", "permission_mode"}:
-        lowered = raw.lower()
-        if lowered not in _ALLOWED_PERMISSION_MODES:
+        lowered = _normalize_permission_mode(raw)
+        if lowered not in {"ask", "auto", "strict"}:
             raise ValueError(f"permission mode must be one of: {', '.join(sorted(_ALLOWED_PERMISSION_MODES))}")
         return {"permission_mode": lowered}
     if normalized_key in {"privacy", "privacy_mode"}:
