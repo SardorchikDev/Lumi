@@ -1,0 +1,19 @@
+Create the following folder and website:
+
+1. Create a directory at `/home/sardorchikdev/monochrome` (if it doesn't exist, create it, including parent directories if needed).
+
+2. Inside that folder, build a complete, visually stunning, fully responsive monochrome website. The design must use only black, white, and shades of gray (no colors except monochrome tones). Make it look "awesome" – modern, elegant, and highly polished.
+
+Requirements:
+- Use a single HTML file (index.html) with embedded CSS and optional JavaScript.
+- Include smooth animations, subtle hover effects, and a clean layout.
+- The content can be anything (e.g., a personal portfolio, a creative agency landing page, a product showcase, or an abstract art gallery). Choose a theme that works beautifully in grayscale.
+- Use modern CSS features like flexbox/grid, custom properties, and responsive media queries.
+- Add a sleek navigation bar, a hero section with a striking headline, some card elements, and a footer.
+- Incorporate a subtle gradient from dark gray to light gray, or use pure black/white with soft shadows and borders.
+- Ensure text is highly readable with appropriate contrast.
+- Add a creative touch: e.g., a grayscale image placeholder (use SVG or CSS shapes), a typing animation, or a hover-reveal effect.
+- No external dependencies (pure HTML/CSS/JS). Use system fonts or Google Fonts (only Montserrat, Roboto, or Inter in grayscale style).
+- Make sure the page is responsive and looks great on mobile, tablet, and desktop.
+
+After creating the file, output a confirmation message showing the full path of the created website and a preview of its key visual features.
