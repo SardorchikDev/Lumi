@@ -1,4 +1,4 @@
-<h1 align="center">Lumi</h1>
+<h1 align="center">𝙇𝙪𝙢𝙞</h1>
 <img src="./assets/Lumi.png"/>
 <p align="center">
   Terminal AI coding workbench for repo intelligence, background execution, project memory, and prompt-first terminal workflows.
