@@ -121,48 +121,31 @@
         "test_tui_integration.py"
       ],
       "exampleFilesGeneratedAt": 1775292817629,
-      "lastCost": 0.13157399999999997,
-      "lastAPIDuration": 13514,
-      "lastAPIDurationWithoutRetries": 11776,
+      "lastCost": 0,
+      "lastAPIDuration": 0,
+      "lastAPIDurationWithoutRetries": 0,
       "lastToolDuration": 0,
-      "lastDuration": 86927,
+      "lastDuration": 5697,
       "lastLinesAdded": 0,
       "lastLinesRemoved": 0,
-      "lastTotalInputTokens": 43506,
-      "lastTotalOutputTokens": 122,
+      "lastTotalInputTokens": 0,
+      "lastTotalOutputTokens": 0,
       "lastTotalCacheCreationInputTokens": 0,
       "lastTotalCacheReadInputTokens": 0,
       "lastTotalWebSearchRequests": 0,
-      "lastModelUsage": {
-        "claude-haiku-4-5-20251001": {
-          "inputTokens": 337,
-          "outputTokens": 10,
-          "cacheReadInputTokens": 0,
-          "cacheCreationInputTokens": 0,
-          "webSearchRequests": 0,
-          "costUSD": 0.00038700000000000003
-        },
-        "qwen/qwen3.6-plus:free": {
-          "inputTokens": 43169,
-          "outputTokens": 112,
-          "cacheReadInputTokens": 0,
-          "cacheCreationInputTokens": 0,
-          "webSearchRequests": 0,
-          "costUSD": 0.131187
-        }
-      },
-      "lastSessionId": "ac14da65-b63b-43e6-9e35-00b841a75594",
+      "lastModelUsage": {},
+      "lastSessionId": "af44d046-9d3a-4e1b-8f48-a0db2e61cf92",
       "lastSessionMetrics": {
-        "frame_duration_ms_count": 361,
-        "frame_duration_ms_min": 0.16816900000048918,
-        "frame_duration_ms_max": 30.538626000000022,
-        "frame_duration_ms_avg": 1.8668011994461513,
-        "frame_duration_ms_p50": 1.3625929999998334,
-        "frame_duration_ms_p95": 4.141566000000239,
-        "frame_duration_ms_p99": 12.061963200000514
+        "frame_duration_ms_count": 20,
+        "frame_duration_ms_min": 0.2503480000004856,
+        "frame_duration_ms_max": 64.27880300000015,
+        "frame_duration_ms_avg": 5.770556900000019,
+        "frame_duration_ms_p50": 1.7126700000003439,
+        "frame_duration_ms_p95": 11.835715500000168,
+        "frame_duration_ms_p99": 53.79018550000008
       },
-      "lastFpsAverage": 4.28,
-      "lastFpsLow1Pct": 78.9
+      "lastFpsAverage": 6.36,
+      "lastFpsLow1Pct": 15.56
     }
   },
   "opus1mMergeNoticeSeenCount": 2,
