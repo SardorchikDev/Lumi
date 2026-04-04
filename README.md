@@ -1,5 +1,5 @@
 <h1 align="center">Lumi</h1>
-
+![Lumi Screen shot](./assets/Lumi.png)
 <p align="center">
   Terminal AI coding workbench for repo intelligence, background execution, project memory, and prompt-first terminal workflows.
 </p>
